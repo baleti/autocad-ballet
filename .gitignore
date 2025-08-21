@@ -1,0 +1,47 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.rsuser
+*.sln.docstates
+*.vsidx
+*.dtbcache.v2
+*.futdcache.v2
+DocumentLayout.json
+DocumentLayout.backup.json
+
+# Build files
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+*.cache
+*.ilk
+*.idb
+*.log
+
+# AutoCAD specific
+*.lsp.bak
+*.dwg.bak
+*.dwt.bak
+
+# NuGet packages
+packages/
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+*.nugetprops
+*.nuget.targets
+
+# Rider / ReSharper
+*.DotSettings.user
+*.resharper
+*.sln.DotSettings
+
+# Miscellaneous
+*.tlog
+*.dbmdl
+Thumbs.db
+ehthumbs.db

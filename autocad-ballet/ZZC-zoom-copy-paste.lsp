@@ -1,0 +1,11 @@
+(defun c:zzc ()
+  (command "_ucs" "")
+  (vl-bb-set "viewctr" (getvar "VIEWCTR"))
+  (command "_ucs" "_p")
+)
+
+(defun c:zzv ()
+  (command "_ucs" "")
+  (command "zoom" "c" (vl-bb-ref "viewctr") "")
+  (command "_ucs" "_p")
+)

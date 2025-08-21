@@ -1,0 +1,5 @@
+(defun c:bf(/ a)
+    (setq a (ssget "_I"))
+    (sssetfirst a a)
+    (command "_.draworder" "_front")
+)

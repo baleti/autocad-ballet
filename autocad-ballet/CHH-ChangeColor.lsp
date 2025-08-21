@@ -1,0 +1,6 @@
+(defun c:chh (/ usercol ss)
+ (while (not (setq usercol (acad_colordlg 256))))
+ (prompt "Select all object to change to one color.")
+ (if (setq ss (ssget))
+   (command "_.ChProp" ss "" "_C" usercol ""))
+ (princ))
