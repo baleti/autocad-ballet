@@ -1,0 +1,14 @@
+* 2025
+** August
+*** 21
+**** =12:25= getstring command feels clunky
+when dynamic input is turned on ctrl+v doesn't work, pasteclip command is invoked instead
+pressing space is interpreted as confirmation of the command rather than space in the string unless double quotes are used
+for the command I'm setting up (rename tabs) a preview similar to that in rename commands in revit-ballet would be more practical
+***** autolisp doesn't seem to have robust facilities for creating windows/windows forms
+seems to expect separate .dcl files
+writing them in the same files seems hard to modify
+may move this command to .net instead
+*** 22
+**** =10:03= ai suggests that .net may offer better faciilities to manage multiple opened documents
+autolisp scripts resorted to activex, which although worked, sounds like a legacy solution that wouldn't be suitable for going forward
