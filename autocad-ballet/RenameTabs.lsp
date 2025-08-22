@@ -3,8 +3,9 @@
   
   (princ "\n--- Layout Tab Renaming Tool ---")
   
-  ;; Get user input for search and replace strings
-  (setq search-string (getstring "\nEnter string to find: "))
+  ;; Get user input for search and replace strings with paste support
+  ;; The T flag allows spaces and should enable better input handling
+  (setq search-string (getstring T "\nEnter string to find (Ctrl+V to paste): "))
   (if (= search-string "")
     (progn
       (princ "\nOperation cancelled - no search string entered.")
@@ -12,7 +13,7 @@
     )
   )
   
-  (setq replace-string (getstring "\nEnter replacement string: "))
+  (setq replace-string (getstring T "\nEnter replacement string (Ctrl+V to paste): "))
   
   (princ (strcat "\nSearching for: \"" search-string "\""))
   (princ (strcat "\nReplacing with: \"" replace-string "\""))
