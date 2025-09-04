@@ -2,8 +2,8 @@
 
 #+html:<p align="center"><i>Dance around AutoCAD 🩰</i></p>
 
-collection of custom commands for autocad 2024
+collection of custom commands for autocad
+autocad LT is not supported
 ** installation
-todo
 ** sample commands
 todo
