@@ -72,9 +72,9 @@ namespace AutocadBallet
 
     public class InvokeAddinCommand
     {
-        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands.dll";
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\autocad-ballet.dll";
 
-        [CommandMethod("INVOKEADDIN", CommandFlags.Session)]
+        [CommandMethod("INVOKE-ADDIN-COMMAND", CommandFlags.Session)]
         public void InvokeAddin()
         {
             var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;

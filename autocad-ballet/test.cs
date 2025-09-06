@@ -6,6 +6,9 @@ using Autodesk.AutoCAD.EditorInput;
 // Add alias to avoid ambiguity
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
+[assembly: CommandClass(typeof(AutocadBallet.TestCommands.HelloWorldCommands))]
+[assembly: CommandClass(typeof(AutocadBallet.TestCommands.MathCommands))]
+
 namespace AutocadBallet.TestCommands
 {
     public class HelloWorldCommands
@@ -21,7 +24,7 @@ namespace AutocadBallet.TestCommands
             var ed = doc.Editor;
             _counter++;
 
-            ed.WriteMessage($"\n🎈 eurbgskbgueskr from autocad-ballet! (Call #{_counter})");
+            ed.WriteMessage($"\n🎈 woah from autocad-ballet! (Call #{_counter})");
             ed.WriteMessage($"\n   Assembly loaded at: {DateTime.Now:HH:mm:ss.fff}");
             ed.WriteMessage($"\n   You can modify and rebuild this DLL while AutoCAD is running!");
         }

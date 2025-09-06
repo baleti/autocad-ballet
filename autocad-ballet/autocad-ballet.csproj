@@ -1,20 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>InvokeAddinCommand</AssemblyName>
+    <AssemblyName>autocad-ballet</AssemblyName>
     <UseWindowsForms>true</UseWindowsForms>
     <DebugType>none</DebugType>
     <GenerateDependencyFile>false</GenerateDependencyFile>
   </PropertyGroup>
-
   <ItemGroup>
+    <Compile Include="*.cs" />
     <PackageReference Include="AutoCAD.NET" Version="25.1.0" ExcludeAssets="runtime" />
-    <Compile Remove="**\*.cs" />
-    <Compile Include="commands/InvokeAddinCommand.cs" />
-    <Compile Include="commands/DataGrid2_*.cs" />
   </ItemGroup>
-
 </Project>
