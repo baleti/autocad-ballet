@@ -2,6 +2,9 @@
 :PROPERTIES:
 :ID:       17c48a46-02ab-4a39-a870-629ae7b458b7
 :END:
+running installer.exe may trigger some corporate security kits as it wasn't made with any mainstream installer frameworks or signed with a certificate
+follow steps below to achieve the same effect
+you will likely learn how autocad-ballet works in the process and stand a chance of modifying it to your liking in the future
 ** download package
 TODO
 ** root directory
