@@ -1,9 +1,9 @@
 #+html:<div align="center"><img src="https://raw.githubusercontent.com/baleti/autocad-ballet-docs/refs/heads/main/autocad-ballet-logo.png" width="200"/></div>
-
 #+html:<p align="center"><i>Dance around AutoCAD 🩰</i></p>
-
 collection of custom commands for autocad
-autocad LT is not supported
-** installation
-** sample commands
-todo
+* autocad version support
+| 2026 | 2025 | 2024 | 2023 | 2022 | 2021 | 2020 | 2019 | 2018 | 2017 |
+* install
+** install manually
+[[file:installer/readme.org][installer/readme.org::*manual installation]]
+* building from source
