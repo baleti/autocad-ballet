@@ -6,10 +6,11 @@
     <AssemblyName>installer</AssemblyName>
     <DebugType>none</DebugType>
     <ApplicationIcon>autocad-ballet-logo.ico</ApplicationIcon>
-    <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="installer.cs" />
+    <EmbeddedResource Include="./autocad-ballet-logo.png" />
     <EmbeddedResource Include="$(APPDATA)\autocad-ballet\autocad-ballet.dll" />
     <EmbeddedResource Include="$(APPDATA)\autocad-ballet\autocad-ballet\*.lsp" />
   </ItemGroup>
