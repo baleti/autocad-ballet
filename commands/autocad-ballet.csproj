@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Default to AutoCAD 2026 if no year specified -->
+    <AutoCADYear Condition="'$(AutoCADYear)' == ''">2026</AutoCADYear>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2017'">net46</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2018'">net46</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2019'">net47</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2020'">net47</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2021'">net48</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2022'">net48</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2023'">net48</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2024'">net48</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2025'">net8.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(AutoCADYear)' == '2026'">net8.0-windows</TargetFramework>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2017'">21.0.2</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2018'">22.0.0</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2019'">23.0.0</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2020'">23.1.0</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2021'">24.0.0</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2022'">24.1.51000</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2023'">24.2.0</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2024'">24.3.0</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2025'">25.0.1</AutoCADPackageVersion>
+    <AutoCADPackageVersion Condition="'$(AutoCADYear)' == '2026'">25.1.0</AutoCADPackageVersion>
+    <DefineConstants>ACAD$(AutoCADYear)</DefineConstants>
+    <OutputPath>bin\$(AutoCADYear)\</OutputPath>
+    <ImplicitUsings Condition="'$(AutoCADYear)' == '2025' OR '$(AutoCADYear)' == '2026'">enable</ImplicitUsings>
+    <Nullable Condition="'$(AutoCADYear)' == '2025' OR '$(AutoCADYear)' == '2026'">enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <DebugType>none</DebugType>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AutoCAD.NET" Version="$(AutoCADPackageVersion)" ExcludeAssets="runtime" />
+  </ItemGroup>
+</Project>

@@ -7,11 +7,11 @@
     <DebugType>none</DebugType>
     <ApplicationIcon>autocad-ballet-logo.ico</ApplicationIcon>
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="installer.cs" />
-    <EmbeddedResource Include="./autocad-ballet-logo.png" />
-    <EmbeddedResource Include="$(APPDATA)\autocad-ballet\autocad-ballet.dll" />
-    <EmbeddedResource Include="$(APPDATA)\autocad-ballet\autocad-ballet\*.lsp" />
+    <EmbeddedResource Include="autocad-ballet-logo.png"/>
+    <EmbeddedResource Include="../commands/bin/*/autocad-ballet.dll"/>
+    <EmbeddedResource Include="../commands/*.lsp"/>
   </ItemGroup>
 </Project>

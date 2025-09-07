@@ -39,11 +39,12 @@ namespace AutoCADBalletInstaller
         private const string PRODUCT_NAME = "AutoCAD Ballet";
         private const string UNINSTALL_KEY = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AutoCADBallet";
 
-        private const string LOADER_CODE = @";; autocad-ballet
+        // LOADER_CODE template with {YEAR} placeholder
+        private const string LOADER_CODE_TEMPLATE = @";; autocad-ballet
 ;; please don't change these lines unless you know what you are doing
 ;; load dotnet commands
 (setq temp-folder (strcat (getenv ""TEMP"") ""/autocad-ballet/""))
-(setq source-dll (strcat (getenv ""APPDATA"") ""/autocad-ballet/autocad-ballet.dll""))
+(setq source-dll (strcat (getenv ""APPDATA"") ""/autocad-ballet/commands/bin/{YEAR}/autocad-ballet.dll""))
 (setq temp-dll (strcat temp-folder ""/autocad-ballet.dll""))
 ;; create temp folder if doesn't exist
 (vl-mkdir temp-folder)
@@ -55,7 +56,7 @@ namespace AutoCADBalletInstaller
 ;; load dll assembly
 (command ""netload"" temp-dll)
 ;; load lisp commands
-(setq lisp-folder (strcat (getenv ""APPDATA"") ""/autocad-ballet/autocad-ballet/""))
+(setq lisp-folder (strcat (getenv ""APPDATA"") ""/autocad-ballet/commands/""))
 (foreach file (vl-directory-files lisp-folder ""*.lsp"")
   (load (strcat lisp-folder file)))
 ";
@@ -63,7 +64,7 @@ namespace AutoCADBalletInstaller
         private const string LISP_ONLY_LOADER = @";; autocad-ballet
 ;; please don't change these lines unless you know what you are doing
 ;; load lisp commands (AutoCAD LT)
-(setq lisp-folder (strcat (getenv ""APPDATA"") ""/autocad-ballet/autocad-ballet/""))
+(setq lisp-folder (strcat (getenv ""APPDATA"") ""/autocad-ballet/commands/""))
 (foreach file (vl-directory-files lisp-folder ""*.lsp"")
   (load (strcat lisp-folder file)))
 ";
@@ -95,7 +96,9 @@ namespace AutoCADBalletInstaller
                 string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
                 Directory.CreateDirectory(targetDir);
 
-                ExtractEmbeddedFiles(targetDir);
+                // Extract only DLLs for installed AutoCAD versions
+                ExtractVersionSpecificDlls(targetDir);
+                ExtractLispFiles(targetDir);
                 CopyInstallerForUninstall(targetDir);
 
                 var modifiedInstallations = new List<AutoCADInstallation>();
@@ -136,7 +139,6 @@ namespace AutoCADBalletInstaller
 
             try
             {
-                // Load the embedded PNG resource
                 var assembly = Assembly.GetExecutingAssembly();
                 var logoResourceName = assembly.GetManifestResourceNames()
                     .FirstOrDefault(n => n.EndsWith(".png"));
@@ -158,7 +160,6 @@ namespace AutoCADBalletInstaller
 
             if (logo != null)
             {
-                // Logo image
                 var pictureBox = new PictureBox
                 {
                     Image = logo,
@@ -171,7 +172,6 @@ namespace AutoCADBalletInstaller
             }
             else
             {
-                // Fallback text if logo not found
                 var titleLabel = new Label
                 {
                     Text = "AutoCAD Ballet",
@@ -185,14 +185,13 @@ namespace AutoCADBalletInstaller
                 currentY += 60;
             }
 
-            // Build the message text
-            string messageText = "autocad-ballet has been successfully installed\n";
+            string messageText = "AutoCAD Ballet has been successfully added to:\n\n";
 
             if (modifiedInstallations.Count > 0)
             {
                 foreach (var installation in modifiedInstallations)
                 {
-                    messageText += $"• {installation.Name}\n";
+                    messageText += $"• {installation.Name} ({installation.Year})\n";
                 }
             }
             else
@@ -201,13 +200,11 @@ namespace AutoCADBalletInstaller
                 messageText += "AutoCAD LT versions prior to 2024 are not supported for automatic loading.";
             }
 
-            // Calculate text height
             using (var g = form.CreateGraphics())
             {
                 var textSize = g.MeasureString(messageText, new Font("Segoe UI", 10), 450);
                 var textHeight = (int)Math.Ceiling(textSize.Height);
 
-                // Message
                 var messageLabel = new Label
                 {
                     Text = messageText,
@@ -222,7 +219,6 @@ namespace AutoCADBalletInstaller
                 currentY += textHeight + 30;
             }
 
-            // OK button
             var btnOK = new Button
             {
                 Text = "OK",
@@ -235,11 +231,21 @@ namespace AutoCADBalletInstaller
             form.Controls.Add(btnOK);
             form.AcceptButton = btnOK;
 
-            // Set form client size based on actual content
-            currentY += 50; // Add padding below button
+            currentY += 50;
             form.ClientSize = new Size(550, currentY);
 
             form.ShowDialog();
+        }
+
+        private int GetInstalledDllCount()
+        {
+            string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "autocad-ballet", "commands", "bin");
+
+            if (!Directory.Exists(targetDir))
+                return 0;
+
+            return Directory.GetDirectories(targetDir).Length;
         }
 
         private bool IsInstalled()
@@ -299,7 +305,7 @@ namespace AutoCADBalletInstaller
 
                                         if (Directory.Exists(supportPath))
                                         {
-                                            installations.Add(new AutoCADInstallation
+                                            var installation = new AutoCADInstallation
                                             {
                                                 Name = productName,
                                                 Version = ParseVersion(versionKey),
@@ -307,7 +313,12 @@ namespace AutoCADBalletInstaller
                                                 ReleaseKey = releaseKey,
                                                 IsLT = productName.Contains("LT"),
                                                 SupportPath = supportPath
-                                            });
+                                            };
+
+                                            // Determine year from version
+                                            installation.Year = GetYearFromVersion(versionKey);
+
+                                            installations.Add(installation);
                                         }
                                     }
                                 }
@@ -319,11 +330,91 @@ namespace AutoCADBalletInstaller
             }
         }
 
+        private string GetYearFromVersion(string versionKey)
+        {
+            // Map version keys to years
+            if (versionKey.StartsWith("R21")) return "2017";
+            if (versionKey.StartsWith("R22")) return "2018";
+            if (versionKey.StartsWith("R23.0")) return "2019";
+            if (versionKey.StartsWith("R23.1")) return "2020";
+            if (versionKey.StartsWith("R24.0")) return "2021";
+            if (versionKey.StartsWith("R24.1")) return "2022";
+            if (versionKey.StartsWith("R24.2")) return "2023";
+            if (versionKey.StartsWith("R24.3")) return "2024";
+            if (versionKey.StartsWith("R25.0")) return "2025";
+            if (versionKey.StartsWith("R25.1")) return "2026";
+
+            // Fallback
+            int version = ParseVersion(versionKey);
+            if (version >= 2017 && version <= 2026)
+                return version.ToString();
+
+            return "unknown";
+        }
+
+        private void ExtractVersionSpecificDlls(string targetDir)
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+            var resourceNames = assembly.GetManifestResourceNames();
+
+            // Get unique years from detected installations
+            var installedYears = installations
+                .Select(i => i.Year)
+                .Where(y => y != "unknown")
+                .Distinct()
+                .ToList();
+
+            foreach (string year in installedYears)
+            {
+                // Look for DLL resource for this year
+                // Resource names are like: installer._2026.autocad-ballet.dll
+                string dllResourcePattern = $"installer._{year}.autocad-ballet.dll";
+                var dllResource = resourceNames.FirstOrDefault(r => r.EndsWith($"_{year}.autocad-ballet.dll"));
+
+                if (dllResource != null)
+                {
+                    // Create year-specific directory
+                    string yearDir = Path.Combine(targetDir, "commands", "bin", year);
+                    Directory.CreateDirectory(yearDir);
+
+                    // Extract the DLL
+                    string dllPath = Path.Combine(yearDir, "autocad-ballet.dll");
+                    ExtractResource(dllResource, dllPath);
+                }
+            }
+        }
+
+        private void ExtractLispFiles(string targetDir)
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+            var resourceNames = assembly.GetManifestResourceNames();
+
+            string lispDir = Path.Combine(targetDir, "commands");
+            Directory.CreateDirectory(lispDir);
+
+            foreach (string resourceName in resourceNames)
+            {
+                if (resourceName.EndsWith(".lsp"))
+                {
+                    string fileName = resourceName;
+                    int lastDot = resourceName.LastIndexOf('.');
+                    if (lastDot > 0)
+                    {
+                        int secondLastDot = resourceName.LastIndexOf('.', lastDot - 1);
+                        if (secondLastDot >= 0)
+                        {
+                            fileName = resourceName.Substring(secondLastDot + 1);
+                        }
+                    }
+                    ExtractResource(resourceName, Path.Combine(lispDir, fileName));
+                }
+            }
+        }
+
         private void AddToTrustedPaths(AutoCADInstallation installation)
         {
             try
             {
-                // Get the profiles path
                 string profilesPath = $@"SOFTWARE\Autodesk\AutoCAD\{installation.VersionKey}\{installation.ReleaseKey}\Profiles";
 
                 using (var profilesKey = Registry.CurrentUser.OpenSubKey(profilesPath))
@@ -338,25 +429,29 @@ namespace AutoCADBalletInstaller
                         {
                             if (variablesKey == null) continue;
 
-                            // Get existing trusted paths
                             string trustedPaths = variablesKey.GetValue("TRUSTEDPATHS")?.ToString() ?? "";
 
-                            // Use the environment variable format
-                            string pathToAdd = @"%appdata%\autocad-ballet\autocad-ballet";
-
-                            // Check if our path is already present (check both formats)
-                            string expandedPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet", "autocad-ballet");
-
-                            if (!trustedPaths.Contains(pathToAdd) && !trustedPaths.Contains(expandedPath))
+                            // Add both the lisp folder and the commands/bin folder
+                            string[] pathsToAdd = new[]
                             {
-                                if (!string.IsNullOrEmpty(trustedPaths) && !trustedPaths.EndsWith(";"))
-                                    trustedPaths += ";";
+                                @"%appdata%\autocad-ballet\commands",
+                                @"%appdata%\autocad-ballet\commands\bin"
+                            };
 
-                                trustedPaths += pathToAdd + ";";
+                            foreach (string pathToAdd in pathsToAdd)
+                            {
+                                string expandedPath = Environment.ExpandEnvironmentVariables(pathToAdd);
 
-                                // Set as REG_EXPAND_SZ to preserve environment variables
-                                variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
+                                if (!trustedPaths.Contains(pathToAdd) && !trustedPaths.Contains(expandedPath))
+                                {
+                                    if (!string.IsNullOrEmpty(trustedPaths) && !trustedPaths.EndsWith(";"))
+                                        trustedPaths += ";";
+
+                                    trustedPaths += pathToAdd + ";";
+                                }
                             }
+
+                            variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
                         }
                     }
                 }
@@ -419,63 +514,24 @@ namespace AutoCADBalletInstaller
         {
             try
             {
-                // For Add/Remove Programs icon, we'll just use the executable path
                 string uninstallerPath = Path.Combine(targetDir, "uninstaller.exe");
 
-                // Register in HKEY_CURRENT_USER for current user only
                 using (var key = Registry.CurrentUser.CreateSubKey(UNINSTALL_KEY))
                 {
                     key.SetValue("DisplayName", PRODUCT_NAME);
-                    key.SetValue("DisplayVersion", "1.0.0");
+                    key.SetValue("DisplayVersion", "2.0.0");
                     key.SetValue("Publisher", "AutoCAD Ballet");
                     key.SetValue("InstallLocation", targetDir);
                     key.SetValue("UninstallString", $"\"{uninstallerPath}\"");
                     key.SetValue("QuietUninstallString", $"\"{uninstallerPath}\" /quiet");
                     key.SetValue("NoModify", 1);
                     key.SetValue("NoRepair", 1);
-                    key.SetValue("EstimatedSize", 100);
+                    key.SetValue("EstimatedSize", 1000);
                     key.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
-                    // Use the uninstaller exe as the icon source
                     key.SetValue("DisplayIcon", uninstallerPath);
                 }
             }
             catch { }
-        }
-
-        private void ExtractEmbeddedFiles(string targetDir)
-        {
-            var assembly = Assembly.GetExecutingAssembly();
-            var resourceNames = assembly.GetManifestResourceNames();
-
-            foreach (string resourceName in resourceNames)
-            {
-                if (resourceName.EndsWith("autocad-ballet.dll"))
-                {
-                    ExtractResource(resourceName, Path.Combine(targetDir, "autocad-ballet.dll"));
-                }
-            }
-
-            string lispDir = Path.Combine(targetDir, "autocad-ballet");
-            Directory.CreateDirectory(lispDir);
-
-            foreach (string resourceName in resourceNames)
-            {
-                if (resourceName.EndsWith(".lsp"))
-                {
-                    // Extract just the filename without any prefixes
-                    string fileName = resourceName;
-                    int lastDot = resourceName.LastIndexOf('.');
-                    if (lastDot > 0)
-                    {
-                        int secondLastDot = resourceName.LastIndexOf('.', lastDot - 1);
-                        if (secondLastDot >= 0)
-                        {
-                            fileName = resourceName.Substring(secondLastDot + 1);
-                        }
-                    }
-                    ExtractResource(resourceName, Path.Combine(lispDir, fileName));
-                }
-            }
         }
 
         private void ExtractResource(string resourceName, string targetPath)
@@ -502,7 +558,18 @@ namespace AutoCADBalletInstaller
             }
 
             string acadLspPath = Path.Combine(installation.SupportPath, "acad.lsp");
-            string loaderCode = installation.IsLT ? LISP_ONLY_LOADER : LOADER_CODE;
+
+            // Generate the loader code with the specific year for this installation
+            string loaderCode;
+            if (installation.IsLT)
+            {
+                loaderCode = LISP_ONLY_LOADER;
+            }
+            else
+            {
+                // Replace {YEAR} placeholder with the actual year
+                loaderCode = LOADER_CODE_TEMPLATE.Replace("{YEAR}", installation.Year);
+            }
 
             try
             {
@@ -534,6 +601,7 @@ namespace AutoCADBalletInstaller
         {
             public string Name { get; set; }
             public int Version { get; set; }
+            public string Year { get; set; }
             public string VersionKey { get; set; }
             public string ReleaseKey { get; set; }
             public bool IsLT { get; set; }
@@ -547,20 +615,17 @@ namespace AutoCADBalletInstaller
         {
             try
             {
-                // Check if we're running from the installation directory
                 string currentPath = Assembly.GetExecutingAssembly().Location;
                 string appDataPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
 
                 if (currentPath.StartsWith(appDataPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    // We're running from the installation directory, need to copy to temp and relaunch
                     string tempDir = Path.Combine(Path.GetTempPath(), "autocad-ballet-uninstall");
                     Directory.CreateDirectory(tempDir);
 
                     string tempExe = Path.Combine(tempDir, "uninstaller.exe");
                     File.Copy(currentPath, tempExe, true);
 
-                    // Create a batch file to delete the directory after a delay
                     string batchFile = Path.Combine(tempDir, "cleanup.bat");
                     string batchContent = $@"@echo off
 timeout /t 2 /nobreak >nul
@@ -568,7 +633,6 @@ rd /s /q ""{appDataPath}""
 del ""%~f0""";
                     File.WriteAllText(batchFile, batchContent);
 
-                    // Start the uninstaller from temp location
                     var startInfo = new ProcessStartInfo
                     {
                         FileName = tempExe,
@@ -577,12 +641,10 @@ del ""%~f0""";
                     };
                     Process.Start(startInfo);
 
-                    // Exit this instance
                     Application.Exit();
                     return;
                 }
 
-                // We're running from temp or with /actualuninstall flag, proceed with uninstall
                 string batchCleanup = null;
                 string[] args = Environment.GetCommandLineArgs();
                 if (args.Length > 2 && args[1] == "/actualuninstall")
@@ -597,13 +659,11 @@ del ""%~f0""";
                 RemoveFromAcadLsp();
                 RemoveFromTrustedPaths();
 
-                // Remove the installation directory completely
                 string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
                 if (Directory.Exists(targetDir))
                 {
                     try
                     {
-                        // Try to delete everything we can
                         foreach (string file in Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories))
                         {
                             try
@@ -618,14 +678,12 @@ del ""%~f0""";
                             try { Directory.Delete(dir, true); } catch { }
                         }
 
-                        // Try to delete the main directory
                         try
                         {
                             Directory.Delete(targetDir, true);
                         }
                         catch
                         {
-                            // If we can't delete it, run the batch file to clean up
                             if (!string.IsNullOrEmpty(batchCleanup) && File.Exists(batchCleanup))
                             {
                                 Process.Start(new ProcessStartInfo
@@ -666,15 +724,12 @@ del ""%~f0""";
                     string content = File.ReadAllText(acadLspPath);
                     if (content.Contains(";; autocad-ballet"))
                     {
-                        // Split into lines
                         var lines = content.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n').ToList();
 
-                        // Find the start of our block
                         int startIdx = lines.FindIndex(l => l.Contains(";; autocad-ballet"));
 
                         if (startIdx >= 0)
                         {
-                            // Find the end - look for the last line of our code
                             int endIdx = -1;
                             for (int i = startIdx; i < lines.Count; i++)
                             {
@@ -687,10 +742,8 @@ del ""%~f0""";
 
                             if (endIdx >= 0)
                             {
-                                // Remove the entire block including the last line
                                 lines.RemoveRange(startIdx, endIdx - startIdx + 1);
 
-                                // Clean up any blank lines at the start if our block was at the beginning
                                 if (startIdx == 0)
                                 {
                                     while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[0]))
@@ -701,7 +754,6 @@ del ""%~f0""";
                             }
                         }
 
-                        // Remove backup file
                         string backupPath = acadLspPath + ".ballet-backup";
                         if (File.Exists(backupPath))
                             File.Delete(backupPath);
@@ -715,8 +767,13 @@ del ""%~f0""";
         {
             try
             {
-                string pathToRemove = @"%appdata%\autocad-ballet\autocad-ballet";
-                string expandedPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet", "autocad-ballet");
+                string[] pathsToRemove = new[]
+                {
+                    @"%appdata%\autocad-ballet\commands",
+                    @"%appdata%\autocad-ballet\commands\bin",
+                    // Also remove old paths from previous versions
+                    @"%appdata%\autocad-ballet\autocad-ballet"
+                };
 
                 using (var acadKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Autodesk\AutoCAD"))
                 {
@@ -746,15 +803,16 @@ del ""%~f0""";
 
                                             string trustedPaths = variablesKey.GetValue("TRUSTEDPATHS")?.ToString() ?? "";
 
-                                            // Remove both possible formats
-                                            if (trustedPaths.Contains(pathToRemove) || trustedPaths.Contains(expandedPath))
+                                            foreach (string pathToRemove in pathsToRemove)
                                             {
+                                                string expandedPath = Environment.ExpandEnvironmentVariables(pathToRemove);
                                                 trustedPaths = trustedPaths.Replace(pathToRemove + ";", "");
                                                 trustedPaths = trustedPaths.Replace(pathToRemove, "");
                                                 trustedPaths = trustedPaths.Replace(expandedPath + ";", "");
                                                 trustedPaths = trustedPaths.Replace(expandedPath, "");
-                                                variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
                                             }
+
+                                            variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
                                         }
                                     }
                                 }
