@@ -98,15 +98,20 @@ namespace AutoCADBalletInstaller
                 ExtractEmbeddedFiles(targetDir);
                 CopyInstallerForUninstall(targetDir);
 
+                var modifiedInstallations = new List<AutoCADInstallation>();
                 foreach (var installation in installations)
                 {
-                    ModifyAcadLsp(installation);
-                    AddToTrustedPaths(installation, targetDir);
+                    bool modified = ModifyAcadLsp(installation);
+                    if (modified)
+                    {
+                        modifiedInstallations.Add(installation);
+                    }
+                    AddToTrustedPaths(installation);
                 }
 
                 RegisterUninstaller(targetDir);
 
-                ShowSuccessDialog(installations.Count);
+                ShowSuccessDialog(modifiedInstallations);
             }
             catch (Exception ex)
             {
@@ -115,12 +120,11 @@ namespace AutoCADBalletInstaller
             }
         }
 
-        private void ShowSuccessDialog(int installationCount)
+        private void ShowSuccessDialog(List<AutoCADInstallation> modifiedInstallations)
         {
             var form = new Form
             {
                 Text = "AutoCAD Ballet - Installation Complete",
-                Size = new Size(500, 350),
                 StartPosition = FormStartPosition.CenterScreen,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false,
@@ -128,11 +132,12 @@ namespace AutoCADBalletInstaller
                 BackColor = Color.White
             };
 
-            // Try to load the logo
+            Icon appIcon = null;
             Image logo = null;
+            
             try
             {
-                // Try to load from embedded resource
+                // First try to load the embedded .ico resource
                 var assembly = Assembly.GetExecutingAssembly();
                 var logoResourceName = assembly.GetManifestResourceNames()
                     .FirstOrDefault(n => n.EndsWith("autocad-ballet-logo.ico"));
@@ -142,22 +147,59 @@ namespace AutoCADBalletInstaller
                     using (var stream = assembly.GetManifestResourceStream(logoResourceName))
                     {
                         if (stream != null)
-                            logo = Image.FromStream(stream);
+                        {
+                            // Reset stream position
+                            stream.Position = 0;
+                            
+                            // Load icon for form
+                            appIcon = new Icon(stream);
+                            
+                            // Reset stream to extract largest image
+                            stream.Position = 0;
+                            
+                            // Try to extract the largest available icon size
+                            Icon largestIcon = null;
+                            int largestSize = 0;
+                            
+                            foreach (var size in new[] { 256, 128, 96, 64, 48, 32, 24, 16 })
+                            {
+                                try
+                                {
+                                    stream.Position = 0;
+                                    using (var testIcon = new Icon(stream, size, size))
+                                    {
+                                        if (testIcon != null && testIcon.Width > largestSize)
+                                        {
+                                            largestSize = testIcon.Width;
+                                            largestIcon = new Icon(stream, size, size);
+                                            stream.Position = 0;
+                                        }
+                                    }
+                                }
+                                catch { }
+                            }
+                            
+                            // Use the largest icon found, or fall back to default
+                            logo = (largestIcon ?? appIcon).ToBitmap();
+                        }
+                    }
+                }
+
+                // If no embedded resource, try extracting from the exe icon
+                if (logo == null)
+                {
+                    var exeIcon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
+                    if (exeIcon != null)
+                    {
+                        appIcon = exeIcon;
+                        logo = exeIcon.ToBitmap();
                     }
                 }
             }
             catch { }
 
-            // If we have an ico, extract the image from it for display
-            if (logo == null)
-            {
-                try
-                {
-                    logo = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location)?.ToBitmap();
-                }
-                catch { }
-            }
-
+            int currentY = 30;
+            
             if (logo != null)
             {
                 // Logo image
@@ -165,10 +207,11 @@ namespace AutoCADBalletInstaller
                 {
                     Image = logo,
                     SizeMode = PictureBoxSizeMode.Zoom,
-                    Location = new Point(150, 30),
+                    Location = new Point(175, currentY),
                     Size = new Size(200, 150)
                 };
                 form.Controls.Add(pictureBox);
+                currentY += 160;
             }
             else
             {
@@ -178,49 +221,73 @@ namespace AutoCADBalletInstaller
                     Text = "AutoCAD Ballet",
                     Font = new Font("Segoe UI", 24, FontStyle.Bold),
                     ForeColor = Color.FromArgb(50, 50, 50),
-                    Location = new Point(0, 50),
-                    Size = new Size(500, 40),
+                    Location = new Point(0, currentY),
+                    Size = new Size(550, 40),
                     TextAlign = ContentAlignment.MiddleCenter
                 };
                 form.Controls.Add(titleLabel);
+                currentY += 60;
             }
+
+            // Build the message text
+            string messageText = "autocad-ballet has been successfully installed\n";
+            
+            if (modifiedInstallations.Count > 0)
+            {
+                foreach (var installation in modifiedInstallations)
+                {
+                    messageText += $"• {installation.Name}\n";
+                }
+            }
+            else
+            {
+                messageText += "The plugin files have been installed but no AutoCAD installations were modified.\n";
+                messageText += "AutoCAD LT versions prior to 2024 are not supported for automatic loading.";
+            }
+                
+            // Calculate text height
+            using (var g = form.CreateGraphics())
+            {
+                var textSize = g.MeasureString(messageText, new Font("Segoe UI", 10), 450);
+                var textHeight = (int)Math.Ceiling(textSize.Height);
 
             // Message
             var messageLabel = new Label
             {
-                Text = $"AutoCAD Ballet has been successfully installed.\n\nModified {installationCount} AutoCAD installation{(installationCount > 1 ? "s" : "")}.\n\nThe plugin will be loaded automatically when you start AutoCAD.",
+                Text = messageText,
                 Font = new Font("Segoe UI", 10),
                 ForeColor = Color.FromArgb(60, 60, 60),
-                Location = new Point(50, 200),
-                Size = new Size(400, 80),
+                Location = new Point(50, currentY),
+                Size = new Size(450, textHeight + 10),
                 TextAlign = ContentAlignment.TopCenter
             };
             form.Controls.Add(messageLabel);
+            
+            currentY += textHeight + 30;
+            }
+            
 
             // OK button
             var btnOK = new Button
             {
                 Text = "OK",
                 Font = new Font("Segoe UI", 10),
-                Size = new Size(100, 35),
-                Location = new Point(200, 290),
+                Size = new Size(100, 30),
+                Location = new Point(230, currentY),
                 FlatStyle = FlatStyle.System,
                 DialogResult = DialogResult.OK
             };
             form.Controls.Add(btnOK);
             form.AcceptButton = btnOK;
 
-            // Set form icon if logo available
-            if (logo != null)
+            // Set form client size based on actual content
+            currentY += 50; // Add padding below button
+            form.ClientSize = new Size(550, currentY);
+            
+            // Set form icon
+            if (appIcon != null)
             {
-                try
-                {
-                    using (var bitmap = new Bitmap(logo, new Size(32, 32)))
-                    {
-                        form.Icon = Icon.FromHandle(bitmap.GetHicon());
-                    }
-                }
-                catch { }
+                form.Icon = appIcon;
             }
 
             form.ShowDialog();
@@ -303,7 +370,7 @@ namespace AutoCADBalletInstaller
             }
         }
 
-        private void AddToTrustedPaths(AutoCADInstallation installation, string targetDir)
+        private void AddToTrustedPaths(AutoCADInstallation installation)
         {
             try
             {
@@ -325,14 +392,21 @@ namespace AutoCADBalletInstaller
                             // Get existing trusted paths
                             string trustedPaths = variablesKey.GetValue("TRUSTEDPATHS")?.ToString() ?? "";
 
-                            // Add our path if not already present
-                            if (!trustedPaths.Contains(targetDir))
+                            // Use the environment variable format
+                            string pathToAdd = @"%appdata%\autocad-ballet\autocad-ballet";
+
+                            // Check if our path is already present (check both formats)
+                            string expandedPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet", "autocad-ballet");
+                            
+                            if (!trustedPaths.Contains(pathToAdd) && !trustedPaths.Contains(expandedPath))
                             {
                                 if (!string.IsNullOrEmpty(trustedPaths) && !trustedPaths.EndsWith(";"))
                                     trustedPaths += ";";
 
-                                trustedPaths += targetDir + ";";
-                                variablesKey.SetValue("TRUSTEDPATHS", trustedPaths);
+                                trustedPaths += pathToAdd + ";";
+                                
+                                // Set as REG_EXPAND_SZ to preserve environment variables
+                                variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
                             }
                         }
                     }
@@ -501,11 +575,11 @@ namespace AutoCADBalletInstaller
             catch { }
         }
 
-        private void ModifyAcadLsp(AutoCADInstallation installation)
+        private bool ModifyAcadLsp(AutoCADInstallation installation)
         {
             if (installation.IsLT && installation.Version < 2024)
             {
-                return;
+                return false;
             }
 
             string acadLspPath = Path.Combine(installation.SupportPath, "acad.lsp");
@@ -523,14 +597,18 @@ namespace AutoCADBalletInstaller
                     if (!content.Contains(";; autocad-ballet"))
                     {
                         File.AppendAllText(acadLspPath, Environment.NewLine + loaderCode);
+                        return true;
                     }
                 }
                 else
                 {
                     File.WriteAllText(acadLspPath, loaderCode);
+                    return true;
                 }
             }
             catch { }
+            
+            return false;
         }
 
         private class AutoCADInstallation
@@ -718,7 +796,8 @@ del ""%~f0""";
         {
             try
             {
-                string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
+                string pathToRemove = @"%appdata%\autocad-ballet\autocad-ballet";
+                string expandedPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet", "autocad-ballet");
 
                 using (var acadKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Autodesk\AutoCAD"))
                 {
@@ -748,12 +827,14 @@ del ""%~f0""";
 
                                             string trustedPaths = variablesKey.GetValue("TRUSTEDPATHS")?.ToString() ?? "";
 
-                                            if (trustedPaths.Contains(targetDir))
+                                            // Remove both possible formats
+                                            if (trustedPaths.Contains(pathToRemove) || trustedPaths.Contains(expandedPath))
                                             {
-                                                // Remove our path
-                                                trustedPaths = trustedPaths.Replace(targetDir + ";", "");
-                                                trustedPaths = trustedPaths.Replace(targetDir, "");
-                                                variablesKey.SetValue("TRUSTEDPATHS", trustedPaths);
+                                                trustedPaths = trustedPaths.Replace(pathToRemove + ";", "");
+                                                trustedPaths = trustedPaths.Replace(pathToRemove, "");
+                                                trustedPaths = trustedPaths.Replace(expandedPath + ";", "");
+                                                trustedPaths = trustedPaths.Replace(expandedPath, "");
+                                                variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
                                             }
                                         }
                                     }
