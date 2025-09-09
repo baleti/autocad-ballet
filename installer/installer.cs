@@ -39,34 +39,14 @@ namespace AutoCADBalletInstaller
         private const string PRODUCT_NAME = "AutoCAD Ballet";
         private const string UNINSTALL_KEY = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\AutoCADBallet";
 
-        // LOADER_CODE template with {YEAR} placeholder
-        private const string LOADER_CODE_TEMPLATE = @";; autocad-ballet
-;; please don't change these lines unless you know what you are doing
-;; load dotnet commands
-(setq temp-folder (strcat (getenv ""TEMP"") ""/autocad-ballet/""))
-(setq source-dll (strcat (getenv ""APPDATA"") ""/autocad-ballet/commands/bin/{YEAR}/autocad-ballet.dll""))
-(setq temp-dll (strcat temp-folder ""/autocad-ballet.dll""))
-;; create temp folder if doesn't exist
-(vl-mkdir temp-folder)
-;; copy dll to temp preserving date modified
-(setq fso (vlax-create-object ""Scripting.FileSystemObject""))
-(vl-catch-all-apply 'vlax-invoke-method
-  (list fso 'CopyFile source-dll temp-dll :vlax-true))  ; overwrite
-(vlax-release-object fso)
-;; load dll assembly
-(command ""netload"" temp-dll)
-;; load lisp commands
-(setq lisp-folder (strcat (getenv ""APPDATA"") ""/autocad-ballet/commands/""))
-(foreach file (vl-directory-files lisp-folder ""*.lsp"")
-  (load (strcat lisp-folder file)))
-";
-
-        private const string LISP_ONLY_LOADER = @";; autocad-ballet
-;; please don't change these lines unless you know what you are doing
-;; load lisp commands (AutoCAD LT)
-(setq lisp-folder (strcat (getenv ""APPDATA"") ""/autocad-ballet/commands/""))
-(foreach file (vl-directory-files lisp-folder ""*.lsp"")
-  (load (strcat lisp-folder file)))
+        // Simple acad.lsp loader that just adds trusted path and loads startup-loader.lsp
+        private const string ACAD_LSP_LOADER = @";; autocad-ballet
+;; add to trusted paths and load startup loader
+(setq ballet-installer-path (strcat (getenv ""APPDATA"") ""\\autocad-ballet\\installer""))
+(setq tp (getvar ""TRUSTEDPATHS""))
+(if (not (vl-string-search ballet-installer-path tp))
+  (setvar ""TRUSTEDPATHS"" (strcat tp "";"" ballet-installer-path)))
+(load (strcat ballet-installer-path ""\\startup-loader.lsp""))
 ";
 
         private readonly List<AutoCADInstallation> installations = new List<AutoCADInstallation>();
@@ -96,9 +76,19 @@ namespace AutoCADBalletInstaller
                 string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
                 Directory.CreateDirectory(targetDir);
 
+                // Create temp folder for runtime dll copies
+                string tempDir = Path.Combine(targetDir, "commands", "bin", "temp");
+                Directory.CreateDirectory(tempDir);
+
                 // Extract only DLLs for installed AutoCAD versions
                 ExtractVersionSpecificDlls(targetDir);
+
+                // Extract startup-loader.lsp to installer folder
+                ExtractStartupLoader(targetDir);
+
+                // Extract all LISP files (including startup-loader.lsp)
                 ExtractLispFiles(targetDir);
+
                 CopyInstallerForUninstall(targetDir);
 
                 var modifiedInstallations = new List<AutoCADInstallation>();
@@ -109,7 +99,6 @@ namespace AutoCADBalletInstaller
                     {
                         modifiedInstallations.Add(installation);
                     }
-                    AddToTrustedPaths(installation);
                 }
 
                 RegisterUninstaller(targetDir);
@@ -235,17 +224,6 @@ namespace AutoCADBalletInstaller
             form.ClientSize = new Size(550, currentY);
 
             form.ShowDialog();
-        }
-
-        private int GetInstalledDllCount()
-        {
-            string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "autocad-ballet", "commands", "bin");
-
-            if (!Directory.Exists(targetDir))
-                return 0;
-
-            return Directory.GetDirectories(targetDir).Length;
         }
 
         private bool IsInstalled()
@@ -384,6 +362,28 @@ namespace AutoCADBalletInstaller
             }
         }
 
+        private void ExtractStartupLoader(string targetDir)
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+            var resourceNames = assembly.GetManifestResourceNames();
+
+            string installerDir = Path.Combine(targetDir, "installer");
+            Directory.CreateDirectory(installerDir);
+
+            // Look for startup-loader.lsp in embedded resources
+            var startupLoaderResource = resourceNames.FirstOrDefault(r => r.EndsWith("startup-loader.lsp"));
+
+            if (startupLoaderResource != null)
+            {
+                string startupLoaderPath = Path.Combine(installerDir, "startup-loader.lsp");
+                ExtractResource(startupLoaderResource, startupLoaderPath);
+            }
+            else
+            {
+                throw new Exception("startup-loader.lsp not found in embedded resources");
+            }
+        }
+
         private void ExtractLispFiles(string targetDir)
         {
             var assembly = Assembly.GetExecutingAssembly();
@@ -396,6 +396,10 @@ namespace AutoCADBalletInstaller
             {
                 if (resourceName.EndsWith(".lsp"))
                 {
+                    // Skip startup-loader.lsp as it's handled separately
+                    if (resourceName.EndsWith("startup-loader.lsp"))
+                        continue;
+
                     string fileName = resourceName;
                     int lastDot = resourceName.LastIndexOf('.');
                     if (lastDot > 0)
@@ -409,54 +413,6 @@ namespace AutoCADBalletInstaller
                     ExtractResource(resourceName, Path.Combine(lispDir, fileName));
                 }
             }
-        }
-
-        private void AddToTrustedPaths(AutoCADInstallation installation)
-        {
-            try
-            {
-                string profilesPath = $@"SOFTWARE\Autodesk\AutoCAD\{installation.VersionKey}\{installation.ReleaseKey}\Profiles";
-
-                using (var profilesKey = Registry.CurrentUser.OpenSubKey(profilesPath))
-                {
-                    if (profilesKey == null) return;
-
-                    foreach (string profileName in profilesKey.GetSubKeyNames())
-                    {
-                        string variablesPath = $@"{profilesPath}\{profileName}\Variables";
-
-                        using (var variablesKey = Registry.CurrentUser.OpenSubKey(variablesPath, true))
-                        {
-                            if (variablesKey == null) continue;
-
-                            string trustedPaths = variablesKey.GetValue("TRUSTEDPATHS")?.ToString() ?? "";
-
-                            // Add both the lisp folder and the commands/bin folder
-                            string[] pathsToAdd = new[]
-                            {
-                                @"%appdata%\autocad-ballet\commands",
-                                @"%appdata%\autocad-ballet\commands\bin"
-                            };
-
-                            foreach (string pathToAdd in pathsToAdd)
-                            {
-                                string expandedPath = Environment.ExpandEnvironmentVariables(pathToAdd);
-
-                                if (!trustedPaths.Contains(pathToAdd) && !trustedPaths.Contains(expandedPath))
-                                {
-                                    if (!string.IsNullOrEmpty(trustedPaths) && !trustedPaths.EndsWith(";"))
-                                        trustedPaths += ";";
-
-                                    trustedPaths += pathToAdd + ";";
-                                }
-                            }
-
-                            variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
-                        }
-                    }
-                }
-            }
-            catch { }
         }
 
         private string GetProductNameFromHKLM(string versionKey, string releaseKey)
@@ -559,18 +515,6 @@ namespace AutoCADBalletInstaller
 
             string acadLspPath = Path.Combine(installation.SupportPath, "acad.lsp");
 
-            // Generate the loader code with the specific year for this installation
-            string loaderCode;
-            if (installation.IsLT)
-            {
-                loaderCode = LISP_ONLY_LOADER;
-            }
-            else
-            {
-                // Replace {YEAR} placeholder with the actual year
-                loaderCode = LOADER_CODE_TEMPLATE.Replace("{YEAR}", installation.Year);
-            }
-
             try
             {
                 string backupPath = acadLspPath + ".ballet-backup";
@@ -582,13 +526,13 @@ namespace AutoCADBalletInstaller
                     string content = File.ReadAllText(acadLspPath);
                     if (!content.Contains(";; autocad-ballet"))
                     {
-                        File.AppendAllText(acadLspPath, Environment.NewLine + loaderCode);
+                        File.AppendAllText(acadLspPath, Environment.NewLine + ACAD_LSP_LOADER);
                         return true;
                     }
                 }
                 else
                 {
-                    File.WriteAllText(acadLspPath, loaderCode);
+                    File.WriteAllText(acadLspPath, ACAD_LSP_LOADER);
                     return true;
                 }
             }
@@ -657,7 +601,6 @@ del ""%~f0""";
                     return;
 
                 RemoveFromAcadLsp();
-                RemoveFromTrustedPaths();
 
                 string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
                 if (Directory.Exists(targetDir))
@@ -730,10 +673,11 @@ del ""%~f0""";
 
                         if (startIdx >= 0)
                         {
+                            // Find the end of the ballet loader (now much shorter)
                             int endIdx = -1;
                             for (int i = startIdx; i < lines.Count; i++)
                             {
-                                if (lines[i].Contains("(load (strcat lisp-folder file)))"))
+                                if (lines[i].Contains("(load (strcat ballet-installer-path"))
                                 {
                                     endIdx = i;
                                     break;
@@ -761,67 +705,6 @@ del ""%~f0""";
                 }
                 catch { }
             }
-        }
-
-        private void RemoveFromTrustedPaths()
-        {
-            try
-            {
-                string[] pathsToRemove = new[]
-                {
-                    @"%appdata%\autocad-ballet\commands",
-                    @"%appdata%\autocad-ballet\commands\bin",
-                    // Also remove old paths from previous versions
-                    @"%appdata%\autocad-ballet\autocad-ballet"
-                };
-
-                using (var acadKey = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Autodesk\AutoCAD"))
-                {
-                    if (acadKey == null) return;
-
-                    foreach (string versionKey in acadKey.GetSubKeyNames())
-                    {
-                        using (var vKey = acadKey.OpenSubKey(versionKey))
-                        {
-                            if (vKey == null) continue;
-
-                            foreach (string releaseKey in vKey.GetSubKeyNames())
-                            {
-                                string profilesPath = $@"SOFTWARE\Autodesk\AutoCAD\{versionKey}\{releaseKey}\Profiles";
-
-                                using (var profilesKey = Registry.CurrentUser.OpenSubKey(profilesPath))
-                                {
-                                    if (profilesKey == null) continue;
-
-                                    foreach (string profileName in profilesKey.GetSubKeyNames())
-                                    {
-                                        string variablesPath = $@"{profilesPath}\{profileName}\Variables";
-
-                                        using (var variablesKey = Registry.CurrentUser.OpenSubKey(variablesPath, true))
-                                        {
-                                            if (variablesKey == null) continue;
-
-                                            string trustedPaths = variablesKey.GetValue("TRUSTEDPATHS")?.ToString() ?? "";
-
-                                            foreach (string pathToRemove in pathsToRemove)
-                                            {
-                                                string expandedPath = Environment.ExpandEnvironmentVariables(pathToRemove);
-                                                trustedPaths = trustedPaths.Replace(pathToRemove + ";", "");
-                                                trustedPaths = trustedPaths.Replace(pathToRemove, "");
-                                                trustedPaths = trustedPaths.Replace(expandedPath + ";", "");
-                                                trustedPaths = trustedPaths.Replace(expandedPath, "");
-                                            }
-
-                                            variablesKey.SetValue("TRUSTEDPATHS", trustedPaths, RegistryValueKind.ExpandString);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch { }
         }
 
         private void RemoveFromRegistry()

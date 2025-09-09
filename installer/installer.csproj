@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="autocad-ballet-logo.png"/>
+    <EmbeddedResource Include="startup-loader.lsp"/>
     <EmbeddedResource Include="../commands/bin/*/autocad-ballet.dll"/>
     <EmbeddedResource Include="../commands/*.lsp"/>
   </ItemGroup>
