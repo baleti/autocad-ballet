@@ -25,8 +25,9 @@
     <DefineConstants>ACAD$(AutoCADYear)</DefineConstants>
     <OutputPath>bin\$(AutoCADYear)\</OutputPath>
     <ImplicitUsings Condition="'$(AutoCADYear)' == '2025' OR '$(AutoCADYear)' == '2026'">enable</ImplicitUsings>
-    <Nullable Condition="'$(AutoCADYear)' == '2025' OR '$(AutoCADYear)' == '2026'">enable</Nullable>
+    <Nullable>disable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <DebugType>none</DebugType>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>

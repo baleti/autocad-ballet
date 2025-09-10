@@ -1,0 +1,5 @@
+(defun C:q` () (COMMAND "invoke-addin-command"))
+(defun C:fs () (COMMAND "refclose" "save"))
+(defun C:rf () (COMMAND "-refedit" "ok" "all" "no"))
+(defun C:sv () (COMMAND ".selectsimilar"))
+(defun C:pii () (COMMAND "pickstyle"))

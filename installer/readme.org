@@ -11,6 +11,6 @@ TODO
 *** create folder in %appdata%/autocad-ballet
 C:\Users\<your name>\AppData\Roaming\autocad-ballet
 *** extract package contents to it
-** add src subfolder to trusted path
+** add bin subfolder to trusted path
 %appdata%/autocad-ballet/src
 this avoids prompts for every .lsp file and for future updates

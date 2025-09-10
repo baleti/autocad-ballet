@@ -104,7 +104,7 @@ namespace AutocadBallet
                     ["Full Name"] = cmd.FullTypeName
                 }).ToList();
 
-                var propertyNames = new List<string> { "Command", "Type", "Method", "Full Name" };
+                var propertyNames = new List<string> { "Command" };
 
                 // Show the DataGrid selector
                 var selected = CustomGUIs.DataGrid(entries, propertyNames, false);
