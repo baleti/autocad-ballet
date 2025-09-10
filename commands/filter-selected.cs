@@ -530,7 +530,7 @@ namespace AutoCADBallet
 
     public class FilterSelectedCommand
     {
-        [CommandMethod("FilterSelected")]
+        [CommandMethod("filter-selected")]
         public static void FilterSelected()
         {
             var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
@@ -542,7 +542,7 @@ namespace AutoCADBallet
                 var savedSelection = SelectionStorage.LoadSelection();
                 if (!savedSelection.Any())
                 {
-                    editor.WriteMessage("\nNo saved selection found. Run SelectAllInOpenedDrawings first.");
+                    editor.WriteMessage("\nNo saved selection found. Run select-all-in-opened-drawings first.");
                     return;
                 }
 

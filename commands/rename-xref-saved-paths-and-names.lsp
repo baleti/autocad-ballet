@@ -1,4 +1,4 @@
-(defun c:RenameXrefSavedPathsAndNames (/ block-defs block-def xref-path new-path xref-name new-name
+(defun c:rename-xref-saved-paths-and-names (/ block-defs block-def xref-path new-path xref-name new-name
                                          search-string replace-string count-paths count-names doc)
   ;; Function to rename both saved paths AND reference names in xrefs by replacing specified substrings
   
@@ -113,7 +113,7 @@
 )
 
 ;; Advanced version with additional features
-(defun c:RenameXrefSavedPathsAndNamesAdvanced (/ block-defs block-def xref-path new-path xref-name new-name
+(defun c:rename-xref-saved-paths-and-names-advanced (/ block-defs block-def xref-path new-path xref-name new-name
                                                 search-string replace-string count-paths count-names doc 
                                                 case-sensitive xref-list choice rename-choice)
   ;; Advanced version with case sensitivity option and selective renaming

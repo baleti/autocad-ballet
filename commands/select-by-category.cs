@@ -8,7 +8,7 @@ using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 public class SelectByCategory
 {
-    [CommandMethod("SELECTBYCAT")]
+    [CommandMethod("select-by-cat")]
     public void SelectByCategoryCommand()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
@@ -84,7 +84,7 @@ public class SelectByCategory
         }
     }
 
-    [CommandMethod("QUICKSELCAT")]
+    [CommandMethod("quick-select-cat")]
     public void QuickSelectCategory()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
@@ -420,7 +420,7 @@ public class SelectByCategory
         return dxfMap.ContainsKey(categoryName) ? dxfMap[categoryName] : categoryName.ToUpper();
     }
 
-    [CommandMethod("CATINFO")]
+    [CommandMethod("cat-info")]
     public void CategoryInfo()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
@@ -460,8 +460,8 @@ public class SelectByCategory
 
         ed.WriteMessage("\n");
         ed.WriteMessage("Commands:\n");
-        ed.WriteMessage("  SELECTBYCAT  - Select categories using DataGrid\n");
-        ed.WriteMessage("  QUICKSELCAT  - Quick select by category\n");
-        ed.WriteMessage("  SWITCHSELMODE - Change selection mode\n");
+        ed.WriteMessage("  select-by-cat  - Select categories using DataGrid\n");
+        ed.WriteMessage("  quick-select-cat  - Quick select by category\n");
+        ed.WriteMessage("  switch-select-mode - Change selection mode\n");
     }
 }

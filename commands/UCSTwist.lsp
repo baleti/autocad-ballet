@@ -1,4 +1,4 @@
-(defun c:ucstwist (/ listbox lst ucs)
+(defun c:ucs-twist (/ listbox lst ucs)
   
   (defun listbox (title keys / tmp file dcl_id choice)
   (setq	tmp  (vl-filename-mktemp "tmp.dcl")

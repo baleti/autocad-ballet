@@ -1,4 +1,4 @@
-(defun c:dps( / layout) ;toggle Display Plot Styles
+(defun c:toggle-display-plot-styles( / layout) ;toggle Display Plot Styles
 (setq layout (vla-get-activelayout
 (vla-get-activedocument (vlax-get-acad-object))))
 (if (eq :vlax-true (vla-get-showplotstyles layout))

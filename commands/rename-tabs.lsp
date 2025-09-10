@@ -1,4 +1,4 @@
-(defun c:RenameTabs (/ layout-list layout-obj current-name new-name search-string replace-string count)
+(defun c:rename-tabs (/ layout-list layout-obj current-name new-name search-string replace-string count)
   ;; Generalized function to rename layout tabs by replacing specified substrings
   
   (princ "\n--- Layout Tab Renaming Tool ---")

@@ -355,7 +355,7 @@ public static class SelectionModeManager
 // Toggle command - quickly switch between modes
 public class ToggleSelectionMode
 {
-    [CommandMethod("TOGGLESELMODE")]
+    [CommandMethod("toggle-select-mode")]
     public void Toggle()
     {
         var currentMode = SelectionModeManager.CurrentMode;
@@ -380,7 +380,7 @@ public class ToggleSelectionMode
 // Command to switch selection mode with UI
 public class SwitchSelectionMode
 {
-    [CommandMethod("SWITCHSELMODE")]
+    [CommandMethod("switch-select-mode")]
     public void Switch()
     {
         var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;

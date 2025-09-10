@@ -1,6 +1,6 @@
 (vl-load-com)
 
-(defun c:P2C ( / en tx html) 
+(defun c:path-to-clipboard ( / en tx html) 
 
   (princ "\nFilepath to clipboard: ")
   (and (princ (setq tx  (strcat (getvar "dwgprefix")(getvar "dwgname"))))

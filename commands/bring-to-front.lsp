@@ -1,4 +1,4 @@
-(defun c:bf(/ a)
+(defun c:bring-to-front(/ a)
     (setq a (ssget "_I"))
     (sssetfirst a a)
     (command "_.draworder" "_front")

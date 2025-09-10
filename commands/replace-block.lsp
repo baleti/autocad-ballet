@@ -1,7 +1,7 @@
 ;;; BlockSwap replaces selected blocks.
 ;;; by John Uhden (updated 03-09-17)
 ;;;
-(defun c:ReplaceBlock ( / *error* vars ok name1 obj1 name2 obj2 opt ss)
+(defun c:replace-block ( / *error* vars ok name1 obj1 name2 obj2 opt ss)
   (vl-load-com)
   (defun *error* (err)
     (mapcar '(lambda (x)(setvar (car x)(cdr x))) vars)
@@ -53,4 +53,4 @@
   )
   (*error* nil)
 )
-(defun c:BS ()(c:ReplaceBlock))
+(defun c:BS ()(c:replace-block))

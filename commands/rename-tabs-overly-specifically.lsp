@@ -1,4 +1,4 @@
-(defun c:RenameTabsOverlySpecifically (/ layout-list layout-name layout-obj current-name 
+(defun c:rename-tabs-overly-specifically (/ layout-list layout-name layout-obj current-name 
                                           new-name drawing-num ss title-block att-list 
                                           att count code-end-pos)
   ;; The most ridiculously specific tab renaming command ever created

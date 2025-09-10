@@ -1,4 +1,4 @@
-(defun c:SaveViewportsToFiles (/ doc desktop-path tab-name ss filename 
+(defun c:save-viewports-to-files (/ doc desktop-path tab-name ss filename 
                                   old-ctab old-tilemode viewport-ent
                                   counter i all-objects temp-ss old-cmdecho
                                   j vp-on dxf-data cvport-id source-name base-name
@@ -334,7 +334,7 @@
 )
 
 ;; Visual test function
-(defun c:DrawViewportBounds (/ vp-ent dxf-data ms-center ms-height ms-width
+(defun c:draw-viewport-bounds (/ vp-ent dxf-data ms-center ms-height ms-width
                                ps-width ps-height aspect-ratio)
   
   (princ "\n\nDRAW VIEWPORT BOUNDS TEST")

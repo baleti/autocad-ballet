@@ -1,4 +1,4 @@
-(defun c:SelectXrefs (/ ss i ent xref-list)
+(defun c:select-xrefs (/ ss i ent xref-list)
   ;; Initialize variables
   (setq xref-list '())
   (setq ss (ssget "_X" '((0 . "INSERT"))))

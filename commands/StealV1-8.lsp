@@ -215,7 +215,7 @@
 ;;                                                                                               ;;
 ;;  Author:                                                                                      ;;
 ;;                                                                                               ;;
-;;  Copyright © 2012 Lee Mac  -  www.lee-mac.com                                                 ;;
+;;  Copyright ï¿½ 2012 Lee Mac  -  www.lee-mac.com                                                 ;;
 ;;                                                                                               ;;
 ;;-----------------------------------------------------------------------------------------------;;
 ;;                                                                                               ;;
@@ -351,7 +351,7 @@
 ;; Will import everything from the selected drawing.                                             ;;
 ;;-----------------------------------------------------------------------------------------------;;
 
-(defun c:StealAll nil
+(defun c:steal-all nil
     (Steal nil
        '(
             ("Blocks"                  ("*"))
@@ -384,7 +384,7 @@
 ;; select a template from the template drawing path.                                             ;;
 ;;-----------------------------------------------------------------------------------------------;;
 
-(defun c:StealTemplate ( / tmp )
+(defun c:steal-template ( / tmp )
     (if (= ""
             (setq tmp
                 (vla-get-qnewtemplatefile
@@ -405,7 +405,7 @@
 ;; Allows the user to import items from a selected template from the template drawing path.      ;;
 ;;-----------------------------------------------------------------------------------------------;;
 
-(defun c:StealTemplates ( / pth tmp )
+(defun c:steal-templates ( / pth tmp )
     (if (setq tmp
             (vl-directory-files
                 (setq pth
@@ -433,7 +433,7 @@
 ;; Allows the user to import items from the last selected drawing, if possible.                  ;;
 ;;-----------------------------------------------------------------------------------------------;;
 
-(defun c:StealLast nil
+(defun c:steal-last nil
     (Steal
         (if (setq dwg (getenv "LMac\\StealLast"))
             (findfile dwg)
@@ -1382,7 +1382,7 @@
     (strcat
         "\n:: Steal.lsp | Version "
         stealversionnumber
-        " | © Lee Mac "
+        " | ï¿½ Lee Mac "
         (menucmd "m=$(edtime,$(getvar,DATE),YYYY)")
         " www.lee-mac.com ::"
         "\n:: Available Commands:"

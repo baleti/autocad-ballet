@@ -1,3 +1,3 @@
-(defun c:cc ()
+(defun c:lay-cur ()
   (command "LayCur")
 )

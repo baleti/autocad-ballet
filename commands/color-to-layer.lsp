@@ -1,4 +1,4 @@
-(defun c:color2layer (/ atts doc lay lays lokt)
+(defun c:color-to-layer (/ atts doc lay lays lokt)
 (defun laycheck (ent color / lay)
 (if (< 0 color 256)
 (progn

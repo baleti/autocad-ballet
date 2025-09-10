@@ -1,4 +1,4 @@
-(defun c:chh (/ usercol ss)
+(defun c:change-color (/ usercol ss)
  (while (not (setq usercol (acad_colordlg 256))))
  (prompt "Select all object to change to one color.")
  (if (setq ss (ssget))

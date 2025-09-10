@@ -3,7 +3,7 @@
 ;don't know how to use existing selection or select multiple by crossing window rather than picking them one by one this is stupid who wrote this arghh
 ;select all blocks like selected block(s)
 
-(defun C:SelSameBlock ( / e blk ss blkl)
+(defun C:select-same-block ( / e blk ss blkl)
  (setq blkl ""  ss (ssadd))
  (while (setq e (entsel "\nSelect next block name to select <exit>: "))
   (setq blkl (strcat blkl "," (cdr (assoc 2 (entget (car e))))))

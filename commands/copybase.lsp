@@ -3,7 +3,7 @@
 
 ;(command "_undefine" "_copyclip" "_undefine" "_copybase" "_undefine" "_pasteclip")
 
-(defun c:ccc ( / ss )
+(defun c:copybase ( / ss )
  (defun *error* (msg) (command "_ucs" "_p")(setvar "cmdecho" 1)(princ (strcat "Err: " msg)))
  (setvar "cmdecho" 0)
  (setq ss (ssget "_I"))
@@ -15,7 +15,7 @@
  (princ)
 )
 
-(defun c:ccx ( / ss )
+(defun c:copybase-cut ( / ss )
  (defun *error* (msg) (command "_ucs" "_p")(setvar "cmdecho" 1)(princ (strcat "Err: " msg)))
  (setvar "cmdecho" 0)
  (setq ss (ssget "_I"))
@@ -29,7 +29,7 @@
  (princ)
 )
 
-(defun c:vvv ()
+(defun c:paste ()
  (setvar "cmdecho" 0)
  (command "_ucs" "")
  (command "_.pasteclip" '(0 0 0))
@@ -38,7 +38,7 @@
  (princ)
 )
  
-(defun c:vvx ()
+(defun c:paste-zoom ()
  (setvar "cmdecho" 0)
  (command "_ucs" "")
  (command "_.pasteclip" '(0 0 0))
