@@ -26,10 +26,41 @@
   (setq product (getvar "PRODUCT"))
   (vl-string-search "LT" product))
 
+;; parse trusted paths string into a list
+(defun parse-trusted-paths (tp-string / result current-path semicolon-pos start)
+  (setq result '())
+  (setq start 1)
+  (while (<= start (strlen tp-string))
+    (setq semicolon-pos (vl-string-search ";" (substr tp-string start)))
+    (setq current-path (if semicolon-pos
+                         (substr tp-string start semicolon-pos)
+                         (substr tp-string start)))
+    (if (> (strlen current-path) 0)
+      (setq result (cons current-path result)))
+    (setq start (if semicolon-pos
+                  (+ start semicolon-pos 1)
+                  (+ (strlen tp-string) 1))))
+  (reverse result))
+
+;; join list of paths into semicolon-separated string
+(defun join-trusted-paths (path-list / result)
+  (setq result "")
+  (foreach path path-list
+    (setq result (if (= result "")
+                   path
+                   (strcat result ";" path))))
+  result)
+
+;; check if path is valid (absolute path with drive letter)
+(defun is-valid-path (path)
+  (or (vl-string-search ":\\" path)
+      (vl-string-search ":/" path)))
+
 ;; main loader function
 (defun ballet-load (/ appdata temp-base source-folder guid temp-folder fso tp
                      file-count dll-count dll-loaded folders-removed old-folder
-                     old-folder-path delete-success lisp-folder lisp-count)
+                     old-folder-path delete-success lisp-folder lisp-count
+                     path-list cleaned-paths)
 
   ;; set up paths
   (setq appdata (getenv "APPDATA"))
@@ -92,13 +123,26 @@
 
           ;; add to trusted paths
           (setq tp (getvar "TRUSTEDPATHS"))
-          (if (not (vl-string-search temp-folder tp))
-            (setvar "TRUSTEDPATHS" (strcat tp ";" temp-folder)))
+          (setq path-list (parse-trusted-paths tp))
+          ;; add new temp folder if not already there
+          (if (not (member temp-folder path-list))
+            (setq path-list (cons temp-folder path-list)))
+          (setvar "TRUSTEDPATHS" (join-trusted-paths path-list))
 
           ;; cleanup old temp folders AFTER setting up current one
           (if (vl-file-directory-p temp-base)
             (progn
               (setq tp (getvar "TRUSTEDPATHS"))
+              (setq path-list (parse-trusted-paths tp))
+
+              ;; first remove any corrupted partial paths (paths without drive letters)
+              (setq cleaned-paths '())
+              (foreach path path-list
+                (if (is-valid-path path)
+                  (setq cleaned-paths (cons path cleaned-paths))))
+              (setq cleaned-paths (reverse cleaned-paths))
+
+              ;; now remove old temp folders
               (setq folders-removed 0)
               (foreach dir (vl-directory-files temp-base nil -1)
                 (if (and (not (member dir '("." "..")))
@@ -116,17 +160,29 @@
                                  (vl-catch-all-apply 'vlax-invoke-method
                                    (list fso 'DeleteFolder old-folder-path :vlax-false))))
                         (setq delete-success t)))
-                    ;; if deletion successful, remove from trusted paths
+                    ;; if deletion successful, remove from cleaned paths list
                     (if delete-success
                       (progn
                         (setq folders-removed (1+ folders-removed))
-                        (setq tp (str-replace (strcat old-folder ";") "" tp))
-                        (setq tp (str-replace old-folder "" tp)))))))
+                        ;; remove this specific path from the list
+                        (setq cleaned-paths
+                              (vl-remove-if
+                                '(lambda (p)
+                                   (or (= (strcase p) (strcase old-folder))
+                                       (= (strcase p) (strcase (substr old-folder 1 (1- (strlen old-folder)))))))
+                                cleaned-paths)))))))
+
               ;; update trusted paths if any changes were made
-              (if (> folders-removed 0)
+              (if (or (> folders-removed 0)
+                      (/= (length path-list) (length cleaned-paths)))
                 (progn
-                  (setvar "TRUSTEDPATHS" tp)
-                  (princ (strcat "\nAutoCAD Ballet: Cleaned " (itoa folders-removed) " old folders"))))))
+                  (setvar "TRUSTEDPATHS" (join-trusted-paths cleaned-paths))
+                  (if (> folders-removed 0)
+                    (princ (strcat "\nAutoCAD Ballet: Cleaned " (itoa folders-removed) " old folders")))
+                  (if (/= (length path-list) (length cleaned-paths))
+                    (princ (strcat "\nAutoCAD Ballet: Removed "
+                                  (itoa (- (length path-list) (length cleaned-paths)))
+                                  " corrupted paths")))))))
 
           ;; release FSO
           (vlax-release-object fso)
@@ -150,6 +206,24 @@
 
   ;; load lisp commands (for both full AutoCAD and LT)
   (setq lisp-folder (strcat appdata "\\autocad-ballet\\commands\\"))
+
+  ;; Add lisp-folder to trusted paths before loading
+  (setq tp (getvar "TRUSTEDPATHS"))
+  (setq path-list (parse-trusted-paths tp))
+
+  ;; remove corrupted paths again (in case we skipped DLL loading)
+  (setq cleaned-paths '())
+  (foreach path path-list
+    (if (is-valid-path path)
+      (setq cleaned-paths (cons path cleaned-paths))))
+  (setq cleaned-paths (reverse cleaned-paths))
+
+  ;; add commands folder if not already there
+  (if (not (member lisp-folder cleaned-paths))
+    (setq cleaned-paths (cons lisp-folder cleaned-paths)))
+
+  (setvar "TRUSTEDPATHS" (join-trusted-paths cleaned-paths))
+
   (setq lisp-count 0)
   (foreach file (vl-directory-files lisp-folder "*.lsp")
     ;; skip loading startup-loader.lsp itself

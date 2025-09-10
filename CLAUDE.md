@@ -26,7 +26,7 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 **Selection Management System** (`SelectionModeManager.cs`):
 - Provides cross-document selection capabilities
 - Five selection modes: SpaceLayout, Drawing, Process, Desktop, Network
-- Persistent selection storage using handles in `%APPDATA%/autocad-scripts/`
+- Persistent selection storage using handles in `%APPDATA%/autocad-ballet/`
 - Extension methods for Editor to support enhanced selection operations
 
 **Shared Utilities** (`Shared.cs`):
@@ -76,4 +76,4 @@ The plugin installs to `%APPDATA%/autocad-ballet/` with:
 - Selection persistence files
 - Mode configuration files
 
-Runtime data is stored in `%APPDATA%/autocad-scripts/` for selection mode management.
+Runtime data is stored in `%APPDATA%/autocad-ballet/` for selection mode management.

@@ -44,7 +44,9 @@ namespace AutoCADBalletInstaller
 ;; add to trusted paths and load startup loader
 (setq ballet-installer-path (strcat (getenv ""APPDATA"") ""\\autocad-ballet\\installer""))
 (setq tp (getvar ""TRUSTEDPATHS""))
-(if (not (vl-string-search ballet-installer-path tp))
+;; Check for exact path by adding semicolons to both strings
+(if (not (vl-string-search (strcat "";"" ballet-installer-path "";"") 
+                           (strcat "";"" tp "";"")))
   (setvar ""TRUSTEDPATHS"" (strcat tp "";"" ballet-installer-path)))
 (load (strcat ballet-installer-path ""\\startup-loader.lsp""))
 ";
