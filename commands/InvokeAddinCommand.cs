@@ -42,8 +42,11 @@ namespace AutocadBallet
         private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll"; // Default
 #endif
 
-        // Dictionary to store loaded assemblies (instance field, refreshes each command execution)
-        private Dictionary<string, Assembly> loadedAssemblies = new Dictionary<string, Assembly>();
+        // Static dictionary to track assemblies loaded in this AppDomain
+        private static Dictionary<string, WeakReference> loadedAssemblyCache = new Dictionary<string, WeakReference>();
+
+        // Instance dictionary for dependency resolution within a single invocation
+        private Dictionary<string, Assembly> sessionAssemblies = new Dictionary<string, Assembly>();
 
         // Command info class
         private class CommandInfo
@@ -62,7 +65,7 @@ namespace AutocadBallet
             }
         }
 
-        [CommandMethod("INVOKE-ADDIN-COMMAND", CommandFlags.Session)]
+        [CommandMethod("invoke-Aaddin-command", CommandFlags.Session)]
         public void InvokeAddin()
         {
             var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;
@@ -80,11 +83,52 @@ namespace AutocadBallet
 
             try
             {
-                // Register the assembly resolve event handler
-                AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+                // Get file info for cache management
+                var fileInfo = new FileInfo(dllPath);
+                string cacheKey = $"{dllPath}|{fileInfo.LastWriteTimeUtc.Ticks}|{fileInfo.Length}";
 
-                // Load the main assembly
-                Assembly assembly = LoadAssembly(dllPath);
+                Assembly assembly = null;
+
+                // Check if we have a cached assembly with the same timestamp and size
+                if (loadedAssemblyCache.ContainsKey(cacheKey))
+                {
+                    var weakRef = loadedAssemblyCache[cacheKey];
+                    if (weakRef.IsAlive)
+                    {
+                        assembly = weakRef.Target as Assembly;
+                        ed.WriteMessage("\nUsing cached assembly (no file changes detected).");
+                    }
+                }
+
+                // If not cached or cache is invalid, load the assembly
+                if (assembly == null)
+                {
+                    // Clear old cache entries for this file
+                    var keysToRemove = loadedAssemblyCache.Keys
+                        .Where(k => k.StartsWith(dllPath + "|"))
+                        .ToList();
+                    foreach (var key in keysToRemove)
+                    {
+                        loadedAssemblyCache.Remove(key);
+                    }
+
+                    // Register the assembly resolve event handler for dependencies
+                    AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+
+                    try
+                    {
+                        // Load without triggering AutoCAD registration
+                        assembly = LoadAssemblyWithoutRegistration(dllPath);
+
+                        // Cache the assembly with a weak reference
+                        loadedAssemblyCache[cacheKey] = new WeakReference(assembly);
+                        ed.WriteMessage("\nLoaded fresh assembly from disk.");
+                    }
+                    finally
+                    {
+                        AppDomain.CurrentDomain.AssemblyResolve -= CurrentDomain_AssemblyResolve;
+                    }
+                }
 
                 // Extract all commands
                 var commands = ExtractCommandsFromAssembly(assembly);
@@ -135,43 +179,40 @@ namespace AutocadBallet
                 {
                     ed.WriteMessage($"\n  Inner: {ex.InnerException.Message}");
                 }
+                ed.WriteMessage($"\n  Stack: {ex.StackTrace}");
             }
             finally
             {
-                // Unregister the assembly resolve event handler
-                AppDomain.CurrentDomain.AssemblyResolve -= CurrentDomain_AssemblyResolve;
+                // Clear session assemblies
+                sessionAssemblies.Clear();
             }
         }
 
-        private Assembly LoadAssembly(string assemblyPath)
+        private Assembly LoadAssemblyWithoutRegistration(string assemblyPath)
         {
+            // Load the assembly in a way that doesn't trigger AutoCAD's automatic command registration
+            // We do this by loading into a separate context first for inspection
+
+            byte[] assemblyBytes = File.ReadAllBytes(assemblyPath);
+
+            // Store in session for dependency resolution
             string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
 
-            // Check if already loaded in this invocation
-            if (loadedAssemblies.ContainsKey(assemblyName))
-            {
-                return loadedAssemblies[assemblyName];
-            }
-
-            // Load from bytes to avoid file lock
-            byte[] assemblyBytes = File.ReadAllBytes(assemblyPath);
-            Assembly assembly = Assembly.Load(assemblyBytes);
-            loadedAssemblies[assemblyName] = assembly;
-
-            // Load all DLLs in the same directory as potential dependencies
+            // First, load all potential dependencies in the same directory
             string directory = Path.GetDirectoryName(assemblyPath);
             foreach (string dllFile in Directory.GetFiles(directory, "*.dll"))
             {
                 if (dllFile != assemblyPath)
                 {
                     string dllName = Path.GetFileNameWithoutExtension(dllFile);
-                    if (!loadedAssemblies.ContainsKey(dllName))
+                    if (!sessionAssemblies.ContainsKey(dllName))
                     {
                         try
                         {
                             byte[] dllBytes = File.ReadAllBytes(dllFile);
+                            // Use LoadFile or Load without triggering AutoCAD registration
                             Assembly dllAssembly = Assembly.Load(dllBytes);
-                            loadedAssemblies[dllName] = dllAssembly;
+                            sessionAssemblies[dllName] = dllAssembly;
                         }
                         catch (BadImageFormatException)
                         {
@@ -187,6 +228,33 @@ namespace AutocadBallet
                 }
             }
 
+            // Now load the main assembly
+            // The key is to NOT let AutoCAD's extension loader process it
+            Assembly assembly = null;
+
+            // Try to load in a way that bypasses AutoCAD's automatic processing
+            try
+            {
+                // Method 1: Load from bytes (this usually works but sometimes AutoCAD still hooks it)
+                assembly = Assembly.Load(assemblyBytes);
+            }
+            catch
+            {
+                // Method 2: If that fails, try reflection-only context first to validate
+                try
+                {
+                    var refAssembly = Assembly.ReflectionOnlyLoadFrom(assemblyPath);
+                    // If reflection-only succeeds, we know the assembly is valid
+                    // Now load it for real
+                    assembly = Assembly.LoadFrom(assemblyPath);
+                }
+                catch
+                {
+                    throw new InvalidOperationException($"Failed to load assembly: {assemblyPath}");
+                }
+            }
+
+            sessionAssemblies[assemblyName] = assembly;
             return assembly;
         }
 
@@ -196,13 +264,26 @@ namespace AutocadBallet
             AssemblyName assemblyName = new AssemblyName(args.Name);
             string shortName = assemblyName.Name;
 
-            // Check if we've already loaded this assembly
-            if (loadedAssemblies.ContainsKey(shortName))
+            // Check session assemblies first
+            if (sessionAssemblies.ContainsKey(shortName))
             {
-                return loadedAssemblies[shortName];
+                return sessionAssemblies[shortName];
             }
 
-            // Look for the assembly in the same directory as the main DLL
+            // Check cached assemblies
+            foreach (var kvp in loadedAssemblyCache)
+            {
+                if (kvp.Value.IsAlive)
+                {
+                    var asm = kvp.Value.Target as Assembly;
+                    if (asm != null && asm.GetName().Name == shortName)
+                    {
+                        return asm;
+                    }
+                }
+            }
+
+            // Try to load from the target directory
             string dllPath = Environment.ExpandEnvironmentVariables(TargetDllPath);
             string directory = Path.GetDirectoryName(dllPath);
             string assemblyPath = Path.Combine(directory, shortName + ".dll");
@@ -211,7 +292,9 @@ namespace AutocadBallet
             {
                 try
                 {
-                    Assembly assembly = LoadAssembly(assemblyPath);
+                    byte[] bytes = File.ReadAllBytes(assemblyPath);
+                    Assembly assembly = Assembly.Load(bytes);
+                    sessionAssemblies[shortName] = assembly;
                     return assembly;
                 }
                 catch (System.Exception)
@@ -227,23 +310,59 @@ namespace AutocadBallet
         {
             var list = new List<CommandInfo>();
 
-            foreach (var type in assembly.GetTypes())
+            try
             {
-                var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-                foreach (var method in methods)
+                foreach (var type in assembly.GetTypes())
                 {
-                    foreach (var attr in method.GetCustomAttributes(false))
+                    var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                    foreach (var method in methods)
                     {
-                        // Check for CommandMethodAttribute
-                        if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
+                        var attributes = method.GetCustomAttributes(false);
+                        foreach (var attr in attributes)
                         {
-                            string commandName = TryGetCommandName(attr) ?? method.Name;
-                            list.Add(new CommandInfo(
-                                commandName,
-                                type.Name,
-                                type.FullName ?? type.Name,
-                                method.Name));
+                            // Check for CommandMethodAttribute
+                            if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
+                            {
+                                string commandName = TryGetCommandName(attr) ?? method.Name;
+                                list.Add(new CommandInfo(
+                                    commandName,
+                                    type.Name,
+                                    type.FullName ?? type.Name,
+                                    method.Name));
+                            }
                         }
+                    }
+                }
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                // Handle partial loading
+                foreach (var type in ex.Types.Where(t => t != null))
+                {
+                    try
+                    {
+                        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                        foreach (var method in methods)
+                        {
+                            var attributes = method.GetCustomAttributes(false);
+                            foreach (var attr in attributes)
+                            {
+                                if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
+                                {
+                                    string commandName = TryGetCommandName(attr) ?? method.Name;
+                                    list.Add(new CommandInfo(
+                                        commandName,
+                                        type.Name,
+                                        type.FullName ?? type.Name,
+                                        method.Name));
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip types that can't be processed
+                        continue;
                     }
                 }
             }

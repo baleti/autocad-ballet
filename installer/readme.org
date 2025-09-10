@@ -14,3 +14,6 @@ C:\Users\<your name>\AppData\Roaming\autocad-ballet
 ** add bin subfolder to trusted path
 %appdata%/autocad-ballet/src
 this avoids prompts for every .lsp file and for future updates
+* building installer
+for maximum compatibility across older windows versions this installer targets .net framework 4.8
+this requires building on windows, dotnet cli cross-platform supports starts only from dotnet core (version 5 and above)
