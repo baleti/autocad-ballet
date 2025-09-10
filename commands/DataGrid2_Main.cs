@@ -100,6 +100,16 @@ public partial class CustomGUIs
 
         // Initialize grid with data
         grid.RowCount = workingSet.Count;
+        
+        // Add initial sort by first column if columns exist
+        if (propertyNames.Count > 0)
+        {
+            sortCriteria.Add(new SortCriteria
+            {
+                ColumnName = propertyNames[0],
+                Direction = ListSortDirection.Ascending
+            });
+        }
 
         // Helper to get first visible column
         Func<int> GetFirstVisibleColumnIndex = () =>
@@ -141,9 +151,8 @@ public partial class CustomGUIs
             form.Width = Math.Min(reqWidth, Screen.PrimaryScreen.WorkingArea.Width - 20);
         };
 
-        // Initial draw
-        _cachedFilteredData = workingSet;
-        grid.RowCount = workingSet.Count;
+        // Apply initial sorting and set up grid
+        UpdateFilteredGrid();
 
         // Initial selection
         if (initialSelectionIndices != null && initialSelectionIndices.Count > 0)
@@ -160,8 +169,15 @@ public partial class CustomGUIs
                     // Only set CurrentCell once, for the first valid selection
                     if (!currentCellSet)
                     {
-                        grid.CurrentCell = grid.Rows[idx].Cells[firstVisible];
-                        currentCellSet = true;
+                        try
+                        {
+                            grid.CurrentCell = grid.Rows[idx].Cells[firstVisible];
+                            currentCellSet = true;
+                        }
+                        catch (System.Exception)
+                        {
+                            // Ignore CurrentCell setting errors in virtual mode
+                        }
                     }
                 }
             }

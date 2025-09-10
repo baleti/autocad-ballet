@@ -42,8 +42,18 @@ namespace AutocadBallet
         private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll"; // Default
 #endif
 
+        private const string FolderName = "autocad-ballet";
+        private const string ConfigFileName = "InvokeAddinCommand-last-dll-path";
+        private const string LastCommandFileName = "InvokeAddinCommand-history";
+        private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName);
+        private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
+        private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
+
         // Static dictionary to track assemblies loaded in this AppDomain
         private static Dictionary<string, WeakReference> loadedAssemblyCache = new Dictionary<string, WeakReference>();
+        
+        // Stronger cache for recently used assemblies to prevent GC
+        private static Dictionary<string, Assembly> strongAssemblyCache = new Dictionary<string, Assembly>();
 
         // Instance dictionary for dependency resolution within a single invocation
         private Dictionary<string, Assembly> sessionAssemblies = new Dictionary<string, Assembly>();
@@ -89,13 +99,28 @@ namespace AutocadBallet
 
                 Assembly assembly = null;
 
+                // Check strong cache first
+                if (strongAssemblyCache.ContainsKey(cacheKey))
+                {
+                    assembly = strongAssemblyCache[cacheKey];
+                    ed.WriteMessage("\nUsing strongly cached assembly (no file changes detected).");
+                }
+                // Check strong cache first
+                if (strongAssemblyCache.ContainsKey(cacheKey))
+                {
+                    assembly = strongAssemblyCache[cacheKey];
+                    ed.WriteMessage("\nUsing strongly cached assembly (no file changes detected).");
+                }
+                // 
                 // Check if we have a cached assembly with the same timestamp and size
-                if (loadedAssemblyCache.ContainsKey(cacheKey))
+                else if (loadedAssemblyCache.ContainsKey(cacheKey))
                 {
                     var weakRef = loadedAssemblyCache[cacheKey];
                     if (weakRef.IsAlive)
                     {
                         assembly = weakRef.Target as Assembly;
+                        // Move to strong cache for future use
+                        strongAssemblyCache[cacheKey] = assembly;
                         ed.WriteMessage("\nUsing cached assembly (no file changes detected).");
                     }
                 }
@@ -104,6 +129,23 @@ namespace AutocadBallet
                 if (assembly == null)
                 {
                     // Clear old cache entries for this file
+                    // Also clear strong cache entries
+                    var strongKeysToRemove = strongAssemblyCache.Keys
+                        .Where(k => k.StartsWith(dllPath + "|"))
+                        .ToList();
+                    foreach (var key in strongKeysToRemove)
+                    {
+                        strongAssemblyCache.Remove(key);
+                    }
+                    // Limit strong cache size to prevent memory leaks
+                    if (strongAssemblyCache.Count > 10)
+                    {
+                        var oldestKeys = strongAssemblyCache.Keys.Take(strongAssemblyCache.Count - 5).ToList();
+                        foreach (var key in oldestKeys)
+                        {
+                            strongAssemblyCache.Remove(key);
+                        }
+                    }
                     var keysToRemove = loadedAssemblyCache.Keys
                         .Where(k => k.StartsWith(dllPath + "|"))
                         .ToList();
@@ -118,10 +160,23 @@ namespace AutocadBallet
                     try
                     {
                         // Load without triggering AutoCAD registration
-                        assembly = LoadAssemblyWithoutRegistration(dllPath);
+                        try
+                        {
+                            assembly = LoadAssemblyWithoutRegistration(dllPath);
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acadEx) when (acadEx.ErrorStatus.ToString().Contains("eDuplicateKey"))
+                        {
+                            // This happens when commands are already registered - not a fatal error
+                            ed.WriteMessage("\nWarning: Commands already registered, reusing existing assembly.");
+                            // Try to find the assembly in already loaded assemblies
+                            assembly = AppDomain.CurrentDomain.GetAssemblies()
+                                .FirstOrDefault(a => a.Location.Equals(dllPath, StringComparison.OrdinalIgnoreCase));
+                            if (assembly == null) throw;
+                        }
 
                         // Cache the assembly with a weak reference
                         loadedAssemblyCache[cacheKey] = new WeakReference(assembly);
+                        strongAssemblyCache[cacheKey] = assembly;
                         ed.WriteMessage("\nLoaded fresh assembly from disk.");
                     }
                     finally
@@ -166,6 +221,9 @@ namespace AutocadBallet
                     c.FullTypeName == selectedEntry["Full Name"].ToString());
 
                 ed.WriteMessage($"\nInvoking command: {selectedCmd.CommandName}");
+
+                // Save the command and DLL path for invoke-last-addin-command
+                SaveLastCommandInfo(selectedCmd, dllPath);
 
                 // Invoke the chosen method
                 InvokeCommandMethod(selectedCmd, assembly, ed);
@@ -434,6 +492,30 @@ namespace AutocadBallet
                 if (ed != null)
                     ed.WriteMessage($"\n[InvokeAddin] Failed to invoke: {ex.Message}");
                 throw;
+            }
+        }
+
+        private void SaveLastCommandInfo(CommandInfo selectedCmd, string dllPath)
+        {
+            try
+            {
+                // Ensure the config directory exists
+                if (!Directory.Exists(ConfigFolderPath))
+                {
+                    Directory.CreateDirectory(ConfigFolderPath);
+                }
+
+                // Save the DLL path
+                File.WriteAllText(ConfigFilePath, dllPath);
+
+                // Save the command class name (full type name)
+                File.WriteAllText(LastCommandFilePath, selectedCmd.FullTypeName);
+            }
+            catch (System.Exception ex)
+            {
+                // Don't let save failures break the command execution
+                var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;
+                ed?.WriteMessage($"\nWarning: Failed to save command history: {ex.Message}");
             }
         }
     }
