@@ -23,9 +23,9 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 
 ### Core Components
 
-**Selection Management System** (`SelectionModeManager.cs`):
-- Provides cross-document selection capabilities
-- Five selection modes: SpaceLayout, Drawing, Process, Desktop, Network
+**Selection Management System** (`set-selection-scope.cs`):
+- Provides cross-document selection capabilities  
+- Five selection scopes: SpaceLayout, Drawing, Process, Desktop, Network
 - Persistent selection storage using handles in `%APPDATA%/autocad-ballet/`
 - Extension methods for Editor to support enhanced selection operations
 
@@ -62,7 +62,7 @@ dotnet build installer/installer.csproj
 ## Key Files
 
 - `commands/autocad-ballet.csproj` - Main plugin project with multi-version support
-- `commands/SelectionModeManager.cs` - Core selection management system
+- `commands/set-selection-scope.cs` - Core selection management system
 - `commands/Shared.cs` - Utility classes for selection persistence
 - `commands/FilterSelected.cs` - Entity filtering and data grid functionality
 - `commands/aliases.lsp` - LISP command aliases
@@ -76,4 +76,4 @@ The plugin installs to `%APPDATA%/autocad-ballet/` with:
 - Selection persistence files
 - Mode configuration files
 
-Runtime data is stored in `%APPDATA%/autocad-ballet/` for selection mode management.
+Runtime data is stored in `%APPDATA%/autocad-ballet/runtime` for selection scope management.

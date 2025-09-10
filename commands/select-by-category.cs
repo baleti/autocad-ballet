@@ -3,28 +3,278 @@ using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
+
+// Register the command class
+[assembly: CommandClass(typeof(SelectByCategory))]
 
 public class SelectByCategory
 {
-    [CommandMethod("select-by-cat")]
+    // Simple class to store entity references for process scope
+    public class EntityReference
+    {
+        public string DocumentPath { get; set; }
+        public string DocumentName { get; set; }
+        public string Handle { get; set; }
+        public string Category { get; set; }
+        public string SpaceName { get; set; }
+    }
+
+    [CommandMethod("select-by-category")]
     public void SelectByCategoryCommand()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
         var db = doc.Database;
 
-        // Show current selection mode
-        var currentMode = SelectionModeManager.CurrentMode;
-        ed.WriteMessage($"\nSelection Mode: {currentMode}\n");
+        var currentMode = SelectionScopeManager.CurrentScope;
 
-        // Gather entity categories based on current mode
-        var categories = GatherEntityCategories(db, currentMode);
+        if (currentMode == SelectionScopeManager.SelectionScope.Process)
+        {
+            HandleProcessMode(ed);
+        }
+        else
+        {
+            HandleNormalModes(db, ed, currentMode);
+        }
+    }
+
+    private void HandleProcessMode(Editor ed)
+    {
+        ed.WriteMessage("\nProcess Mode: Gathering entities from all open documents...\n");
+
+        // Gather from all open documents
+        var docManager = AcadApp.DocumentManager;
+        var allReferences = new List<EntityReference>();
+        var categoryGroups = new Dictionary<string, List<EntityReference>>();
+
+        foreach (Autodesk.AutoCAD.ApplicationServices.Document doc in docManager)
+        {
+            string docPath = doc.Name;
+            string docName = Path.GetFileName(docPath);
+
+            ed.WriteMessage($"\nScanning: {docName}...");
+
+            try
+            {
+                // Read from document database without switching
+                var refs = GatherEntityReferencesFromDocument(doc.Database, docPath, docName);
+                allReferences.AddRange(refs);
+
+                // Group by category
+                foreach (var entityRef in refs)
+                {
+                    if (!categoryGroups.ContainsKey(entityRef.Category))
+                        categoryGroups[entityRef.Category] = new List<EntityReference>();
+
+                    categoryGroups[entityRef.Category].Add(entityRef);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n  Error reading {docName}: {ex.Message}");
+            }
+        }
+
+        if (categoryGroups.Count == 0)
+        {
+            ed.WriteMessage("\nNo entities found across open documents.\n");
+            return;
+        }
+
+        // Prepare summary for DataGrid
+        var entries = new List<Dictionary<string, object>>();
+        foreach (var cat in categoryGroups.OrderBy(c => c.Key))
+        {
+            // Count entities per document
+            var docCounts = cat.Value.GroupBy(e => e.DocumentName)
+                                     .Select(g => $"{g.Key}: {g.Count()}")
+                                     .ToList();
+
+            entries.Add(new Dictionary<string, object>
+            {
+                { "Category", cat.Key },
+                { "Total Count", cat.Value.Count },
+                { "Documents", string.Join(", ", docCounts) }
+            });
+        }
+
+        var propertyNames = new List<string> { "Category", "Total Count", "Documents" };
+
+        // Show DataGrid for selection
+        ed.WriteMessage("\nSelect categories to include in process selection...\n");
+        var selectedCategories = CustomGUIs.DataGrid(entries, propertyNames, false);
+
+        if (selectedCategories == null || selectedCategories.Count == 0)
+        {
+            ed.WriteMessage("\nNo categories selected.\n");
+            return;
+        }
+
+        // Filter entities to only selected categories
+        var selectedCategoryNames = selectedCategories.Select(s => s["Category"].ToString()).ToList();
+        var selectedEntities = new List<EntityReference>();
+        var categoryCounts = new Dictionary<string, int>();
+
+        foreach (var catName in selectedCategoryNames)
+        {
+            if (categoryGroups.ContainsKey(catName))
+            {
+                selectedEntities.AddRange(categoryGroups[catName]);
+                categoryCounts[catName] = categoryGroups[catName].Count;
+            }
+        }
+
+        // Save to CSV file
+        string runtimePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "autocad-ballet",
+            "runtime"
+        );
+
+        if (!Directory.Exists(runtimePath))
+            Directory.CreateDirectory(runtimePath);
+
+        string fileName = $"process_selection_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+        string filePath = Path.Combine(runtimePath, fileName);
+
+        try
+        {
+            using (var writer = new StreamWriter(filePath, false, Encoding.UTF8))
+            {
+                // Write header
+                writer.WriteLine("DocumentPath,DocumentName,Handle,Category,SpaceName");
+
+                // Write entity references
+                foreach (var entityRef in selectedEntities)
+                {
+                    // Escape commas in paths if needed
+                    string docPath = entityRef.DocumentPath.Contains(",")
+                        ? $"\"{entityRef.DocumentPath}\""
+                        : entityRef.DocumentPath;
+
+                    string docName = entityRef.DocumentName.Contains(",")
+                        ? $"\"{entityRef.DocumentName}\""
+                        : entityRef.DocumentName;
+
+                    writer.WriteLine($"{docPath},{docName},{entityRef.Handle},{entityRef.Category},{entityRef.SpaceName}");
+                }
+            }
+
+            ed.WriteMessage($"\nProcess selection saved to:\n{filePath}\n");
+            ed.WriteMessage($"\nSummary:\n");
+            ed.WriteMessage($"  Total entities: {selectedEntities.Count}\n");
+            ed.WriteMessage($"  Categories: {selectedCategoryNames.Count}\n");
+            ed.WriteMessage($"  Documents: {selectedEntities.Select(e => e.DocumentName).Distinct().Count()}\n");
+
+            foreach (var cat in categoryCounts)
+            {
+                ed.WriteMessage($"    {cat.Key}: {cat.Value} entities\n");
+            }
+
+            // Also save a "latest" copy for easy access
+            string latestPath = Path.Combine(runtimePath, "latest_process_selection.csv");
+            File.Copy(filePath, latestPath, true);
+            ed.WriteMessage($"\nLatest selection also available at:\n{latestPath}\n");
+
+            // Write a summary file for quick reference
+            string summaryPath = Path.Combine(runtimePath, "latest_process_selection_summary.txt");
+            using (var writer = new StreamWriter(summaryPath, false, Encoding.UTF8))
+            {
+                writer.WriteLine($"Process Selection Summary");
+                writer.WriteLine($"Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                writer.WriteLine($"Total Entities: {selectedEntities.Count}");
+                writer.WriteLine($"Categories: {string.Join(", ", selectedCategoryNames)}");
+                writer.WriteLine($"Documents: {selectedEntities.Select(e => e.DocumentName).Distinct().Count()}");
+                writer.WriteLine();
+                writer.WriteLine("Category Counts:");
+                foreach (var cat in categoryCounts)
+                {
+                    writer.WriteLine($"  {cat.Key}: {cat.Value}");
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError saving selection: {ex.Message}\n");
+        }
+    }
+
+    private List<EntityReference> GatherEntityReferencesFromDocument(Database db, string docPath, string docName)
+    {
+        var references = new List<EntityReference>();
+
+        // Important: Use a separate transaction for each external database
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            try
+            {
+                var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+                foreach (DBDictionaryEntry entry in layoutDict)
+                {
+                    var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                    var btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+                    string spaceName = layout.LayoutName;
+
+                    foreach (ObjectId id in btr)
+                    {
+                        try
+                        {
+                            var entity = tr.GetObject(id, OpenMode.ForRead);
+
+                            // Skip certain system entities
+                            if (entity is Viewport && spaceName != "Model")
+                            {
+                                var vp = entity as Viewport;
+                                if (vp.Number == 1) // Paper space viewport
+                                    continue;
+                            }
+
+                            string category = GetEntityCategory(entity);
+
+                            var entityRef = new EntityReference
+                            {
+                                DocumentPath = docPath,
+                                DocumentName = docName,
+                                Handle = entity.Handle.ToString(),
+                                Category = category,
+                                SpaceName = spaceName
+                            };
+
+                            references.Add(entityRef);
+                        }
+                        catch
+                        {
+                            // Skip entities that can't be read
+                            continue;
+                        }
+                    }
+                }
+
+                tr.Commit();
+            }
+            catch (System.Exception)
+            {
+                tr.Abort();
+                throw;
+            }
+        }
+
+        return references;
+    }
+
+    private void HandleNormalModes(Database db, Editor ed, SelectionScopeManager.SelectionScope scope)
+    {
+        // Gather entity categories based on current scope
+        var categories = GatherEntityCategories(db, scope);
 
         if (categories.Count == 0)
         {
-            ed.WriteMessage("\nNo entities found in current mode.\n");
+            ed.WriteMessage("\nNo entities found in current scope.\n");
             return;
         }
 
@@ -35,13 +285,11 @@ public class SelectByCategory
             entries.Add(new Dictionary<string, object>
             {
                 { "Category", cat.Key },
-                { "DXF Name", GetDxfName(cat.Key) },
-                { "Count", cat.Value.Count },
-                { "Selection Mode", currentMode.ToString() }
+                { "Count", cat.Value.Count }
             });
         }
 
-        var propertyNames = new List<string> { "Category", "DXF Name", "Count", "Selection Mode" };
+        var propertyNames = new List<string> { "Category", "Count" };
 
         // Show DataGrid for selection
         ed.WriteMessage("\nSelect categories to include in selection...\n");
@@ -84,126 +332,25 @@ public class SelectByCategory
         }
     }
 
-    [CommandMethod("quick-select-cat")]
-    public void QuickSelectCategory()
-    {
-        var doc = AcadApp.DocumentManager.MdiActiveDocument;
-        var ed = doc.Editor;
-        var db = doc.Database;
-
-        // Show current selection mode
-        var currentMode = SelectionModeManager.CurrentMode;
-
-        // Get all available categories
-        var categories = GatherEntityCategories(db, currentMode);
-
-        if (categories.Count == 0)
-        {
-            ed.WriteMessage("\nNo entities found.\n");
-            return;
-        }
-
-        // Create keyword options from categories
-        var pko = new PromptKeywordOptions($"\nSelect category (Mode: {currentMode}):");
-
-        // Add top 10 most common categories as keywords
-        var topCategories = categories.OrderByDescending(c => c.Value.Count)
-                                     .Take(10)
-                                     .ToList();
-
-        foreach (var cat in topCategories)
-        {
-            string keyword = cat.Key.Replace(" ", "");
-            pko.Keywords.Add(keyword);
-            ed.WriteMessage($"\n  {keyword} ({cat.Value.Count} objects)");
-        }
-
-        pko.Keywords.Add("ALL");
-        pko.Keywords.Add("LIST");
-        pko.Keywords.Default = "LIST";
-
-        ed.WriteMessage("\n  ALL (select all entities)");
-        ed.WriteMessage("\n  LIST (show full list)\n");
-
-        var result = ed.GetKeywords(pko);
-        if (result.Status != PromptStatus.OK)
-            return;
-
-        if (result.StringResult == "LIST")
-        {
-            // Show full list
-            ed.WriteMessage("\n=== All Categories ===\n");
-            foreach (var cat in categories.OrderBy(c => c.Key))
-            {
-                ed.WriteMessage($"  {cat.Key}: {cat.Value.Count} objects\n");
-            }
-
-            // Ask again
-            var pko2 = new PromptKeywordOptions("\nEnter category name:");
-            foreach (var cat in categories.Keys)
-            {
-                pko2.Keywords.Add(cat.Replace(" ", ""));
-            }
-
-            var result2 = ed.GetKeywords(pko2);
-            if (result2.Status != PromptStatus.OK)
-                return;
-
-            SelectCategoryByName(ed, categories, result2.StringResult);
-        }
-        else if (result.StringResult == "ALL")
-        {
-            // Select all entities
-            var allIds = categories.SelectMany(c => c.Value).ToList();
-            ed.SetImpliedSelectionEx(allIds.ToArray());
-            ed.WriteMessage($"\n{allIds.Count} objects selected.\n");
-        }
-        else
-        {
-            // Select specific category
-            SelectCategoryByName(ed, categories, result.StringResult);
-        }
-    }
-
-    private void SelectCategoryByName(Editor ed, Dictionary<string, List<ObjectId>> categories, string keyword)
-    {
-        // Find matching category (handle spaces removed from keyword)
-        var matchingCategory = categories.FirstOrDefault(c =>
-            c.Key.Replace(" ", "").Equals(keyword, StringComparison.OrdinalIgnoreCase));
-
-        if (matchingCategory.Value != null && matchingCategory.Value.Count > 0)
-        {
-            ed.SetImpliedSelectionEx(matchingCategory.Value.ToArray());
-            ed.WriteMessage($"\n{matchingCategory.Value.Count} {matchingCategory.Key} objects selected.\n");
-        }
-        else
-        {
-            ed.WriteMessage($"\nCategory '{keyword}' not found.\n");
-        }
-    }
-
-    private Dictionary<string, List<ObjectId>> GatherEntityCategories(Database db, SelectionModeManager.SelectionMode mode)
+    private Dictionary<string, List<ObjectId>> GatherEntityCategories(Database db, SelectionScopeManager.SelectionScope scope)
     {
         var categories = new Dictionary<string, List<ObjectId>>();
 
-        switch (mode)
+        switch (scope)
         {
-            case SelectionModeManager.SelectionMode.SpaceLayout:
+            case SelectionScopeManager.SelectionScope.SpaceLayout:
                 GatherFromCurrentSpace(db, categories);
                 break;
 
-            case SelectionModeManager.SelectionMode.Drawing:
+            case SelectionScopeManager.SelectionScope.Drawing:
                 GatherFromEntireDrawing(db, categories);
+                GatherLayouts(db, categories);
                 break;
 
-            case SelectionModeManager.SelectionMode.Process:
-                GatherFromAllDocuments(categories);
-                break;
-
-            case SelectionModeManager.SelectionMode.Desktop:
-            case SelectionModeManager.SelectionMode.Network:
-                // For now, fall back to Process mode
-                GatherFromAllDocuments(categories);
+            case SelectionScopeManager.SelectionScope.Desktop:
+            case SelectionScopeManager.SelectionScope.Network:
+                // For now, fall back to Drawing scope
+                GatherFromEntireDrawing(db, categories);
                 break;
         }
 
@@ -258,17 +405,25 @@ public class SelectByCategory
         }
     }
 
-    private void GatherFromAllDocuments(Dictionary<string, List<ObjectId>> categories)
+    private void GatherLayouts(Database db, Dictionary<string, List<ObjectId>> categories)
     {
-        var docMgr = AcadApp.DocumentManager;
-        var currentDoc = docMgr.MdiActiveDocument;
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+            var layoutIds = new List<ObjectId>();
 
-        // For now, only gather from current document
-        // Full implementation would require document switching
-        GatherFromEntireDrawing(currentDoc.Database, categories);
+            foreach (DBDictionaryEntry entry in layoutDict)
+            {
+                layoutIds.Add(entry.Value);
+            }
 
-        // Note: In a full implementation, you would iterate through all documents
-        // and aggregate the results, but that requires more complex handling
+            if (layoutIds.Count > 0)
+            {
+                categories["Layout/Sheet"] = layoutIds;
+            }
+
+            tr.Commit();
+        }
     }
 
     private string GetEntityCategory(DBObject entity)
@@ -306,19 +461,24 @@ public class SelectByCategory
                 return "Ordinate Dimension";
             else if (entity is ArcDimension)
                 return "Arc Dimension";
+            else if (entity is RadialDimensionLarge)
+                return "Jogged Dimension";
             else
                 return "Dimension";
         }
+        // Text entities
         else if (entity is MText)
             return "MText";
         else if (entity is DBText)
             return "Text";
+        // Polyline variants
         else if (entity is Polyline)
             return "Polyline";
         else if (entity is Polyline2d)
             return "Polyline2D";
         else if (entity is Polyline3d)
             return "Polyline3D";
+        // Basic geometry
         else if (entity is Line)
             return "Line";
         else if (entity is Circle)
@@ -329,139 +489,99 @@ public class SelectByCategory
             return "Ellipse";
         else if (entity is Spline)
             return "Spline";
+        // Pattern fills
         else if (entity is Hatch)
             return "Hatch";
+        else if (entity is Solid)
+            return "2D Solid";
+        else if (entity is Trace)
+            return "Trace";
+        // 3D entities
         else if (entity is Autodesk.AutoCAD.DatabaseServices.Region)
             return "Region";
         else if (entity is Solid3d)
             return "3D Solid";
         else if (entity is Surface)
             return "Surface";
+        else if (entity is Body)
+            return "Body";
+        else if (entity is PolygonMesh)
+            return "Polygon Mesh";
+        else if (entity is SubDMesh)
+            return "SubD Mesh";
+        // Annotation entities
         else if (entity is Leader)
             return "Leader";
         else if (entity is MLeader)
             return "Multileader";
         else if (entity is Table)
             return "Table";
+        // Layout entities
         else if (entity is Viewport)
             return "Viewport";
+        // Attributes
         else if (entity is AttributeDefinition)
             return "Attribute Definition";
         else if (entity is AttributeReference)
             return "Attribute Reference";
+        // Images and underlays
         else if (entity is RasterImage)
             return "Raster Image";
         else if (entity is Wipeout)
             return "Wipeout";
+        else if (entity is Ole2Frame)
+            return "OLE Object";
+        // Construction geometry
         else if (entity is DBPoint)
             return "Point";
         else if (entity is Ray)
             return "Ray";
         else if (entity is Xline)
             return "Construction Line";
-        else if (entity is SubDMesh)
-            return "Mesh";
+        // Visualization entities
         else if (entity is Light)
             return "Light";
         else if (entity is Camera)
             return "Camera";
+        else if (entity is RenderEnvironment)
+            return "Render Environment";
+        else if (entity is Sun)
+            return "Sun";
+        // Section entities
+        else if (entity is Section)
+            return "Section";
+        else if (entity is SectionSettings)
+            return "Section Settings";
+        // Proxy entities
+        else if (entity is ProxyEntity)
+            return "Proxy Entity";
+        // Field entities
+        else if (entity is Field)
+            return "Field";
+        // Helix
+        else if (entity is Helix)
+            return "Helix";
+        // ACIS entities
+        else if (entity is SequenceEnd)
+            return "Sequence End";
+        // Group
+        else if (entity is Group)
+            return "Group";
+        // Mline
+        else if (entity is Mline)
+            return "Multiline";
+        // Shape
+        else if (entity is Shape)
+            return "Shape";
         else
         {
             // Return the class name without "Autodesk.AutoCAD." prefix
+            if (typeName.StartsWith("Autodesk.AutoCAD."))
+            {
+                typeName = typeName.Replace("Autodesk.AutoCAD.", "");
+            }
             return typeName;
         }
     }
 
-    private string GetDxfName(string categoryName)
-    {
-        // Map friendly names to DXF names for common types
-        var dxfMap = new Dictionary<string, string>
-        {
-            { "Line", "LINE" },
-            { "Circle", "CIRCLE" },
-            { "Arc", "ARC" },
-            { "Polyline", "LWPOLYLINE" },
-            { "Polyline2D", "POLYLINE" },
-            { "Polyline3D", "POLYLINE" },
-            { "Text", "TEXT" },
-            { "MText", "MTEXT" },
-            { "Block Reference", "INSERT" },
-            { "XRef", "INSERT" },
-            { "Dynamic Block", "INSERT" },
-            { "Hatch", "HATCH" },
-            { "Dimension", "DIMENSION" },
-            { "Linear Dimension", "DIMENSION" },
-            { "Aligned Dimension", "DIMENSION" },
-            { "Radial Dimension", "DIMENSION" },
-            { "Diametric Dimension", "DIMENSION" },
-            { "Ordinate Dimension", "DIMENSION" },
-            { "Leader", "LEADER" },
-            { "Multileader", "MULTILEADER" },
-            { "Spline", "SPLINE" },
-            { "Ellipse", "ELLIPSE" },
-            { "Point", "POINT" },
-            { "3D Solid", "3DSOLID" },
-            { "Region", "REGION" },
-            { "Surface", "SURFACE" },
-            { "Mesh", "MESH" },
-            { "SubD Mesh", "MESH" },
-            { "Table", "ACAD_TABLE" },
-            { "Viewport", "VIEWPORT" },
-            { "Attribute Definition", "ATTDEF" },
-            { "Attribute Reference", "ATTRIB" },
-            { "Raster Image", "IMAGE" },
-            { "Wipeout", "WIPEOUT" },
-            { "Ray", "RAY" },
-            { "Construction Line", "XLINE" },
-            { "Light", "LIGHT" },
-            { "Camera", "CAMERA" }
-        };
-
-        return dxfMap.ContainsKey(categoryName) ? dxfMap[categoryName] : categoryName.ToUpper();
-    }
-
-    [CommandMethod("cat-info")]
-    public void CategoryInfo()
-    {
-        var doc = AcadApp.DocumentManager.MdiActiveDocument;
-        var ed = doc.Editor;
-        var db = doc.Database;
-
-        var currentMode = SelectionModeManager.CurrentMode;
-        ed.WriteMessage($"\n=== Entity Categories (Mode: {currentMode}) ===\n");
-
-        var categories = GatherEntityCategories(db, currentMode);
-
-        if (categories.Count == 0)
-        {
-            ed.WriteMessage("\nNo entities found.\n");
-            return;
-        }
-
-        // Calculate totals
-        int totalEntities = categories.Sum(c => c.Value.Count);
-
-        // Sort by count (descending)
-        var sortedCategories = categories.OrderByDescending(c => c.Value.Count);
-
-        ed.WriteMessage($"\nTotal: {totalEntities} entities in {categories.Count} categories\n");
-        ed.WriteMessage("\n");
-
-        // Display table
-        ed.WriteMessage($"{"Category",-25} {"DXF Name",-15} {"Count",10} {"Percentage",12}\n");
-        ed.WriteMessage(new string('-', 62) + "\n");
-
-        foreach (var cat in sortedCategories)
-        {
-            double percentage = (double)cat.Value.Count / totalEntities * 100;
-            string dxfName = GetDxfName(cat.Key);
-            ed.WriteMessage($"{cat.Key,-25} {dxfName,-15} {cat.Value.Count,10} {percentage,11:F1}%\n");
-        }
-
-        ed.WriteMessage("\n");
-        ed.WriteMessage("Commands:\n");
-        ed.WriteMessage("  select-by-cat  - Select categories using DataGrid\n");
-        ed.WriteMessage("  quick-select-cat  - Quick select by category\n");
-        ed.WriteMessage("  switch-select-mode - Change selection mode\n");
-    }
 }

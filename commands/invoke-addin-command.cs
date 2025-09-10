@@ -65,7 +65,7 @@ namespace AutocadBallet
             }
         }
 
-        [CommandMethod("invoke-Aaddin-command", CommandFlags.Session)]
+        [CommandMethod("invoke-addin-command", CommandFlags.Session)]
         public void InvokeAddin()
         {
             var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;

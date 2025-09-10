@@ -8,18 +8,22 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-// Static class to manage selection mode across different scopes
-public static class SelectionModeManager
+// Register the command classes
+[assembly: CommandClass(typeof(ToggleSelectionScope))]
+[assembly: CommandClass(typeof(SetSelectionScope))]
+
+// Static class to manage selection scope across different contexts
+public static class SelectionScopeManager
 {
     private static readonly string AppDataPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "autocad-ballet", "runtime"
     );
 
-    private static readonly string ModeFilePath = Path.Combine(AppDataPath, "SelectionMode");
+    private static readonly string ScopeFilePath = Path.Combine(AppDataPath, "SelectionScope");
     private static readonly string StoredSelectionsPath = Path.Combine(AppDataPath, "StoredSelections");
 
-    public enum SelectionMode
+    public enum SelectionScope
     {
         SpaceLayout,    // Current active space/layout only
         Drawing,        // Entire current drawing (all layouts)
@@ -37,28 +41,28 @@ public static class SelectionModeManager
         public DateTime Timestamp { get; set; }
     }
 
-    static SelectionModeManager()
+    static SelectionScopeManager()
     {
         // Ensure directories exist
         Directory.CreateDirectory(AppDataPath);
         Directory.CreateDirectory(StoredSelectionsPath);
     }
 
-    public static SelectionMode CurrentMode
+    public static SelectionScope CurrentScope
     {
         get
         {
-            if (File.Exists(ModeFilePath))
+            if (File.Exists(ScopeFilePath))
             {
-                string mode = File.ReadAllText(ModeFilePath).Trim();
-                if (Enum.TryParse<SelectionMode>(mode, out var result))
+                string scope = File.ReadAllText(ScopeFilePath).Trim();
+                if (Enum.TryParse<SelectionScope>(scope, out var result))
                     return result;
             }
-            return SelectionMode.SpaceLayout;
+            return SelectionScope.SpaceLayout;
         }
         set
         {
-            File.WriteAllText(ModeFilePath, value.ToString());
+            File.WriteAllText(ScopeFilePath, value.ToString());
         }
     }
 
@@ -112,7 +116,7 @@ public static class SelectionModeManager
         return null;
     }
 
-    // Extension method to get selection based on current mode
+    // Extension method to get selection based on current scope
     public static PromptSelectionResult GetSelectionEx(this Editor ed)
     {
         return GetSelectionEx(ed, null);
@@ -120,32 +124,32 @@ public static class SelectionModeManager
 
     public static PromptSelectionResult GetSelectionEx(this Editor ed, SelectionFilter filter)
     {
-        var mode = CurrentMode;
+        var scope = CurrentScope;
         var doc = ed.Document;
         var db = doc.Database;
 
-        switch (mode)
+        switch (scope)
         {
-            case SelectionMode.SpaceLayout:
+            case SelectionScope.SpaceLayout:
                 // Default behavior - current space/layout
                 return filter != null ? ed.GetSelection(filter) : ed.GetSelection();
 
-            case SelectionMode.Drawing:
+            case SelectionScope.Drawing:
                 // Get selection from all layouts in current drawing
                 return GetDrawingWideSelection(ed, db, filter);
 
-            case SelectionMode.Process:
+            case SelectionScope.Process:
                 // Get selection from all open drawings
                 return GetProcessWideSelection(ed, filter);
 
-            case SelectionMode.Desktop:
+            case SelectionScope.Desktop:
                 // TODO: Implement IPC mechanism to communicate with other AutoCAD instances
-                ed.WriteMessage("\nDesktop mode not yet implemented. Using Process mode instead.\n");
+                ed.WriteMessage("\nDesktop scope not yet implemented. Using Process scope instead.\n");
                 return GetProcessWideSelection(ed, filter);
 
-            case SelectionMode.Network:
+            case SelectionScope.Network:
                 // TODO: Implement network communication
-                ed.WriteMessage("\nNetwork mode not yet implemented. Using Process mode instead.\n");
+                ed.WriteMessage("\nNetwork scope not yet implemented. Using Process scope instead.\n");
                 return GetProcessWideSelection(ed, filter);
 
             default:
@@ -267,20 +271,20 @@ public static class SelectionModeManager
     // Extension method to set selection based on current mode
     public static void SetImpliedSelectionEx(this Editor ed, ObjectId[] ids)
     {
-        var mode = CurrentMode;
+        var scope = CurrentScope;
         var doc = ed.Document;
 
-        switch (mode)
+        switch (scope)
         {
-            case SelectionMode.SpaceLayout:
+            case SelectionScope.SpaceLayout:
                 // Default behavior
                 ed.SetImpliedSelection(ids);
                 break;
 
-            case SelectionMode.Drawing:
-            case SelectionMode.Process:
-            case SelectionMode.Desktop:
-            case SelectionMode.Network:
+            case SelectionScope.Drawing:
+            case SelectionScope.Process:
+            case SelectionScope.Desktop:
+            case SelectionScope.Network:
                 // Store selection for retrieval
                 var selection = new StoredSelection
                 {
@@ -353,62 +357,62 @@ public static class SelectionModeManager
 }
 
 // Toggle command - quickly switch between modes
-public class ToggleSelectionMode
+public class ToggleSelectionScope
 {
-    [CommandMethod("toggle-select-mode")]
+    [CommandMethod("toggle-selection-scope")]
     public void Toggle()
     {
-        var currentMode = SelectionModeManager.CurrentMode;
-        var modes = Enum.GetValues(typeof(SelectionModeManager.SelectionMode));
-        var currentIndex = Array.IndexOf(modes, currentMode);
-        var nextIndex = (currentIndex + 1) % modes.Length;
-        var newMode = (SelectionModeManager.SelectionMode)modes.GetValue(nextIndex);
+        var currentScope = SelectionScopeManager.CurrentScope;
+        var scopes = Enum.GetValues(typeof(SelectionScopeManager.SelectionScope));
+        var currentIndex = Array.IndexOf(scopes, currentScope);
+        var nextIndex = (currentIndex + 1) % scopes.Length;
+        var newScope = (SelectionScopeManager.SelectionScope)scopes.GetValue(nextIndex);
 
-        SelectionModeManager.CurrentMode = newMode;
+        SelectionScopeManager.CurrentScope = newScope;
 
         var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
-        ed.WriteMessage($"\nSelection mode changed to: {newMode}\n");
+        ed.WriteMessage($"\nSelection scope changed to: {newScope}\n");
 
-        // Clear stored selections when changing mode
-        if (newMode != SelectionModeManager.SelectionMode.SpaceLayout)
+        // Clear stored selections when changing scope
+        if (newScope != SelectionScopeManager.SelectionScope.SpaceLayout)
         {
-            SelectionModeManager.ClearStoredSelections();
+            SelectionScopeManager.ClearStoredSelections();
         }
     }
 }
 
 // Command to switch selection mode with UI
-public class SwitchSelectionMode
+public class SetSelectionScope
 {
-    [CommandMethod("switch-select-mode")]
+    [CommandMethod("set-selection-scope")]
     public void Switch()
     {
         var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
-        var currentMode = SelectionModeManager.CurrentMode;
+        var currentScope = SelectionScopeManager.CurrentScope;
 
         // Create keywords for selection
-        var pko = new PromptKeywordOptions("\nSelect mode:");
+        var pko = new PromptKeywordOptions("\nSelect scope:");
         pko.Keywords.Add("SpaceLayout");
         pko.Keywords.Add("Drawing");
         pko.Keywords.Add("Process");
         pko.Keywords.Add("Desktop");
         pko.Keywords.Add("Network");
-        pko.Keywords.Default = currentMode.ToString();
+        pko.Keywords.Default = currentScope.ToString();
         pko.AllowNone = true;
 
         var result = ed.GetKeywords(pko);
         if (result.Status != PromptStatus.OK)
             return;
 
-        if (Enum.TryParse<SelectionModeManager.SelectionMode>(result.StringResult, out var newMode))
+        if (Enum.TryParse<SelectionScopeManager.SelectionScope>(result.StringResult, out var newScope))
         {
-            SelectionModeManager.CurrentMode = newMode;
-            ed.WriteMessage($"\nSelection mode set to: {newMode}\n");
+            SelectionScopeManager.CurrentScope = newScope;
+            ed.WriteMessage($"\nSelection scope set to: {newScope}\n");
 
-            // Clear stored selections when changing mode
-            if (newMode != SelectionModeManager.SelectionMode.SpaceLayout)
+            // Clear stored selections when changing scope
+            if (newScope != SelectionScopeManager.SelectionScope.SpaceLayout)
             {
-                SelectionModeManager.ClearStoredSelections();
+                SelectionScopeManager.ClearStoredSelections();
             }
         }
     }
