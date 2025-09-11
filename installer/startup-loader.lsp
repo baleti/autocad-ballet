@@ -17,6 +17,9 @@
   (setq i 0)
   (repeat 28
     (setq seed (rem (+ (* seed 7) i 17) 36))
+    ;; ensure seed is always positive
+    (if (< seed 0)
+      (setq seed (+ seed 36)))
     (setq i (1+ i))
     (setq result (strcat result (substr chars (1+ seed) 1))))
   result)
