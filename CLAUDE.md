@@ -77,3 +77,87 @@ The plugin installs to `%APPDATA%/autocad-ballet/` with:
 - Mode configuration files
 
 Runtime data is stored in `%APPDATA%/autocad-ballet/runtime` for selection scope management.
+
+## Command Porting
+
+Many commands in AutoCAD Ballet are ported from the revit-ballet repository. When porting commands from Revit to AutoCAD:
+
+- **Views → Layouts**: Revit views correspond to AutoCAD layouts
+- **ElementId → Layout Names**: Revit uses numeric ElementIds, AutoCAD uses string layout names
+- **View Change Logging**: Both systems use similar logging patterns:
+  - Revit: `%APPDATA%/revit-scripts/LogViewChanges/{ProjectName}`
+  - AutoCAD: `%APPDATA%/autocad-ballet/runtime/LogLayoutChanges/{ProjectName}`
+- **API Differences**:
+  - Revit: `uidoc.ActiveView = view`
+  - AutoCAD: `LayoutManager.Current.CurrentLayout = layoutName`
+- **Document Access**: Both use similar document manager patterns but with different namespaces
+- **Runtime Data Storage**: All runtime information (logs, temporary data) should be stored in `%APPDATA%/autocad-ballet/runtime/`
+
+Commands successfully ported from revit-ballet include:
+- `switch-view-last` - Switches to the most recent layout from log history
+- `switch-view-most-recent` - Shows layouts ordered by usage history for selection
+
+## AutoCAD .NET API Patterns
+
+### Cross-Document Operations
+When working with multiple documents in AutoCAD, certain operations require proper timing and context management:
+
+**Document Switching Pattern**: Use the `DocumentActivated` event for reliable cross-document operations:
+
+```csharp
+// INCORRECT - Timing issue
+docs.MdiActiveDocument = targetDoc;
+LayoutManager.Current.CurrentLayout = targetLayout;  // May fail
+
+// CORRECT - Event-driven approach
+DocumentCollectionEventHandler handler = null;
+handler = (sender, e) => {
+    if (e.Document == targetDoc) {
+        docs.DocumentActivated -= handler;  // Unsubscribe immediately
+        // Now safely perform operations on the activated document
+        LayoutManager.Current.CurrentLayout = targetLayout;
+    }
+};
+docs.DocumentActivated += handler;
+docs.MdiActiveDocument = targetDoc;
+```
+
+**Key Principles**:
+- Document switching (`docs.MdiActiveDocument = targetDoc`) is asynchronous
+- Use `DocumentActivated` event to know when switching is complete
+- Always unsubscribe from events to prevent memory leaks
+- Use the target document's `Editor` context, not the original document's
+
+### Document Locking for Layout Operations
+**CRITICAL**: AutoCAD layout switching requires explicit document locking for reliable operation, especially in cross-document scenarios.
+
+**The Problem**:
+- `LayoutManager.Current.CurrentLayout = layoutName` can fail with `eSetFailed` if the document context isn't properly established
+- This is especially common after document switching, even when using the `DocumentActivated` event
+
+**The Solution**: Always use `DocumentLock` when performing layout operations:
+
+```csharp
+// INCORRECT - May fail with eSetFailed
+LayoutManager.Current.CurrentLayout = targetLayout;
+
+// CORRECT - Reliable with document lock
+using (DocumentLock docLock = targetDoc.LockDocument())
+{
+    LayoutManager.Current.CurrentLayout = targetLayout;
+}
+```
+
+**Key Benefits**:
+- **Eliminates `eSetFailed` exceptions** in cross-document layout switching
+- **Works directly from Model Space** - no need for intermediate "priming" layouts
+- **Prevents document context conflicts** between multiple operations
+- **Essential for event handlers** that operate on non-active documents
+
+**Document Locking Best Practice**: Always lock the document when:
+- Switching layouts after document activation
+- Performing layout operations in `DocumentActivated` event handlers
+- Working with non-active documents
+- Any operation that modifies document state across document boundaries
+
+This pattern is essential for reliable AutoCAD .NET development and prevents many common layout switching issues.
