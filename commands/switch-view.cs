@@ -15,6 +15,7 @@ namespace AutoCADBallet
 {
     public class SwitchViewCommand
     {
+
         [CommandMethod("switch-view")]
         public void SwitchView()
         {
@@ -158,17 +159,17 @@ namespace AutoCADBallet
 
                                     try
                                     {
-                                        // Use the activated document's editor, not the original one
-                                        Editor targetEd = targetDoc.Editor;
-
-                                        // Now safely switch to the layout
-                                        LayoutManager.Current.CurrentLayout = targetLayout;
+                                        // Switch to the target layout with document lock
+                                        using (DocumentLock docLock = targetDoc.LockDocument())
+                                        {
+                                            LayoutManager.Current.CurrentLayout = targetLayout;
+                                        }
 
                                         // Log the layout change
                                         string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
                                         LayoutLogger.LogLayoutChange(projectName, targetLayout);
 
-                                        targetEd.WriteMessage($"\nSwitched to layout: {targetLayout}");
+                                        targetDoc.Editor.WriteMessage($"\nSwitched to layout: {targetLayout}");
                                     }
                                     catch (Autodesk.AutoCAD.Runtime.Exception ex)
                                     {
@@ -187,7 +188,11 @@ namespace AutoCADBallet
                             // Already in the target document, just switch layout
                             try
                             {
-                                LayoutManager.Current.CurrentLayout = targetLayout;
+                                // Direct layout switch with document lock
+                                using (DocumentLock docLock = targetDoc.LockDocument())
+                                {
+                                    LayoutManager.Current.CurrentLayout = targetLayout;
+                                }
 
                                 string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
                                 LayoutLogger.LogLayoutChange(projectName, targetLayout);
@@ -248,9 +253,11 @@ namespace AutoCADBallet
                                     // Use the activated document's editor
                                     Editor targetEd = targetDoc.Editor;
 
-                                    // Verify layout exists before trying to switch
-                                    // Now safely switch to the layout
-                                    LayoutManager.Current.CurrentLayout = targetLayout;
+                                    // Direct layout switch with document lock
+                                    using (DocumentLock docLock = targetDoc.LockDocument())
+                                    {
+                                        LayoutManager.Current.CurrentLayout = targetLayout;
+                                    }
 
                                     // Log the layout change
                                     string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
@@ -273,7 +280,11 @@ namespace AutoCADBallet
                         // Already in the target document, just switch layout
                         try
                         {
-                            LayoutManager.Current.CurrentLayout = targetLayout;
+                            // Direct layout switch with document lock
+                            using (DocumentLock docLock = activeDoc.LockDocument())
+                            {
+                                LayoutManager.Current.CurrentLayout = targetLayout;
+                            }
 
                             string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
                             LayoutLogger.LogLayoutChange(projectName, targetLayout);
