@@ -56,7 +56,7 @@ namespace AutoCADBallet
                             }
                         }
                     }
-                    catch (System.Exception ex)
+                    catch (System.Exception)
                     {
                         // Silently skip files that can't be read
                     }
@@ -169,7 +169,7 @@ namespace AutoCADBallet
 
                             LayoutChangeTracker.LogLayoutChange(targetDocName, chosenLayoutName, true);
                         }
-                        catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                        catch (Autodesk.AutoCAD.Runtime.Exception)
                         {
                         }
                     }
@@ -191,7 +191,7 @@ namespace AutoCADBallet
 
                     LayoutChangeTracker.LogLayoutChange(targetDocName, chosenLayoutName, true);
                 }
-                catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                catch (Autodesk.AutoCAD.Runtime.Exception)
                 {
                 }
             }

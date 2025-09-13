@@ -109,7 +109,7 @@ namespace AutoCADBallet
                         }
                     }
                 }
-                catch (System.Exception ex)
+                catch (System.Exception)
                 {
                     // Silently skip documents that can't be read
                 }
@@ -181,7 +181,7 @@ namespace AutoCADBallet
                                         LayoutChangeTracker.LogLayoutChange(projectName, targetLayout, true);
 
                                     }
-                                    catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                                    catch (Autodesk.AutoCAD.Runtime.Exception)
                                     {
                                     }
                                 }
@@ -205,7 +205,7 @@ namespace AutoCADBallet
                                 LayoutChangeTracker.LogLayoutChange(projectName, targetLayout, true);
 
                             }
-                            catch (Autodesk.AutoCAD.Runtime.Exception ex)
+                            catch (Autodesk.AutoCAD.Runtime.Exception)
                             {
                             }
                         }
@@ -213,7 +213,7 @@ namespace AutoCADBallet
                     }
                 }
             }
-            catch (System.Exception ex)
+            catch (System.Exception)
             {
                 // DataGrid failed, command ends silently
             }
