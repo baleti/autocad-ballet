@@ -10,6 +10,7 @@
 (defun c:fse () (command "filter-selected-elements"))
 (defun c:fses () (command "filter-selected-elements-span"))
 (defun c:scc () (command "select-by-category"))
+(defun c:ep () (command "filter-selected"))
 
 ;; autocad
 (defun c:fs () (command "refclose" "save"))

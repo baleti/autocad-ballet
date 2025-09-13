@@ -15,7 +15,7 @@ namespace AutoCADBallet
         private static string GetSelectionFilePath()
         {
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var dir = Path.Combine(appDataPath, "autocad-ballet");
+            var dir = Path.Combine(appDataPath, "autocad-ballet", "runtime");
             if (!Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
             return Path.Combine(dir, "selection");
@@ -60,4 +60,5 @@ namespace AutoCADBallet
             return items;
         }
     }
+
 }

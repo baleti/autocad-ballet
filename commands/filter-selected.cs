@@ -3,703 +3,586 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.Runtime;
+using AutoCADBallet;
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Windows.Forms;
+using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(AutoCADBallet.FilterSelectedCommand))]
+// Register the command class
+[assembly: CommandClass(typeof(FilterSelectedElements))]
 
-namespace AutoCADBallet
+/// <summary>
+/// Helper class to extract entity data for filtering and display
+/// </summary>
+public static class FilterEntityDataHelper
 {
-    public static class EntityDataHelper
+    public static List<Dictionary<string, object>> GetEntityData(Editor ed, bool selectedOnly = false, bool includeProperties = false)
     {
-        public static List<Dictionary<string, object>> GetEntityData(Document doc, ObjectId[] objectIds, bool includeXData = false)
-        {
-            var entityData = new List<Dictionary<string, object>>();
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var db = doc.Database;
+        var entityData = new List<Dictionary<string, object>>();
+        var currentScope = SelectionScopeManager.CurrentScope;
 
-            using (var tr = doc.Database.TransactionManager.StartTransaction())
+        // Special handling for view scope - use current AutoCAD selection
+        if (currentScope == SelectionScopeManager.SelectionScope.view)
+        {
+            // Get the current implied selection
+            var selResult = ed.SelectImplied();
+            if (selResult.Status == PromptStatus.OK && selResult.Value.Count > 0)
             {
-                foreach (var id in objectIds)
+                // Get current selection
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    foreach (var objectId in selResult.Value.GetObjectIds())
+                    {
+                        try
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                            if (entity != null)
+                            {
+                                var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties);
+                                data["ObjectId"] = objectId; // Store for selection
+                                entityData.Add(data);
+                            }
+                        }
+                        catch
+                        {
+                            // Skip problematic entities
+                            continue;
+                        }
+                    }
+                    tr.Commit();
+                }
+                return entityData;
+            }
+            else
+            {
+                // If SelectImplied fails in view mode, try using stored selection as fallback
+                // This handles cases where AutoCAD's implied selection doesn't work as expected
+                var storedSelection = SelectionStorage.LoadSelection();
+                if (storedSelection != null && storedSelection.Count > 0)
+                {
+                    // Process stored selection items from current document only
+                    foreach (var item in storedSelection.Where(s => Path.GetFullPath(s.DocumentPath) == Path.GetFullPath(doc.Name)))
+                    {
+                        try
+                        {
+                            var handle = Convert.ToInt64(item.Handle, 16);
+                            var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                            if (objectId != ObjectId.Null)
+                            {
+                                using (var tr = db.TransactionManager.StartTransaction())
+                                {
+                                    var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                                    if (entity != null)
+                                    {
+                                        var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties);
+                                        data["ObjectId"] = objectId; // Store for selection
+                                        entityData.Add(data);
+                                    }
+                                    tr.Commit();
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Skip problematic entities
+                            continue;
+                        }
+                    }
+
+                    if (entityData.Count > 0)
+                        return entityData;
+                }
+
+                throw new InvalidOperationException("No selection found. Please select entities first when in 'view' scope.");
+            }
+        }
+
+        if (selectedOnly)
+        {
+            // Get entities from stored selection
+            var storedSelection = SelectionStorage.LoadSelection();
+            if (storedSelection == null || storedSelection.Count == 0)
+            {
+                throw new InvalidOperationException("No stored selection found. Use commands like 'select-by-category' first.");
+            }
+
+            // Process stored selection items
+            foreach (var item in storedSelection)
+            {
+                try
+                {
+                    // Check if this is from the current document
+                    if (Path.GetFullPath(item.DocumentPath) == Path.GetFullPath(doc.Name))
+                    {
+                        // Current document - get entity directly
+                        var handle = Convert.ToInt64(item.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+                        
+                        if (objectId != ObjectId.Null)
+                        {
+                            using (var tr = db.TransactionManager.StartTransaction())
+                            {
+                                var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                                if (entity != null)
+                                {
+                                    var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
+                                    entityData.Add(data);
+                                }
+                                tr.Commit();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Different document - add as reference only
+                        var data = new Dictionary<string, object>
+                        {
+                            ["Name"] = "External Reference",
+                            ["Category"] = "External Entity",
+                            ["Layer"] = "N/A",
+                            ["DocumentPath"] = item.DocumentPath,
+                            ["DocumentName"] = Path.GetFileName(item.DocumentPath),
+                            ["Handle"] = item.Handle,
+                            ["Id"] = item.Handle,
+                            ["IsExternal"] = true,
+                            ["DisplayName"] = $"External: {Path.GetFileName(item.DocumentPath)}"
+                        };
+                        entityData.Add(data);
+                    }
+                }
+                catch
+                {
+                    // Skip problematic entities
+                    continue;
+                }
+            }
+        }
+        else
+        {
+            // Get all entities from current scope
+            var entities = GatherEntitiesFromScope(db, currentScope);
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var objectId in entities)
                 {
                     try
                     {
-                        var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                        var entity = tr.GetObject(objectId, OpenMode.ForRead);
                         if (entity != null)
                         {
-                            var data = GetEntityDataDictionary(entity, doc, id, includeXData);
+                            var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties);
                             entityData.Add(data);
                         }
                     }
-                    catch { /* Skip problematic entities */ }
+                    catch
+                    {
+                        // Skip problematic entities
+                        continue;
+                    }
                 }
                 tr.Commit();
             }
-
-            return entityData;
         }
 
-        private static Dictionary<string, object> GetEntityDataDictionary(Entity entity, Document doc, ObjectId id, bool includeXData)
+        return entityData;
+    }
+
+    private static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties)
+    {
+        string entityName = "";
+        string layer = "";
+        string color = "";
+        string lineType = "";
+        
+        if (entity is Entity ent)
         {
-            var data = new Dictionary<string, object>
+            layer = ent.Layer;
+            color = ent.Color.ToString();
+            lineType = ent.Linetype;
+            
+            // Get entity-specific name
+            if (entity is BlockReference br)
             {
-                ["Handle"] = entity.Handle.ToString(),
-                ["EntityType"] = entity.GetType().Name,
-                ["Layer"] = entity.Layer,
-                ["Color"] = GetColorString(entity),
-                ["Linetype"] = entity.Linetype,
-                ["LineWeight"] = entity.LineWeight.ToString(),
-                ["ObjectId"] = id,
-                ["DocumentPath"] = doc.Name,
-                ["Space"] = GetSpaceName(entity, doc)
-            };
-
-            // Add block name if it's a block reference
-            if (entity is BlockReference blockRef)
-            {
-                using (var tr = doc.Database.TransactionManager.StartTransaction())
+                using (var tr = br.Database.TransactionManager.StartTransaction())
                 {
-                    var blockDef = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                    data["BlockName"] = blockDef?.Name ?? "";
-                    data["Position"] = $"{blockRef.Position.X:F2}, {blockRef.Position.Y:F2}, {blockRef.Position.Z:F2}";
-                    data["Scale"] = $"{blockRef.ScaleFactors.X:F2}, {blockRef.ScaleFactors.Y:F2}, {blockRef.ScaleFactors.Z:F2}";
-                    data["Rotation"] = $"{blockRef.Rotation * 180 / Math.PI:F2}°";
-
-                    // Get attribute values
-                    var attValues = new List<string>();
-                    foreach (ObjectId attId in blockRef.AttributeCollection)
-                    {
-                        var att = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
-                        if (att != null && !string.IsNullOrEmpty(att.TextString))
-                        {
-                            attValues.Add($"{att.Tag}={att.TextString}");
-                        }
-                    }
-                    if (attValues.Any())
-                        data["Attributes"] = string.Join(", ", attValues);
-
+                    var btr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                    entityName = btr?.Name ?? "Block";
                     tr.Commit();
                 }
             }
-            else
+            else if (entity is MText mtext)
             {
-                data["BlockName"] = "";
+                entityName = mtext.Contents.Length > 30 ? 
+                    mtext.Contents.Substring(0, 30) + "..." : 
+                    mtext.Contents;
             }
-
-            // Add specific properties based on entity type
-            switch (entity)
+            else if (entity is DBText text)
             {
-                case Line line:
-                    data["Length"] = line.Length.ToString("F2");
-                    data["StartPoint"] = $"{line.StartPoint.X:F2}, {line.StartPoint.Y:F2}";
-                    data["EndPoint"] = $"{line.EndPoint.X:F2}, {line.EndPoint.Y:F2}";
-                    break;
-
-                case Circle circle:
-                    data["Radius"] = circle.Radius.ToString("F2");
-                    data["Center"] = $"{circle.Center.X:F2}, {circle.Center.Y:F2}";
-                    data["Area"] = (Math.PI * circle.Radius * circle.Radius).ToString("F2");
-                    break;
-
-                case Arc arc:
-                    data["Radius"] = arc.Radius.ToString("F2");
-                    data["Center"] = $"{arc.Center.X:F2}, {arc.Center.Y:F2}";
-                    data["StartAngle"] = $"{arc.StartAngle * 180 / Math.PI:F2}°";
-                    data["EndAngle"] = $"{arc.EndAngle * 180 / Math.PI:F2}°";
-                    data["Length"] = arc.Length.ToString("F2");
-                    break;
-
-                case Polyline pline:
-                    data["Closed"] = pline.Closed.ToString();
-                    data["Vertices"] = pline.NumberOfVertices.ToString();
-                    data["Length"] = pline.Length.ToString("F2");
-                    if (pline.Closed)
-                        data["Area"] = Math.Abs(pline.Area).ToString("F2");
-                    break;
-
-                case DBText text:
-                    data["TextString"] = text.TextString;
-                    data["Height"] = text.Height.ToString("F2");
-                    data["Position"] = $"{text.Position.X:F2}, {text.Position.Y:F2}";
-                    data["Rotation"] = $"{text.Rotation * 180 / Math.PI:F2}°";
-                    break;
-
-                case MText mtext:
-                    data["TextString"] = StripMTextFormatting(mtext.Contents);
-                    data["Height"] = mtext.TextHeight.ToString("F2");
-                    data["Width"] = mtext.Width.ToString("F2");
-                    data["Location"] = $"{mtext.Location.X:F2}, {mtext.Location.Y:F2}";
-                    break;
-
-                case Dimension dim:
-                    data["DimensionText"] = dim.DimensionText;
-                    data["Measurement"] = dim.Measurement.ToString("F2");
-                    break;
-
-                case Hatch hatch:
-                    data["PatternName"] = hatch.PatternName;
-                    data["Area"] = hatch.Area.ToString("F2");
-                    data["PatternScale"] = hatch.PatternScale.ToString("F2");
-                    break;
-
-                case Solid3d solid:
-                    data["Volume"] = GetSolid3dVolume(solid);
-                    break;
+                entityName = text.TextString.Length > 30 ? 
+                    text.TextString.Substring(0, 30) + "..." : 
+                    text.TextString;
             }
-
-            // Include XData if requested
-            if (includeXData)
+            else if (entity is Dimension dim)
             {
-                var xdata = entity.XData;
-                if (xdata != null)
-                {
-                    var xdataStr = new StringBuilder();
-                    foreach (TypedValue tv in xdata)
-                    {
-                        if (tv.TypeCode == 1001) // App name
-                            xdataStr.Append($"[{tv.Value}]");
-                        else if (tv.TypeCode == 1000) // String data
-                            xdataStr.Append($" {tv.Value}");
-                    }
-                    if (xdataStr.Length > 0)
-                        data["XData"] = xdataStr.ToString();
-                }
+                entityName = dim.DimensionText;
             }
-
-            // Create display name
-            data["DisplayName"] = CreateDisplayName(data);
-
-            return data;
         }
 
-        private static string StripMTextFormatting(string mtext)
+        var data = new Dictionary<string, object>
         {
-            // Remove common MText formatting codes
-            var result = mtext;
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"\\[LO]", "");
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"\\[Ff][^;]+;", "");
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"\\[Hh][^;]+;", "");
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"\\[Cc]\d+;", "");
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"\\[Pp]", "");
-            result = System.Text.RegularExpressions.Regex.Replace(result, @"\{|\}", "");
-            return result;
+            ["Name"] = entityName,
+            ["Category"] = GetEntityCategory(entity),
+            ["Layer"] = layer,
+            ["Color"] = color,
+            ["LineType"] = lineType,
+            ["DocumentPath"] = documentPath,
+            ["DocumentName"] = Path.GetFileName(documentPath),
+            ["Handle"] = entity.Handle.ToString(),
+            ["Id"] = entity.ObjectId.Handle.Value,
+            ["IsExternal"] = false,
+            ["ObjectId"] = entity.ObjectId // Store for selection
+        };
+
+        data["DisplayName"] = !string.IsNullOrEmpty(entityName) ? entityName : data["Category"].ToString();
+
+        // Add space information if available
+        if (!string.IsNullOrEmpty(spaceName))
+        {
+            data["Space"] = spaceName;
         }
 
-        private static string GetSolid3dVolume(Solid3d solid)
+        // Include properties if requested
+        if (includeProperties && entity is Entity entityWithProps)
         {
             try
             {
-                var massProps = solid.MassProperties;
-                return massProps.Volume.ToString("F2");
+                // Add common AutoCAD properties
+                data["Area"] = GetEntityArea(entityWithProps);
+                data["Length"] = GetEntityLength(entityWithProps);
+                // data["Thickness"] = entityWithProps.Thickness; // Not available on base Entity
+                data["Elevation"] = GetEntityElevation(entityWithProps);
             }
-            catch
-            {
-                return "N/A";
-            }
+            catch { /* Skip if properties can't be read */ }
         }
 
-        private static string CreateDisplayName(Dictionary<string, object> data)
-        {
-            var entityType = data["EntityType"].ToString();
-            var layer = data["Layer"].ToString();
-
-            // Special handling for blocks
-            if (!string.IsNullOrEmpty(data["BlockName"].ToString()) && data["BlockName"].ToString() != "")
-                return $"{data["BlockName"]} [{entityType}] on {layer}";
-
-            // Special handling for text entities
-            if (data.ContainsKey("TextString") && !string.IsNullOrEmpty(data["TextString"].ToString()))
-            {
-                var text = data["TextString"].ToString();
-                if (text.Length > 30)
-                    text = text.Substring(0, 27) + "...";
-                return $"\"{text}\" [{entityType}]";
-            }
-
-            // Special handling for dimensions
-            if (data.ContainsKey("DimensionText") && !string.IsNullOrEmpty(data["DimensionText"].ToString()))
-            {
-                return $"Dim: {data["DimensionText"]} [{entityType}]";
-            }
-
-            return $"{entityType} on {layer}";
-        }
-
-        private static string GetColorString(Entity entity)
-        {
-            if (entity.Color.IsByLayer)
-                return "ByLayer";
-            else if (entity.Color.IsByBlock)
-                return "ByBlock";
-            else if (entity.Color.IsByAci)
-                return $"Index {entity.Color.ColorIndex}";
-            else if (entity.Color.ColorMethod == Autodesk.AutoCAD.Colors.ColorMethod.ByColor)
-                return $"RGB({entity.Color.Red},{entity.Color.Green},{entity.Color.Blue})";
-            else
-                return entity.Color.ToString();
-        }
-
-        private static string GetSpaceName(Entity entity, Document doc)
-        {
-            using (var tr = doc.Database.TransactionManager.StartTransaction())
-            {
-                var owner = tr.GetObject(entity.OwnerId, OpenMode.ForRead) as BlockTableRecord;
-                if (owner != null)
-                {
-                    if (owner.IsLayout)
-                    {
-                        if (owner.Name == "*Model_Space")
-                            return "Model";
-                        else
-                            return "Paper";
-                    }
-                    else
-                    {
-                        return owner.Name; // Block definition name
-                    }
-                }
-                tr.Commit();
-            }
-            return "Unknown";
-        }
+        return data;
     }
 
-    // Windows Forms DataGridView window for filtering
-    public class FilterWindow : Form
+    private static List<ObjectId> GatherEntitiesFromScope(Database db, SelectionScopeManager.SelectionScope scope)
     {
-        private DataGridView dataGrid;
-        private List<Dictionary<string, object>> allData;
-        private List<Dictionary<string, object>> filteredData;
-        private TextBox filterBox;
-        private Label statusLabel;
+        var entities = new List<ObjectId>();
 
-        public List<Dictionary<string, object>> SelectedRows { get; private set; }
-
-        public FilterWindow(List<Dictionary<string, object>> data, List<string> columnNames)
+        using (var tr = db.TransactionManager.StartTransaction())
         {
-            allData = data;
-            filteredData = new List<Dictionary<string, object>>(data);
-            SelectedRows = new List<Dictionary<string, object>>();
-
-            Text = "Filter AutoCAD Selection";
-            Size = new Size(1200, 700);
-            StartPosition = FormStartPosition.CenterScreen;
-
-            // Create main panel
-            var mainPanel = new TableLayoutPanel
+            switch (scope)
             {
-                Dock = DockStyle.Fill,
-                RowCount = 4,
-                ColumnCount = 1
-            };
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); // Filter panel
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); // DataGrid
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));  // Status bar
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));  // Button panel
-
-            // Filter panel
-            var filterPanel = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = System.Windows.Forms.FlowDirection.LeftToRight,
-                Padding = new Padding(5)
-            };
-
-            filterPanel.Controls.Add(new Label { Text = "Filter:", AutoSize = true, Anchor = AnchorStyles.Left });
-
-            filterBox = new TextBox
-            {
-                Width = 300,
-                Anchor = AnchorStyles.Left
-            };
-            filterBox.TextChanged += OnFilterTextChanged;
-            filterPanel.Controls.Add(filterBox);
-
-            var clearButton = new Button
-            {
-                Text = "Clear Filter",
-                AutoSize = true
-            };
-            clearButton.Click += (s, e) => { filterBox.Text = ""; };
-            filterPanel.Controls.Add(clearButton);
-
-            var filterHelpLabel = new Label
-            {
-                Text = "(Type to filter across all columns)",
-                ForeColor = Color.Gray,
-                AutoSize = true
-            };
-            filterPanel.Controls.Add(filterHelpLabel);
-
-            mainPanel.Controls.Add(filterPanel, 0, 0);
-
-            // DataGrid
-            dataGrid = new DataGridView
-            {
-                Dock = DockStyle.Fill,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = true,
-                ReadOnly = true,
-                AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.AliceBlue },
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
-                RowHeadersVisible = false
-            };
-
-            // Create columns (skip internal columns)
-            foreach (var columnName in columnNames)
-            {
-                if (columnName == "ObjectId" || columnName == "DocumentPath")
-                    continue; // Skip internal columns
-
-                var column = new DataGridViewTextBoxColumn
-                {
-                    Name = columnName,
-                    HeaderText = columnName,
-                    DataPropertyName = columnName
-                };
-
-                // Set column widths
-                if (columnName == "DisplayName")
-                    column.Width = 300;
-                else if (columnName == "Handle")
-                    column.Width = 100;
-                else if (columnName == "EntityType")
-                    column.Width = 120;
-                else if (columnName == "Layer")
-                    column.Width = 150;
-                else if (columnName == "BlockName")
-                    column.Width = 150;
-                else if (columnName == "Color")
-                    column.Width = 100;
-                else if (columnName == "TextString")
-                    column.Width = 200;
-                else
-                    column.AutoSizeMode = DataGridViewAutoSizeColumnMode.DisplayedCells;
-
-                dataGrid.Columns.Add(column);
-            }
-
-            // Bind data
-            UpdateDataGrid();
-
-            mainPanel.Controls.Add(dataGrid, 0, 1);
-
-            // Status bar
-            statusLabel = new Label
-            {
-                Dock = DockStyle.Fill,
-                Text = $"Total: {allData.Count} entities | Filtered: {filteredData.Count} entities | Selected: 0 entities",
-                BackColor = Color.LightGray,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(5, 0, 0, 0)
-            };
-            mainPanel.Controls.Add(statusLabel, 0, 2);
-
-            // Button panel
-            var buttonPanel = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = System.Windows.Forms.FlowDirection.RightToLeft,
-                Padding = new Padding(5)
-            };
-
-            var cancelButton = new Button
-            {
-                Text = "Cancel",
-                Size = new Size(100, 30)
-            };
-            cancelButton.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
-            buttonPanel.Controls.Add(cancelButton);
-
-            var okButton = new Button
-            {
-                Text = "OK - Apply Filter",
-                Size = new Size(120, 30),
-                Font = new System.Drawing.Font(DefaultFont, FontStyle.Bold)
-            };
-            okButton.Click += OnOkClick;
-            buttonPanel.Controls.Add(okButton);
-
-            var spacing = new Label { Width = 20 };
-            buttonPanel.Controls.Add(spacing);
-
-            var selectNoneButton = new Button
-            {
-                Text = "Select None",
-                Size = new Size(100, 30)
-            };
-            selectNoneButton.Click += (s, e) => { dataGrid.ClearSelection(); UpdateStatusBar(); };
-            buttonPanel.Controls.Add(selectNoneButton);
-
-            var selectAllButton = new Button
-            {
-                Text = "Select All",
-                Size = new Size(100, 30)
-            };
-            selectAllButton.Click += (s, e) => { dataGrid.SelectAll(); UpdateStatusBar(); };
-            buttonPanel.Controls.Add(selectAllButton);
-
-            mainPanel.Controls.Add(buttonPanel, 0, 3);
-
-            Controls.Add(mainPanel);
-
-            // Handle selection changed
-            dataGrid.SelectionChanged += (s, e) => UpdateStatusBar();
-
-            // Select all items initially
-            Load += (s, e) => { dataGrid.SelectAll(); UpdateStatusBar(); };
-        }
-
-        private void UpdateDataGrid()
-        {
-            // Convert dictionary list to DataTable for DataGridView binding
-            var dataTable = new System.Data.DataTable();
-
-            if (filteredData.Any())
-            {
-                // Add columns
-                foreach (var key in filteredData[0].Keys)
-                {
-                    dataTable.Columns.Add(key, typeof(string));
-                }
-
-                // Add rows
-                foreach (var dict in filteredData)
-                {
-                    var row = dataTable.NewRow();
-                    foreach (var kvp in dict)
+                case SelectionScopeManager.SelectionScope.view:
+                    var currentSpace = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
+                    foreach (ObjectId id in currentSpace)
                     {
-                        row[kvp.Key] = kvp.Value?.ToString() ?? "";
+                        entities.Add(id);
                     }
-                    dataTable.Rows.Add(row);
-                }
+                    break;
+
+                case SelectionScopeManager.SelectionScope.drawing:
+                    var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                    foreach (DBDictionaryEntry entry in layoutDict)
+                    {
+                        var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                        var btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+                        foreach (ObjectId id in btr)
+                        {
+                            entities.Add(id);
+                        }
+                    }
+                    break;
+
+                default:
+                    // For Process, Desktop, Network - fall back to Drawing scope for now
+                    goto case SelectionScopeManager.SelectionScope.drawing;
             }
 
-            dataGrid.DataSource = dataTable;
+            tr.Commit();
         }
 
-        private void UpdateStatusBar()
-        {
-            statusLabel.Text = $"Total: {allData.Count} entities | Filtered: {filteredData.Count} entities | Selected: {dataGrid.SelectedRows.Count} entities";
-        }
-
-        private void OnFilterTextChanged(object sender, EventArgs e)
-        {
-            var filterText = filterBox.Text.ToLower();
-
-            if (string.IsNullOrWhiteSpace(filterText))
-            {
-                filteredData = new List<Dictionary<string, object>>(allData);
-            }
-            else
-            {
-                filteredData = allData.Where(row =>
-                {
-                    return row.Any(kvp =>
-                        kvp.Value != null &&
-                        kvp.Value.ToString().ToLower().Contains(filterText)
-                    );
-                }).ToList();
-            }
-
-            UpdateDataGrid();
-            UpdateStatusBar();
-        }
-
-        private void OnOkClick(object sender, EventArgs e)
-        {
-            SelectedRows = new List<Dictionary<string, object>>();
-
-            foreach (DataGridViewRow row in dataGrid.SelectedRows)
-            {
-                if (row.Index < filteredData.Count)
-                {
-                    SelectedRows.Add(filteredData[row.Index]);
-                }
-            }
-
-            DialogResult = DialogResult.OK;
-            Close();
-        }
+        return entities;
     }
 
-    public class FilterSelectedCommand
+    private static string GetEntityCategory(DBObject entity)
     {
-        [CommandMethod("filter-selected")]
-        public static void FilterSelected()
+        // Use the same categorization logic as select-by-category.cs
+        string typeName = entity.GetType().Name;
+
+        if (entity is BlockReference)
         {
-            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
-            var editor = doc.Editor;
-
-            try
+            var br = entity as BlockReference;
+            using (var tr = br.Database.TransactionManager.StartTransaction())
             {
-                // Load selection from file
-                var savedSelection = SelectionStorage.LoadSelection();
-                if (!savedSelection.Any())
-                {
-                    editor.WriteMessage("\nNo saved selection found. Run select-all-in-opened-drawings first.");
-                    return;
-                }
-
-                editor.WriteMessage($"\nLoading {savedSelection.Count} entities from saved selection...\n");
-
-                // Group by document
-                var selectionByDoc = savedSelection.GroupBy(s => s.DocumentPath);
-                var allEntityData = new List<Dictionary<string, object>>();
-
-                foreach (var docGroup in selectionByDoc)
-                {
-                    // Find the document
-                    Document targetDoc = null;
-                    foreach (Document d in Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager)
-                    {
-                        if (d.Name == docGroup.Key)
-                        {
-                            targetDoc = d;
-                            break;
-                        }
-                    }
-
-                    if (targetDoc == null)
-                    {
-                        editor.WriteMessage($"  Warning: Document '{Path.GetFileName(docGroup.Key)}' is not open - skipping {docGroup.Count()} entities\n");
-                        continue;
-                    }
-
-                    // Get entities by handle
-                    var objectIds = new List<ObjectId>();
-                    using (targetDoc.LockDocument())
-                    {
-                        using (var tr = targetDoc.Database.TransactionManager.StartTransaction())
-                        {
-                            foreach (var item in docGroup)
-                            {
-                                try
-                                {
-                                    var handle = new Handle(Convert.ToInt64(item.Handle, 16));
-                                    if (targetDoc.Database.TryGetObjectId(handle, out ObjectId id))
-                                    {
-                                        objectIds.Add(id);
-                                    }
-                                }
-                                catch
-                                {
-                                    // Skip invalid handles
-                                }
-                            }
-                            tr.Commit();
-                        }
-                    }
-
-                    // Get entity data
-                    if (objectIds.Any())
-                    {
-                        var entityData = EntityDataHelper.GetEntityData(targetDoc, objectIds.ToArray(), true);
-                        allEntityData.AddRange(entityData);
-                        editor.WriteMessage($"  Loaded {entityData.Count} entities from {Path.GetFileName(targetDoc.Name)}\n");
-                    }
-                }
-
-                if (!allEntityData.Any())
-                {
-                    editor.WriteMessage("\nNo valid entities found in saved selection.");
-                    return;
-                }
-
-                editor.WriteMessage($"\nTotal entities loaded: {allEntityData.Count}\n");
-
-                // Get column names
-                var columnNames = new List<string> { "DisplayName", "EntityType", "Layer", "BlockName",
-                                                      "Handle", "Color", "Linetype", "LineWeight", "Space" };
-
-                // Add any additional property columns found in data
-                var additionalColumns = allEntityData
-                    .SelectMany(d => d.Keys)
-                    .Distinct()
-                    .Where(k => !columnNames.Contains(k) && k != "ObjectId" && k != "DocumentPath")
-                    .OrderBy(k => k);
-                columnNames.AddRange(additionalColumns);
-
-                // Show filter window
-                editor.WriteMessage("\nOpening filter window...\n");
-                var filterWindow = new FilterWindow(allEntityData, columnNames);
-                var result = filterWindow.ShowDialog();
-
-                if (result == DialogResult.OK && filterWindow.SelectedRows.Any())
-                {
-                    // Convert selected rows back to selection items
-                    var newSelection = new List<SelectionItem>();
-                    foreach (var row in filterWindow.SelectedRows)
-                    {
-                        if (row.ContainsKey("Handle") && row.ContainsKey("DocumentPath"))
-                        {
-                            newSelection.Add(new SelectionItem
-                            {
-                                DocumentPath = row["DocumentPath"].ToString(),
-                                Handle = row["Handle"].ToString()
-                            });
-                        }
-                    }
-
-                    // Save new selection
-                    SelectionStorage.SaveSelection(newSelection);
-
-                    // Select entities in current document
-                    var currentDocSelection = newSelection.Where(s => s.DocumentPath == doc.Name).ToList();
-                    if (currentDocSelection.Any())
-                    {
-                        using (var tr = doc.Database.TransactionManager.StartTransaction())
-                        {
-                            var selectedIds = new List<ObjectId>();
-
-                            foreach (var item in currentDocSelection)
-                            {
-                                try
-                                {
-                                    var handle = new Handle(Convert.ToInt64(item.Handle, 16));
-                                    if (doc.Database.TryGetObjectId(handle, out ObjectId id))
-                                    {
-                                        selectedIds.Add(id);
-                                    }
-                                }
-                                catch
-                                {
-                                    // Skip invalid handles
-                                }
-                            }
-
-                            // Set selection
-                            if (selectedIds.Count > 0)
-                            {
-                                editor.SetImpliedSelection(selectedIds.ToArray());
-                                editor.WriteMessage($"\nSelected {selectedIds.Count} entities in current drawing.");
-                            }
-
-                            tr.Commit();
-                        }
-                    }
-                    else
-                    {
-                        editor.WriteMessage($"\nNo filtered entities found in current drawing.");
-                    }
-
-                    editor.WriteMessage($"\nFiltered selection saved: {newSelection.Count} total entities across all drawings.");
-                }
+                var btr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                if (btr.IsFromExternalReference)
+                    return "XRef";
+                else if (btr.IsAnonymous)
+                    return "Dynamic Block";
                 else
-                {
-                    editor.WriteMessage("\nFilter operation cancelled.");
-                }
-            }
-            catch (System.Exception ex)
-            {
-                editor.WriteMessage($"\nError: {ex.Message}\n");
-                editor.WriteMessage($"Stack trace: {ex.StackTrace}\n");
+                    return "Block Reference";
             }
         }
+        else if (entity is Dimension)
+        {
+            if (entity is AlignedDimension)
+                return "Aligned Dimension";
+            else if (entity is RotatedDimension)
+                return "Linear Dimension";
+            else if (entity is RadialDimension)
+                return "Radial Dimension";
+            else if (entity is DiametricDimension)
+                return "Diametric Dimension";
+            else if (entity is OrdinateDimension)
+                return "Ordinate Dimension";
+            else if (entity is ArcDimension)
+                return "Arc Dimension";
+            else if (entity is RadialDimensionLarge)
+                return "Jogged Dimension";
+            else
+                return "Dimension";
+        }
+        else if (entity is MText)
+            return "MText";
+        else if (entity is DBText)
+            return "Text";
+        else if (entity is Polyline)
+            return "Polyline";
+        else if (entity is Polyline2d)
+            return "Polyline2D";
+        else if (entity is Polyline3d)
+            return "Polyline3D";
+        else if (entity is Line)
+            return "Line";
+        else if (entity is Circle)
+            return "Circle";
+        else if (entity is Arc)
+            return "Arc";
+        else if (entity is Ellipse)
+            return "Ellipse";
+        else if (entity is Spline)
+            return "Spline";
+        else if (entity is Hatch)
+            return "Hatch";
+        else if (entity is Solid)
+            return "2D Solid";
+        else if (entity is Leader)
+            return "Leader";
+        else if (entity is MLeader)
+            return "Multileader";
+        else if (entity is Table)
+            return "Table";
+        else if (entity is Viewport)
+            return "Viewport";
+        else if (entity is RasterImage)
+            return "Raster Image";
+        else if (entity is Wipeout)
+            return "Wipeout";
+        else if (entity is DBPoint)
+            return "Point";
+        else if (entity is Ray)
+            return "Ray";
+        else if (entity is Xline)
+            return "Construction Line";
+        else
+        {
+            return typeName.Replace("Autodesk.AutoCAD.", "");
+        }
     }
+
+    private static string GetEntityArea(Entity entity)
+    {
+        try
+        {
+            if (entity is Autodesk.AutoCAD.DatabaseServices.Region region)
+            {
+                return region.Area.ToString("F3");
+            }
+            else if (entity is Hatch hatch)
+            {
+                return hatch.Area.ToString("F3");
+            }
+            else if (entity is Circle circle)
+            {
+                return (Math.PI * circle.Radius * circle.Radius).ToString("F3");
+            }
+            else if (entity is Polyline pline && pline.Closed)
+            {
+                return pline.Area.ToString("F3");
+            }
+        }
+        catch { }
+        return "";
+    }
+
+    private static string GetEntityLength(Entity entity)
+    {
+        try
+        {
+            if (entity is Curve curve)
+            {
+                return curve.GetDistanceAtParameter(curve.EndParam).ToString("F3");
+            }
+        }
+        catch { }
+        return "";
+    }
+
+    private static string GetEntityElevation(Entity entity)
+    {
+        try
+        {
+            if (entity is Entity ent)
+            {
+                // return ent.Elevation.ToString("F3"); // Not available on base Entity
+            }
+        }
+        catch { }
+        return "";
+    }
+}
+
+/// <summary>
+/// Base class for commands that display AutoCAD entities in a custom data grid for filtering and reselection.
+/// Works with the stored selection system used by commands like select-by-category.
+/// </summary>
+public abstract class FilterElementsBase
+{
+    public abstract bool SpanAllScreens { get; }
+    public abstract bool UseSelectedElements { get; }
+    public abstract bool IncludeProperties { get; }
+
+    public void Execute()
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        try
+        {
+            var entityData = FilterEntityDataHelper.GetEntityData(ed, UseSelectedElements, IncludeProperties);
+
+            if (!entityData.Any())
+            {
+                ed.WriteMessage("\nNo entities found.\n");
+                return;
+            }
+
+            // Add index to each entity for mapping back after user selection
+            for (int i = 0; i < entityData.Count; i++)
+            {
+                entityData[i]["OriginalIndex"] = i;
+            }
+
+            // Get property names, excluding internal fields
+            var propertyNames = entityData.First().Keys
+                .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex")
+                .ToList();
+
+            // Reorder to put most useful columns first
+            var orderedProps = new List<string> { "DisplayName", "Category", "Layer", "DocumentName", "Color", "LineType", "Handle" };
+            var remainingProps = propertyNames.Except(orderedProps).OrderBy(p => p);
+            propertyNames = orderedProps.Where(p => propertyNames.Contains(p))
+                .Concat(remainingProps)
+                .ToList();
+
+            var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
+            if (chosenRows.Count == 0)
+            {
+                ed.WriteMessage("\nNo entities selected.\n");
+                return;
+            }
+
+            // Collect ObjectIds for selection
+            var selectedIds = new List<ObjectId>();
+            var externalEntities = new List<Dictionary<string, object>>();
+
+            foreach (var row in chosenRows)
+            {
+                // Check if this is an external entity
+                if (row.TryGetValue("IsExternal", out var isExternal) && (bool)isExternal)
+                {
+                    externalEntities.Add(row);
+                }
+                else if (row.TryGetValue("ObjectId", out var objIdObj) && objIdObj is ObjectId objectId)
+                {
+                    selectedIds.Add(objectId);
+                }
+            }
+
+            // Set selection for current document entities
+            if (selectedIds.Count > 0)
+            {
+                ed.SetImpliedSelectionEx(selectedIds.ToArray());
+                ed.WriteMessage($"\n{selectedIds.Count} entities selected in current document.\n");
+            }
+
+            // Report external entities
+            if (externalEntities.Count > 0)
+            {
+                ed.WriteMessage($"\nNote: {externalEntities.Count} external entities were found but cannot be selected:\n");
+                foreach (var ext in externalEntities.Take(5)) // Show first 5
+                {
+                    ed.WriteMessage($"  {ext["DocumentName"]} - Handle: {ext["Handle"]}\n");
+                }
+                if (externalEntities.Count > 5)
+                {
+                    ed.WriteMessage($"  ... and {externalEntities.Count - 5} more\n");
+                }
+            }
+
+            // Save the selected entities to selection storage for other commands
+            if (selectedIds.Count > 0)
+            {
+                var selectionItems = new List<SelectionItem>();
+                foreach (var id in selectedIds)
+                {
+                    selectionItems.Add(new SelectionItem
+                    {
+                        DocumentPath = doc.Name,
+                        Handle = id.Handle.ToString()
+                    });
+                }
+                SelectionStorage.SaveSelection(selectionItems);
+                ed.WriteMessage("Selection saved for use with other commands.\n");
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}\n");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nUnexpected error: {ex.Message}\n");
+        }
+    }
+}
+
+/// <summary>
+/// Concrete command class
+/// </summary>
+public class FilterSelectedElements
+{
+    [CommandMethod("filter-selected")]
+    public void FilterSelectedCommand()
+    {
+        var command = new FilterSelectedImpl();
+        command.Execute();
+    }
+}
+
+public class FilterSelectedImpl : FilterElementsBase
+{
+    public override bool SpanAllScreens => false;
+    public override bool UseSelectedElements => SelectionScopeManager.CurrentScope != SelectionScopeManager.SelectionScope.view;
+    public override bool IncludeProperties => true;
 }

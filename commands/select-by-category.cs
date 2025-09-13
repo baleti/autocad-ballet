@@ -32,7 +32,7 @@ public class SelectByCategory
 
         var currentMode = SelectionScopeManager.CurrentScope;
 
-        if (currentMode == SelectionScopeManager.SelectionScope.Process)
+        if (currentMode == SelectionScopeManager.SelectionScope.process)
         {
             HandleProcessMode(ed);
         }
@@ -338,17 +338,17 @@ public class SelectByCategory
 
         switch (scope)
         {
-            case SelectionScopeManager.SelectionScope.SpaceLayout:
+            case SelectionScopeManager.SelectionScope.view:
                 GatherFromCurrentSpace(db, categories);
                 break;
 
-            case SelectionScopeManager.SelectionScope.Drawing:
+            case SelectionScopeManager.SelectionScope.drawing:
                 GatherFromEntireDrawing(db, categories);
                 GatherLayouts(db, categories);
                 break;
 
-            case SelectionScopeManager.SelectionScope.Desktop:
-            case SelectionScopeManager.SelectionScope.Network:
+            case SelectionScopeManager.SelectionScope.desktop:
+            case SelectionScopeManager.SelectionScope.network:
                 // For now, fall back to Drawing scope
                 GatherFromEntireDrawing(db, categories);
                 break;

@@ -43,7 +43,8 @@ public partial class CustomGUIs
         {
             StartPosition = FormStartPosition.CenterScreen,
             Text = "Total Entries: " + entries.Count,
-            BackColor = Color.White
+            BackColor = Color.White,
+            ShowIcon = false
         };
 
         // Create DataGridView with virtual mode
