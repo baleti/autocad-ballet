@@ -28,7 +28,6 @@
     <Nullable>disable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <DebugType>none</DebugType>
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

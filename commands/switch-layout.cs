@@ -25,123 +25,53 @@ namespace AutoCADBallet
             Editor ed = doc.Editor;
 
             string projectName = Path.GetFileNameWithoutExtension(doc.Name) ?? "UnknownProject";
-            string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string logFilePath = Path.Combine(appDataPath, "autocad-ballet", "LogLayoutChanges", projectName);
-
-            var layoutNames = new List<string>();
-            
-            if (File.Exists(logFilePath))
-            {
-                try
-                {
-                    var layoutEntries = File.ReadAllLines(logFilePath)
-                                          .Reverse()
-                                          .Select(l => l.Trim())
-                                          .Where(l => l.Length > 0)
-                                          .Distinct()
-                                          .ToList();
-
-                    foreach (string entry in layoutEntries)
-                    {
-                        var parts = entry.Split(new[] { ' ' }, 2);
-                        if (parts.Length == 2)
-                            layoutNames.Add(parts[1]);
-                    }
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"\nWarning: Could not read log file: {ex.Message}");
-                }
-            }
-            
-            if (layoutNames.Count == 0)
-            {
-                ed.WriteMessage("\nNo layout log found. Showing all layouts in current drawing.");
-            }
 
             var availableLayouts = new List<Dictionary<string, object>>();
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 var layoutDict = tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead) as DBDictionary;
-                
+
+                var layoutsWithOrder = new List<(string name, int order)>();
                 foreach (DictionaryEntry entry in layoutDict)
                 {
                     var layout = tr.GetObject((ObjectId)entry.Value, OpenMode.ForRead) as Layout;
-                    if (layout != null && (layoutNames.Count == 0 || layoutNames.Contains(layout.LayoutName)))
+                    if (layout != null)
                     {
-                        availableLayouts.Add(new Dictionary<string, object>
-                        {
-                            ["LayoutName"] = layout.LayoutName,
-                            ["TabOrder"] = layout.TabOrder,
-                            ["LayoutObject"] = layout
-                        });
+                        layoutsWithOrder.Add((layout.LayoutName, layout.TabOrder));
                     }
                 }
                 tr.Commit();
+
+                // Sort by tab order, then add to availableLayouts in that order
+                layoutsWithOrder = layoutsWithOrder.OrderBy(l => l.order).ToList();
+                foreach (var (name, order) in layoutsWithOrder)
+                {
+                    availableLayouts.Add(new Dictionary<string, object>
+                    {
+                        ["layout"] = name
+                    });
+                }
             }
 
             if (availableLayouts.Count == 0)
-            {
-                ed.WriteMessage("\nNo matching layouts found in this drawing.");
                 return;
-            }
-
-            availableLayouts = availableLayouts.OrderBy(l => 
-            {
-                if (l["TabOrder"] == null) return int.MaxValue;
-                if (int.TryParse(l["TabOrder"].ToString(), out int tabOrder)) return tabOrder;
-                return int.MaxValue;
-            }).ToList();
 
             int selectedIndex = -1;
             string currentLayoutName = LayoutManager.Current.CurrentLayout;
-            selectedIndex = availableLayouts.FindIndex(l => l["LayoutName"].ToString() == currentLayoutName);
+            selectedIndex = availableLayouts.FindIndex(l => l["layout"].ToString() == currentLayoutName);
 
-            var propertyNames = new List<string> { "TabOrder", "LayoutName" };
-            var initialSelectionIndices = selectedIndex >= 0 
+            var propertyNames = new List<string> { "layout" };
+            var initialSelectionIndices = selectedIndex >= 0
                                             ? new List<int> { selectedIndex }
                                             : new List<int>();
 
-            ed.WriteMessage($"\nDebug: Found {availableLayouts.Count} layouts, selectedIndex={selectedIndex}");
-            if (selectedIndex >= 0)
-                ed.WriteMessage($"\nDebug: Will pre-select: {availableLayouts[selectedIndex]["LayoutName"]}");
+            List<Dictionary<string, object>> chosen = CustomGUIs.DataGrid(availableLayouts, propertyNames, false, initialSelectionIndices);
 
-            try
+            if (chosen != null && chosen.Count > 0)
             {
-                List<Dictionary<string, object>> chosen = CustomGUIs.DataGrid(availableLayouts, propertyNames, false, initialSelectionIndices);
-
-                if (chosen != null && chosen.Count > 0)
-                {
-                    string chosenLayoutName = chosen.First()["LayoutName"].ToString();
-                    LayoutManager.Current.CurrentLayout = chosenLayoutName;
-                    ed.WriteMessage($"\nSwitched to layout: {chosenLayoutName}");
-                    return;
-                }
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage($"\nError showing layout picker: {ex.Message}");
-            }
-
-            ed.WriteMessage("\nAvailable layouts:");
-            for (int i = 0; i < availableLayouts.Count; i++)
-            {
-                string marker = (i == selectedIndex) ? " [CURRENT]" : "";
-                ed.WriteMessage($"\n{i + 1}: {availableLayouts[i]["LayoutName"]}{marker}");
-            }
-
-            PromptIntegerOptions pio = new PromptIntegerOptions("\nSelect layout number: ");
-            pio.AllowNegative = false;
-            pio.AllowZero = false;
-            pio.LowerLimit = 1;
-            pio.UpperLimit = availableLayouts.Count;
-            PromptIntegerResult pir = ed.GetInteger(pio);
-
-            if (pir.Status == PromptStatus.OK)
-            {
-                string selectedLayoutName = availableLayouts[pir.Value - 1]["LayoutName"].ToString();
-                LayoutManager.Current.CurrentLayout = selectedLayoutName;
-                ed.WriteMessage($"\nSwitched to layout: {selectedLayoutName}");
+                string chosenLayoutName = chosen.First()["layout"].ToString();
+                LayoutManager.Current.CurrentLayout = chosenLayoutName;
+                LayoutChangeTracker.LogLayoutChange(projectName, chosenLayoutName, true);
             }
         }
     }

@@ -101,15 +101,8 @@ public partial class CustomGUIs
         // Initialize grid with data
         grid.RowCount = workingSet.Count;
         
-        // Add initial sort by first column if columns exist
-        if (propertyNames.Count > 0)
-        {
-            sortCriteria.Add(new SortCriteria
-            {
-                ColumnName = propertyNames[0],
-                Direction = ListSortDirection.Ascending
-            });
-        }
+        // Preserve caller-provided row order on initial load
+        // (Do not apply any default sort here; sorting is user-driven.)
 
         // Helper to get first visible column
         Func<int> GetFirstVisibleColumnIndex = () =>
@@ -314,6 +307,39 @@ public partial class CustomGUIs
             else if (e.KeyCode == Keys.Left && sender == grid)
             {
                 grid.HorizontalScrollingOffset = Math.Max(grid.HorizontalScrollingOffset - 50, 0);
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Space && sender == searchBox && string.IsNullOrEmpty(searchBox.Text))
+            {
+                if (grid.Rows.Count > 0)
+                {
+                    int currentIdx = 0;
+                    if (grid.SelectedRows.Count > 0)
+                    {
+                        currentIdx = grid.SelectedRows[0].Index;
+                    }
+
+                    int targetIdx;
+                    if (e.Shift)
+                    {
+                        // Shift+Space: move up one row
+                        targetIdx = Math.Max(currentIdx - 1, 0);
+                    }
+                    else
+                    {
+                        // Space: move down one row
+                        targetIdx = Math.Min(currentIdx + 1, grid.Rows.Count - 1);
+                    }
+
+                    int firstVisible = GetFirstVisibleColumnIndex();
+                    if (firstVisible >= 0)
+                    {
+                        grid.ClearSelection();
+                        grid.Rows[targetIdx].Selected = true;
+                        grid.CurrentCell = grid.Rows[targetIdx].Cells[firstVisible];
+                        FinishSelection();
+                    }
+                }
                 e.Handled = true;
             }
             else if (e.KeyCode == Keys.D && e.Alt)

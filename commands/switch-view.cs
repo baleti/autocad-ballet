@@ -26,6 +26,11 @@ namespace AutoCADBallet
             Editor ed = activeDoc.Editor;
             string currentLayoutName = LayoutManager.Current.CurrentLayout;
 
+            // Generate session identifier for this AutoCAD process
+            int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+            int sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId;
+            string currentSessionId = $"{processId}_{sessionId}";
+
             var allViews = new List<Dictionary<string, object>>();
             int currentViewIndex = -1;
             int viewIndex = 0;
@@ -87,13 +92,14 @@ namespace AutoCADBallet
 
                                 allViews.Add(new Dictionary<string, object>
                                 {
-                                    ["ViewName"] = $"{layoutName} ({docName})",
-                                    ["DocumentName"] = docName,
+                                    ["layout"] = layoutName,
+                                    ["document"] = Path.GetFileNameWithoutExtension(docName),
+                                    ["autocad session"] = currentSessionId,
                                     ["LayoutName"] = layoutName,
                                     ["FullPath"] = docFullPath,
                                     ["TabOrder"] = layoutInfo["TabOrder"],
                                     ["IsActive"] = isCurrentView,
-                                    ["Document"] = doc
+                                    ["DocumentObject"] = doc
                                 });
 
                                 viewIndex++;
@@ -105,22 +111,25 @@ namespace AutoCADBallet
                 }
                 catch (System.Exception ex)
                 {
-                    ed.WriteMessage($"\nWarning: Could not read layouts from {docName}: {ex.Message}");
+                    // Silently skip documents that can't be read
                 }
             }
 
             if (allViews.Count == 0)
             {
-                ed.WriteMessage("\nNo layouts found in any open documents.");
                 return;
             }
 
-            // Sort views by document name first, then by tab order
-            allViews = allViews.OrderBy(v => v["DocumentName"].ToString())
+            // Sort views by document name first, then by tab order (Model space typically has TabOrder=0)
+            allViews = allViews.OrderBy(v => v["document"].ToString())
                               .ThenBy(v =>
                               {
                                   if (v["TabOrder"] == null) return int.MaxValue;
-                                  if (int.TryParse(v["TabOrder"].ToString(), out int tabOrder)) return tabOrder;
+                                  if (int.TryParse(v["TabOrder"].ToString(), out int tabOrder))
+                                  {
+                                      // Model space layout typically has TabOrder=0 and should come first
+                                      return tabOrder;
+                                  }
                                   return int.MaxValue;
                               })
                               .ToList();
@@ -128,10 +137,12 @@ namespace AutoCADBallet
             // Update currentViewIndex after sorting
             currentViewIndex = allViews.FindIndex(v => (bool)v["IsActive"]);
 
-            var propertyNames = new List<string> { "ViewName", "FullPath" };
+
+            var propertyNames = new List<string> { "layout", "document", "autocad session" };
             var initialSelectionIndices = currentViewIndex >= 0
                                             ? new List<int> { currentViewIndex }
                                             : new List<int>();
+
 
             try
             {
@@ -140,7 +151,7 @@ namespace AutoCADBallet
                 if (chosen != null && chosen.Count > 0)
                 {
                     var selected = chosen.First();
-                    Document targetDoc = selected["Document"] as Document;
+                    Document targetDoc = selected["DocumentObject"] as Document;
                     string targetLayout = selected["LayoutName"].ToString();
 
                     if (targetDoc != null)
@@ -167,21 +178,17 @@ namespace AutoCADBallet
 
                                         // Log the layout change
                                         string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
-                                        LayoutLogger.LogLayoutChange(projectName, targetLayout);
+                                        LayoutChangeTracker.LogLayoutChange(projectName, targetLayout, true);
 
-                                        targetDoc.Editor.WriteMessage($"\nSwitched to layout: {targetLayout}");
                                     }
                                     catch (Autodesk.AutoCAD.Runtime.Exception ex)
                                     {
-                                        // Use the activated document's editor for error messages too
-                                        targetDoc.Editor.WriteMessage($"\nFailed to switch to layout '{targetLayout}': {ex.Message}");
                                     }
                                 }
                             };
 
                             docs.DocumentActivated += handler;
                             docs.MdiActiveDocument = targetDoc;
-                            ed.WriteMessage($"\nSwitching to document: {targetDoc.Name}");
                         }
                         else
                         {
@@ -195,13 +202,11 @@ namespace AutoCADBallet
                                 }
 
                                 string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
-                                LayoutLogger.LogLayoutChange(projectName, targetLayout);
+                                LayoutChangeTracker.LogLayoutChange(projectName, targetLayout, true);
 
-                                ed.WriteMessage($"\nSwitched to layout: {targetLayout}");
                             }
                             catch (Autodesk.AutoCAD.Runtime.Exception ex)
                             {
-                                ed.WriteMessage($"\nFailed to switch to layout '{targetLayout}': {ex.Message}");
                             }
                         }
                         return;
@@ -210,93 +215,7 @@ namespace AutoCADBallet
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError showing view picker: {ex.Message}");
-            }
-
-            // Fallback to text-based selection
-            ed.WriteMessage("\nAvailable views (Layout - Document):");
-            for (int i = 0; i < allViews.Count; i++)
-            {
-                string marker = (i == currentViewIndex) ? " [CURRENT]" : "";
-                ed.WriteMessage($"\n{i + 1}: {allViews[i]["ViewName"]}{marker}");
-            }
-
-            PromptIntegerOptions pio = new PromptIntegerOptions("\nSelect view number: ");
-            pio.AllowNegative = false;
-            pio.AllowZero = false;
-            pio.LowerLimit = 1;
-            pio.UpperLimit = allViews.Count;
-            PromptIntegerResult pir = ed.GetInteger(pio);
-
-            if (pir.Status == PromptStatus.OK)
-            {
-                var selected = allViews[pir.Value - 1];
-                Document targetDoc = selected["Document"] as Document;
-                string targetLayout = selected["LayoutName"].ToString();
-
-                if (targetDoc != null)
-                {
-                    // First switch to the document
-                    if (docs.MdiActiveDocument != targetDoc)
-                    {
-                        // Set up event handler for when document activation completes
-                        DocumentCollectionEventHandler handler = null;
-                        handler = (sender, e) =>
-                        {
-                            if (e.Document == targetDoc)
-                            {
-                                // Unsubscribe from event to avoid memory leaks
-                                docs.DocumentActivated -= handler;
-
-                                try
-                                {
-                                    // Use the activated document's editor
-                                    Editor targetEd = targetDoc.Editor;
-
-                                    // Direct layout switch with document lock
-                                    using (DocumentLock docLock = targetDoc.LockDocument())
-                                    {
-                                        LayoutManager.Current.CurrentLayout = targetLayout;
-                                    }
-
-                                    // Log the layout change
-                                    string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
-                                    LayoutLogger.LogLayoutChange(projectName, targetLayout);
-
-                                    targetEd.WriteMessage($"\nSwitched to: {targetLayout} in {Path.GetFileName(targetDoc.Name)}");
-                                }
-                                catch (Autodesk.AutoCAD.Runtime.Exception ex)
-                                {
-                                    targetDoc.Editor.WriteMessage($"\nFailed to switch to layout '{targetLayout}': {ex.Message}");
-                                }
-                            }
-                        };
-
-                        docs.DocumentActivated += handler;
-                        docs.MdiActiveDocument = targetDoc;
-                    }
-                    else
-                    {
-                        // Already in the target document, just switch layout
-                        try
-                        {
-                            // Direct layout switch with document lock
-                            using (DocumentLock docLock = activeDoc.LockDocument())
-                            {
-                                LayoutManager.Current.CurrentLayout = targetLayout;
-                            }
-
-                            string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
-                            LayoutLogger.LogLayoutChange(projectName, targetLayout);
-
-                            ed.WriteMessage($"\nSwitched to: {targetLayout} in {Path.GetFileName(targetDoc.Name)}");
-                        }
-                        catch (Autodesk.AutoCAD.Runtime.Exception ex)
-                        {
-                            ed.WriteMessage($"\nFailed to switch to layout '{targetLayout}': {ex.Message}");
-                        }
-                    }
-                }
+                // DataGrid failed, command ends silently
             }
         }
     }
