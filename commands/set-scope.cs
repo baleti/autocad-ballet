@@ -383,12 +383,6 @@ public class ToggleSelectionScope
 
         var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
         ed.WriteMessage($"\nSelection scope changed to: {newScope}\n");
-
-        // Clear stored selections when changing scope
-        if (newScope != SelectionScopeManager.SelectionScope.view)
-        {
-            SelectionScopeManager.ClearStoredSelections();
-        }
     }
 }
 
@@ -432,12 +426,6 @@ public class SetSelectionScope
 
                 SelectionScopeManager.CurrentScope = selectedScope;
                 ed.WriteMessage($"\nSelection scope set to: {selectedScope}\n");
-
-                // Clear stored selections when changing scope
-                if (selectedScope != SelectionScopeManager.SelectionScope.view)
-                {
-                    SelectionScopeManager.ClearStoredSelections();
-                }
             }
         }
         catch (System.Exception ex)

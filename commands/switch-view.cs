@@ -66,7 +66,9 @@ namespace AutoCADBallet
                                     {
                                         ["LayoutName"] = layout.LayoutName,
                                         ["TabOrder"] = layout.TabOrder,
-                                        ["LayoutObject"] = layout
+                                        ["LayoutObject"] = layout,
+                                        ["ObjectId"] = (ObjectId)entry.Value,
+                                        ["Handle"] = layout.Handle.ToString()
                                     });
                                 }
                             }
@@ -99,7 +101,10 @@ namespace AutoCADBallet
                                     ["FullPath"] = docFullPath,
                                     ["TabOrder"] = layoutInfo["TabOrder"],
                                     ["IsActive"] = isCurrentView,
-                                    ["DocumentObject"] = doc
+                                    ["DocumentObject"] = doc,
+                                    ["ObjectId"] = layoutInfo["ObjectId"], // Add Layout ObjectId for editing
+                                    ["DocumentPath"] = docFullPath, // Add DocumentPath for cross-document editing
+                                    ["Handle"] = layoutInfo["Handle"] // Add Handle for cross-document editing
                                 });
 
                                 viewIndex++;

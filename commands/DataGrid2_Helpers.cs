@@ -256,6 +256,7 @@ public partial class CustomGUIs
             case "layer":          // Layer assignment
             case "color":          // Color property
             case "linetype":       // Linetype assignment
+            case "layout":         // Layout names (for switch-view command)
                 return true;
         }
 
@@ -803,6 +804,7 @@ public partial class CustomGUIs
         {
             switch (columnName.ToLowerInvariant())
             {
+                case "layout":
                 case "name":
                     ed.WriteMessage($"\n  >> Setting name/text to '{newValue}' in external document");
                     // Handle name changes for different object types
@@ -845,9 +847,10 @@ public partial class CustomGUIs
                             if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotApplicable)
                             {
                                 ed.WriteMessage($"\n  >> External layout name change not applicable - may be a special layout like Model space");
+                                return; // Skip this edit and continue
                             }
 
-                            throw; // Re-throw for debugging
+                            throw; // Re-throw other exceptions for debugging
                         }
                     }
                     else if (dbObject is MText mtext)
@@ -1003,6 +1006,7 @@ public partial class CustomGUIs
                     }
                     break;
 
+                case "layout":
                 case "name":
                     ed.WriteMessage($"\n  >> Setting name/text to '{newValue}'");
                     // Handle name changes for text entities, layouts, and other named objects
@@ -1057,9 +1061,10 @@ public partial class CustomGUIs
                             if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotApplicable)
                             {
                                 ed.WriteMessage($"\n  >> Layout name change not applicable - may be a special layout like Model space");
+                                return; // Skip this edit and continue
                             }
 
-                            throw; // Re-throw for debugging
+                            throw; // Re-throw other exceptions for debugging
                         }
                     }
                     else if (dbObject is LayerTableRecord layer)
