@@ -64,8 +64,12 @@ public class SelectByCategory
                 var refs = GatherEntityReferencesFromDocument(doc.Database, docPath, docName);
                 allReferences.AddRange(refs);
 
-                // Group by category
-                foreach (var entityRef in refs)
+                // Also gather layout references
+                var layoutRefs = GatherLayoutReferencesFromDocument(doc.Database, docPath, docName);
+                allReferences.AddRange(layoutRefs);
+
+                // Group by category (including layouts)
+                foreach (var entityRef in refs.Concat(layoutRefs))
                 {
                     if (!categoryGroups.ContainsKey(entityRef.Category))
                         categoryGroups[entityRef.Category] = new List<EntityReference>();
@@ -212,6 +216,44 @@ public class SelectByCategory
                             continue;
                         }
                     }
+                }
+
+                tr.Commit();
+            }
+            catch (System.Exception)
+            {
+                tr.Abort();
+                throw;
+            }
+        }
+
+        return references;
+    }
+
+    private List<EntityReference> GatherLayoutReferencesFromDocument(Database db, string docPath, string docName)
+    {
+        var references = new List<EntityReference>();
+
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            try
+            {
+                var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+                foreach (DBDictionaryEntry entry in layoutDict)
+                {
+                    var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+
+                    var layoutRef = new EntityReference
+                    {
+                        DocumentPath = docPath,
+                        DocumentName = docName,
+                        Handle = layout.Handle.ToString(),
+                        Category = "Layout",
+                        SpaceName = layout.LayoutName
+                    };
+
+                    references.Add(layoutRef);
                 }
 
                 tr.Commit();

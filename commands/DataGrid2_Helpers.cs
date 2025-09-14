@@ -518,99 +518,43 @@ public partial class CustomGUIs
             return;
         }
 
-        var db = doc.Database;
-
         try
         {
-            ed.WriteMessage("\nStarting transaction...");
-            using (var tr = db.TransactionManager.StartTransaction())
+            // Group edits by document path for cross-document support
+            var editsByDocument = GroupEditsByDocument();
+            ed.WriteMessage($"\nEdits grouped by {editsByDocument.Count} document(s)");
+
+            int totalApplied = 0;
+            int totalProcessed = 0;
+
+            // Process edits for current document first
+            string currentDocPath = System.IO.Path.GetFullPath(doc.Name);
+            if (editsByDocument.ContainsKey(currentDocPath))
             {
-                int appliedCount = 0;
-                int processedCount = 0;
+                var currentDocEdits = editsByDocument[currentDocPath];
+                ed.WriteMessage($"\nProcessing {currentDocEdits.Count} edits for current document");
 
-                foreach (var kvp in _pendingCellEdits)
-                {
-                    processedCount++;
-                    ed.WriteMessage($"\n--- Processing edit {processedCount}/{_pendingCellEdits.Count} ---");
-                    ed.WriteMessage($"\nEdit key: '{kvp.Key}', Value: '{kvp.Value}'");
+                int applied = ApplyEditsToDocument(doc, currentDocEdits);
+                totalApplied += applied;
+                totalProcessed += currentDocEdits.Count;
 
-                    string[] parts = kvp.Key.Split('|');
-                    if (parts.Length == 2)
-                    {
-                        int rowIndex = int.Parse(parts[0]);
-                        string columnName = parts[1];
-                        string newValue = kvp.Value?.ToString() ?? "";
-
-                        ed.WriteMessage($"\nRowIndex: {rowIndex}, ColumnName: '{columnName}', NewValue: '{newValue}'");
-                        ed.WriteMessage($"\nCached data count: {_cachedFilteredData.Count}");
-
-                        if (rowIndex >= 0 && rowIndex < _cachedFilteredData.Count)
-                        {
-                            var entry = _cachedFilteredData[rowIndex];
-                            ed.WriteMessage($"\nEntry found at row {rowIndex}");
-
-                            // Get the ObjectId for this entity
-                            if (entry.TryGetValue("ObjectId", out var objIdValue))
-                            {
-                                ed.WriteMessage($"\nObjectId value type: {objIdValue?.GetType().Name}, Value: {objIdValue}");
-
-                                if (objIdValue is ObjectId objectId)
-                                {
-                                    ed.WriteMessage($"\nGot ObjectId: {objectId}");
-
-                                    try
-                                    {
-                                        ed.WriteMessage("\nOpening entity for write...");
-                                        var dbObject = tr.GetObject(objectId, OpenMode.ForWrite);
-
-                                        if (dbObject != null)
-                                        {
-                                            ed.WriteMessage($"\nDBObject opened successfully: {dbObject.GetType().Name}");
-                                            ApplyEditToDBObject(dbObject, columnName, newValue, tr);
-                                            appliedCount++;
-                                            ed.WriteMessage($"\nEdit applied successfully (#{appliedCount})");
-                                        }
-                                        else
-                                        {
-                                            ed.WriteMessage("\nDBObject is null");
-                                        }
-                                    }
-                                    catch (System.Exception ex)
-                                    {
-                                        // Log specific error for debugging
-                                        ed.WriteMessage($"\nError applying edit to {columnName}: {ex.Message}");
-                                        ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
-                                        continue;
-                                    }
-                                }
-                                else
-                                {
-                                    ed.WriteMessage("\nObjectId value is not of type ObjectId");
-                                }
-                            }
-                            else
-                            {
-                                ed.WriteMessage("\nNo ObjectId found in entry");
-                                // Debug: show what keys are available
-                                ed.WriteMessage($"\nAvailable keys: {string.Join(", ", entry.Keys)}");
-                            }
-                        }
-                        else
-                        {
-                            ed.WriteMessage($"\nRow index {rowIndex} out of range (0-{_cachedFilteredData.Count - 1})");
-                        }
-                    }
-                    else
-                    {
-                        ed.WriteMessage($"\nInvalid key format: '{kvp.Key}' (expected 'row|column')");
-                    }
-                }
-
-                ed.WriteMessage($"\nCommitting transaction with {appliedCount} modifications...");
-                tr.Commit();
-                ed.WriteMessage($"\nTransaction committed successfully!");
-                ed.WriteMessage($"\nFinal result: Applied {appliedCount} entity modifications out of {processedCount} processed.");
+                editsByDocument.Remove(currentDocPath);
             }
+
+            // Process edits for external documents
+            foreach (var docEdits in editsByDocument)
+            {
+                string externalDocPath = docEdits.Key;
+                var edits = docEdits.Value;
+
+                ed.WriteMessage($"\nProcessing {edits.Count} edits for external document: {System.IO.Path.GetFileName(externalDocPath)}");
+
+                int applied = ApplyEditsToExternalDocument(externalDocPath, edits);
+                totalApplied += applied;
+                totalProcessed += edits.Count;
+            }
+
+            ed.WriteMessage($"\nFinal result: Applied {totalApplied} entity modifications out of {totalProcessed} processed.");
         }
         catch (System.Exception ex)
         {
@@ -623,6 +567,387 @@ public partial class CustomGUIs
             _pendingCellEdits.Clear();
             ed.WriteMessage($"\n=== ApplyCellEditsToEntities END ===");
         }
+    }
+
+    /// <summary>Group pending edits by document path for cross-document processing</summary>
+    private static Dictionary<string, List<PendingEdit>> GroupEditsByDocument()
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        var editsByDocument = new Dictionary<string, List<PendingEdit>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var kvp in _pendingCellEdits)
+        {
+            string[] parts = kvp.Key.Split('|');
+            if (parts.Length == 2)
+            {
+                int rowIndex = int.Parse(parts[0]);
+                string columnName = parts[1];
+                string newValue = kvp.Value?.ToString() ?? "";
+
+                if (rowIndex >= 0 && rowIndex < _cachedFilteredData.Count)
+                {
+                    var entry = _cachedFilteredData[rowIndex];
+
+                    // Determine document path for this edit
+                    string documentPath;
+                    if (entry.TryGetValue("DocumentPath", out var docPathObj))
+                    {
+                        documentPath = System.IO.Path.GetFullPath(docPathObj.ToString());
+                    }
+                    else
+                    {
+                        // Fallback to current document
+                        documentPath = System.IO.Path.GetFullPath(doc.Name);
+                    }
+
+                    // Create pending edit object
+                    var pendingEdit = new PendingEdit
+                    {
+                        RowIndex = rowIndex,
+                        ColumnName = columnName,
+                        NewValue = newValue,
+                        Entry = entry
+                    };
+
+                    // Add to appropriate document group
+                    if (!editsByDocument.ContainsKey(documentPath))
+                    {
+                        editsByDocument[documentPath] = new List<PendingEdit>();
+                    }
+                    editsByDocument[documentPath].Add(pendingEdit);
+
+                    ed.WriteMessage($"\nGrouped edit for {System.IO.Path.GetFileName(documentPath)}: {columnName} = '{newValue}'");
+                }
+            }
+        }
+
+        return editsByDocument;
+    }
+
+    /// <summary>Apply edits to entities in the current document</summary>
+    private static int ApplyEditsToDocument(Autodesk.AutoCAD.ApplicationServices.Document doc, List<PendingEdit> edits)
+    {
+        var ed = doc.Editor;
+        var db = doc.Database;
+        int appliedCount = 0;
+
+        ed.WriteMessage("\nStarting transaction for current document...");
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            foreach (var edit in edits)
+            {
+                try
+                {
+                    // Get the ObjectId for this entity (may need to reconstruct from Handle for external entities)
+                    ObjectId objectId = ObjectId.Null;
+
+                    if (edit.Entry.TryGetValue("ObjectId", out var objIdValue) && objIdValue is ObjectId validObjectId)
+                    {
+                        objectId = validObjectId;
+                    }
+                    else if (edit.Entry.TryGetValue("Handle", out var handleValue))
+                    {
+                        // Try to reconstruct ObjectId from Handle (for external entities)
+                        try
+                        {
+                            var handle = Convert.ToInt64(handleValue.ToString(), 16);
+                            objectId = doc.Database.GetObjectId(false, new Autodesk.AutoCAD.DatabaseServices.Handle(handle), 0);
+                        }
+                        catch (System.Exception ex)
+                        {
+                            ed.WriteMessage($"\nFailed to reconstruct ObjectId from Handle {handleValue}: {ex.Message}");
+                        }
+                    }
+
+                    if (objectId != ObjectId.Null)
+                    {
+                        ed.WriteMessage($"\nApplying edit: {edit.ColumnName} = '{edit.NewValue}' to ObjectId {objectId}");
+
+                        var dbObject = tr.GetObject(objectId, OpenMode.ForWrite);
+                        if (dbObject != null)
+                        {
+                            ApplyEditToDBObject(dbObject, edit.ColumnName, edit.NewValue, tr);
+                            appliedCount++;
+                            ed.WriteMessage($"\nEdit applied successfully");
+                        }
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\nSkipping edit - no valid ObjectId or Handle found");
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage($"\nError applying edit to {edit.ColumnName}: {ex.Message}");
+                    continue;
+                }
+            }
+
+            ed.WriteMessage($"\nCommitting transaction with {appliedCount} modifications...");
+            tr.Commit();
+            ed.WriteMessage($"\nTransaction committed successfully!");
+        }
+
+        return appliedCount;
+    }
+
+    /// <summary>Apply edits to entities in an external document without switching active document</summary>
+    private static int ApplyEditsToExternalDocument(string documentPath, List<PendingEdit> edits)
+    {
+        var docs = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
+        var currentDoc = docs.MdiActiveDocument;
+        var ed = currentDoc.Editor;
+
+        int appliedCount = 0;
+
+        try
+        {
+            // Check if the external document is already open
+            Autodesk.AutoCAD.ApplicationServices.Document targetDoc = null;
+
+            foreach (Autodesk.AutoCAD.ApplicationServices.Document openDoc in docs)
+            {
+                if (string.Equals(System.IO.Path.GetFullPath(openDoc.Name), documentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetDoc = openDoc;
+                    break;
+                }
+            }
+
+            if (targetDoc == null)
+            {
+                ed.WriteMessage($"\nCannot access external document: {documentPath} (document not open)");
+                return 0;
+            }
+
+            ed.WriteMessage($"\nProcessing edits in external document: {System.IO.Path.GetFileName(documentPath)}");
+
+            // Apply edits directly to the external document without switching active document
+            // Use document locking for reliable operations
+            using (var docLock = targetDoc.LockDocument())
+            {
+                var targetDb = targetDoc.Database;
+                var targetEditor = targetDoc.Editor;
+
+                ed.WriteMessage("\nStarting transaction for external document...");
+                using (var tr = targetDb.TransactionManager.StartTransaction())
+                {
+                    foreach (var edit in edits)
+                    {
+                        try
+                        {
+                            // Get the ObjectId for this entity in the target document
+                            ObjectId objectId = ObjectId.Null;
+
+                            if (edit.Entry.TryGetValue("Handle", out var handleValue))
+                            {
+                                // Reconstruct ObjectId from Handle in the target document
+                                try
+                                {
+                                    var handle = Convert.ToInt64(handleValue.ToString(), 16);
+                                    objectId = targetDb.GetObjectId(false, new Autodesk.AutoCAD.DatabaseServices.Handle(handle), 0);
+                                }
+                                catch (System.Exception ex)
+                                {
+                                    ed.WriteMessage($"\nFailed to reconstruct ObjectId from Handle {handleValue} in external document: {ex.Message}");
+                                    continue;
+                                }
+                            }
+
+                            if (objectId != ObjectId.Null)
+                            {
+                                ed.WriteMessage($"\nApplying edit to external document: {edit.ColumnName} = '{edit.NewValue}' to ObjectId {objectId}");
+
+                                var dbObject = tr.GetObject(objectId, OpenMode.ForWrite);
+                                if (dbObject != null)
+                                {
+                                    ApplyEditToDBObjectInExternalDocument(dbObject, edit.ColumnName, edit.NewValue, tr, targetEditor);
+                                    appliedCount++;
+                                    ed.WriteMessage($"\nExternal edit applied successfully");
+                                }
+                            }
+                            else
+                            {
+                                ed.WriteMessage($"\nSkipping external edit - no valid Handle found");
+                            }
+                        }
+                        catch (System.Exception ex)
+                        {
+                            ed.WriteMessage($"\nError applying external edit to {edit.ColumnName}: {ex.Message}");
+                            continue;
+                        }
+                    }
+
+                    ed.WriteMessage($"\nCommitting external transaction with {appliedCount} modifications...");
+                    tr.Commit();
+                    ed.WriteMessage($"\nExternal transaction committed successfully!");
+                }
+            }
+
+            ed.WriteMessage($"\nCompleted processing {appliedCount} edits in external document");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError processing external document {System.IO.Path.GetFileName(documentPath)}: {ex.Message}");
+            ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
+            return 0;
+        }
+
+        return appliedCount;
+    }
+
+    /// <summary>Apply a single edit to a DBObject in an external document</summary>
+    private static void ApplyEditToDBObjectInExternalDocument(DBObject dbObject, string columnName, string newValue, Transaction tr, Autodesk.AutoCAD.EditorInput.Editor targetEditor)
+    {
+        var currentDoc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = currentDoc.Editor;
+
+        ed.WriteMessage($"\n  >> ApplyEditToDBObjectInExternalDocument: DBObject={dbObject.GetType().Name}, Column='{columnName}', Value='{newValue}'");
+
+        try
+        {
+            switch (columnName.ToLowerInvariant())
+            {
+                case "name":
+                    ed.WriteMessage($"\n  >> Setting name/text to '{newValue}' in external document");
+                    // Handle name changes for different object types
+                    if (dbObject is Layout layout)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is Layout, attempting to set LayoutName in external document");
+
+                        try
+                        {
+                            // Check if this is the Model layout (cannot be renamed)
+                            if (string.Equals(layout.LayoutName, "Model", StringComparison.OrdinalIgnoreCase))
+                            {
+                                ed.WriteMessage($"\n  >> Cannot rename Model space layout - this is not allowed in AutoCAD");
+                                return; // Skip this edit
+                            }
+
+                            // Check if the layout name would conflict with existing layouts
+                            var layoutDict = (Autodesk.AutoCAD.DatabaseServices.DBDictionary)tr.GetObject(dbObject.Database.LayoutDictionaryId, OpenMode.ForRead);
+                            if (layoutDict.Contains(newValue))
+                            {
+                                // Generate unique name if there's a conflict
+                                int counter = 1;
+                                string uniqueName = newValue;
+                                while (layoutDict.Contains(uniqueName))
+                                {
+                                    uniqueName = $"{newValue}_{counter}";
+                                    counter++;
+                                }
+                                newValue = uniqueName;
+                                ed.WriteMessage($"\n  >> Layout name conflict resolved, using: '{uniqueName}'");
+                            }
+
+                            layout.LayoutName = newValue;
+                            ed.WriteMessage($"\n  >> Layout name set successfully in external document");
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+                        {
+                            ed.WriteMessage($"\n  >> AutoCAD Runtime Exception setting external layout name: {acEx.ErrorStatus} - {acEx.Message}");
+
+                            if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotApplicable)
+                            {
+                                ed.WriteMessage($"\n  >> External layout name change not applicable - may be a special layout like Model space");
+                            }
+
+                            throw; // Re-throw for debugging
+                        }
+                    }
+                    else if (dbObject is MText mtext)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is MText, setting Contents in external document");
+                        mtext.Contents = newValue;
+                        ed.WriteMessage($"\n  >> MText Contents set successfully in external document");
+                    }
+                    else if (dbObject is DBText text)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is DBText, setting TextString in external document");
+                        text.TextString = newValue;
+                        ed.WriteMessage($"\n  >> DBText TextString set successfully in external document");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> Unsupported object type for name editing in external document: {dbObject.GetType().Name}");
+                    }
+                    break;
+
+                case "layer":
+                    if (dbObject is Entity entity)
+                    {
+                        ed.WriteMessage($"\n  >> Setting layer to '{newValue}' in external document");
+                        entity.Layer = newValue;
+                        ed.WriteMessage($"\n  >> Layer set successfully in external document");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot set layer in external document");
+                    }
+                    break;
+
+                default:
+                    // Handle block attributes (columns starting with "attr_")
+                    if (columnName.StartsWith("attr_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (dbObject is BlockReference blockRef)
+                        {
+                            string attributeTag = columnName.Substring(5); // Remove "attr_" prefix
+                            ed.WriteMessage($"\n  >> DBObject is BlockReference, setting attribute '{attributeTag}' to '{newValue}' in external document");
+                            ed.WriteMessage($"\n  >> Block has {blockRef.AttributeCollection.Count} attributes in external document");
+
+                            bool attributeFound = false;
+                            foreach (ObjectId attId in blockRef.AttributeCollection)
+                            {
+                                var attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                                if (attRef != null)
+                                {
+                                    ed.WriteMessage($"\n  >> Checking external attribute: '{attRef.Tag}' (current value: '{attRef.TextString}')");
+                                    if (string.Equals(attRef.Tag, attributeTag, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        ed.WriteMessage($"\n  >> Matched! Changing external attribute '{attRef.Tag}' from '{attRef.TextString}' to '{newValue}'");
+                                        attRef.TextString = newValue;
+                                        ed.WriteMessage($"\n  >> Block attribute '{attributeTag}' set successfully in external document");
+                                        attributeFound = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (!attributeFound)
+                            {
+                                ed.WriteMessage($"\n  >> Block attribute '{attributeTag}' not found in external document");
+                            }
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> DBObject is not a BlockReference, cannot set attribute '{columnName}' in external document");
+                        }
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> Column '{columnName}' not supported for external document editing");
+                    }
+                    break;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in ApplyEditToDBObjectInExternalDocument: {ex.Message}");
+            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+            throw; // Re-throw to be handled by caller
+        }
+    }
+
+    /// <summary>Data structure for pending edits</summary>
+    private class PendingEdit
+    {
+        public int RowIndex { get; set; }
+        public string ColumnName { get; set; }
+        public string NewValue { get; set; }
+        public Dictionary<string, object> Entry { get; set; }
     }
 
     /// <summary>Apply a single edit to a DBObject (entity or layout) based on column name</summary>
@@ -702,9 +1027,47 @@ public partial class CustomGUIs
                     }
                     else if (dbObject is Layout layout)
                     {
-                        ed.WriteMessage($"\n  >> DBObject is Layout, setting LayoutName");
-                        layout.LayoutName = newValue;
-                        ed.WriteMessage($"\n  >> Layout name set successfully");
+                        ed.WriteMessage($"\n  >> DBObject is Layout, attempting to set LayoutName");
+
+                        try
+                        {
+                            // Check if this is the Model layout (cannot be renamed)
+                            if (string.Equals(layout.LayoutName, "Model", StringComparison.OrdinalIgnoreCase))
+                            {
+                                ed.WriteMessage($"\n  >> Cannot rename Model space layout - this is not allowed in AutoCAD");
+                                return; // Skip this edit
+                            }
+
+                            // Check if the layout name would conflict with existing layouts
+                            var layoutDict = (Autodesk.AutoCAD.DatabaseServices.DBDictionary)tr.GetObject(dbObject.Database.LayoutDictionaryId, OpenMode.ForRead);
+                            if (layoutDict.Contains(newValue))
+                            {
+                                // Generate unique name if there's a conflict
+                                int counter = 1;
+                                string uniqueName = newValue;
+                                while (layoutDict.Contains(uniqueName))
+                                {
+                                    uniqueName = $"{newValue}_{counter}";
+                                    counter++;
+                                }
+                                newValue = uniqueName;
+                                ed.WriteMessage($"\n  >> Layout name conflict resolved, using: '{uniqueName}'");
+                            }
+
+                            layout.LayoutName = newValue;
+                            ed.WriteMessage($"\n  >> Layout name set successfully");
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+                        {
+                            ed.WriteMessage($"\n  >> AutoCAD Runtime Exception setting layout name: {acEx.ErrorStatus} - {acEx.Message}");
+
+                            if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotApplicable)
+                            {
+                                ed.WriteMessage($"\n  >> Layout name change not applicable - may be a special layout like Model space");
+                            }
+
+                            throw; // Re-throw for debugging
+                        }
                     }
                     else if (dbObject is LayerTableRecord layer)
                     {
