@@ -277,13 +277,13 @@ public static class FilterEntityDataHelper
         string layer = "";
         string color = "";
         string lineType = "";
-        
+
         if (entity is Entity ent)
         {
             layer = ent.Layer;
             color = ent.Color.ToString();
             lineType = ent.Linetype;
-            
+
             // Get entity-specific name
             if (entity is BlockReference br)
             {
@@ -296,14 +296,14 @@ public static class FilterEntityDataHelper
             }
             else if (entity is MText mtext)
             {
-                entityName = mtext.Contents.Length > 30 ? 
-                    mtext.Contents.Substring(0, 30) + "..." : 
+                entityName = mtext.Contents.Length > 30 ?
+                    mtext.Contents.Substring(0, 30) + "..." :
                     mtext.Contents;
             }
             else if (entity is DBText text)
             {
-                entityName = text.TextString.Length > 30 ? 
-                    text.TextString.Substring(0, 30) + "..." : 
+                entityName = text.TextString.Length > 30 ?
+                    text.TextString.Substring(0, 30) + "..." :
                     text.TextString;
             }
             else if (entity is Dimension dim)
@@ -334,6 +334,15 @@ public static class FilterEntityDataHelper
         {
             data["Space"] = spaceName;
         }
+
+        // Add block attributes if entity is a block reference
+        if (entity is BlockReference blockRef)
+        {
+            AddBlockAttributes(blockRef, data);
+        }
+
+        // Add XData and extension dictionary data
+        AddExtensionData(entity, data);
 
         // Include properties if requested
         if (includeProperties && entity is Entity entityWithProps)
@@ -528,6 +537,156 @@ public static class FilterEntityDataHelper
         catch { }
         return "";
     }
+
+    private static void AddBlockAttributes(BlockReference blockRef, Dictionary<string, object> data)
+    {
+        try
+        {
+            using (var tr = blockRef.Database.TransactionManager.StartTransaction())
+            {
+                var hasAttributes = false;
+                foreach (ObjectId attId in blockRef.AttributeCollection)
+                {
+                    var attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
+                    if (attRef != null)
+                    {
+                        hasAttributes = true;
+                        var columnName = $"attr_{attRef.Tag.ToLower()}";
+                        data[columnName] = attRef.TextString;
+                    }
+                }
+
+                // If no attributes found but block definition has attribute definitions, show empty values
+                if (!hasAttributes)
+                {
+                    var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                    if (btr != null)
+                    {
+                        foreach (ObjectId id in btr)
+                        {
+                            var attDef = tr.GetObject(id, OpenMode.ForRead) as AttributeDefinition;
+                            if (attDef != null)
+                            {
+                                var columnName = $"attr_{attDef.Tag.ToLower()}";
+                                data[columnName] = "";
+                            }
+                        }
+                    }
+                }
+
+                tr.Commit();
+            }
+        }
+        catch
+        {
+            // Skip if attributes can't be read
+        }
+    }
+
+    private static void AddExtensionData(DBObject entity, Dictionary<string, object> data)
+    {
+        try
+        {
+            // Add XData
+            var xData = entity.XData;
+            if (xData != null)
+            {
+                var xDataApps = new List<string>();
+                var xDataValues = new List<string>();
+
+                foreach (TypedValue typedValue in xData)
+                {
+                    if (typedValue.TypeCode == (int)DxfCode.ExtendedDataRegAppName)
+                    {
+                        xDataApps.Add(typedValue.Value.ToString());
+                    }
+                    else if (typedValue.TypeCode == (int)DxfCode.ExtendedDataAsciiString ||
+                             typedValue.TypeCode == (int)DxfCode.ExtendedDataReal ||
+                             typedValue.TypeCode == (int)DxfCode.ExtendedDataInteger16 ||
+                             typedValue.TypeCode == (int)DxfCode.ExtendedDataInteger32)
+                    {
+                        if (typedValue.Value != null)
+                        {
+                            xDataValues.Add(typedValue.Value.ToString());
+                        }
+                    }
+                }
+
+                if (xDataApps.Any())
+                {
+                    data["xdata_apps"] = string.Join(", ", xDataApps);
+                }
+                if (xDataValues.Any())
+                {
+                    data["xdata_values"] = string.Join(", ", xDataValues.Take(3)); // Limit to first 3 values
+                }
+            }
+
+            // Add Extension Dictionary data
+            if (entity.ExtensionDictionary != ObjectId.Null)
+            {
+                using (var tr = entity.Database.TransactionManager.StartTransaction())
+                {
+                    var extDict = tr.GetObject(entity.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
+                    if (extDict != null && extDict.Count > 0)
+                    {
+                        var dictKeys = new List<string>();
+                        var dictValues = new List<string>();
+
+                        foreach (DBDictionaryEntry entry in extDict)
+                        {
+                            dictKeys.Add(entry.Key);
+                            try
+                            {
+                                var dictObj = tr.GetObject(entry.Value, OpenMode.ForRead);
+                                if (dictObj != null)
+                                {
+                                    // Try to get meaningful data from common dictionary objects
+                                    if (dictObj is Xrecord xrec)
+                                    {
+                                        var xrecData = new List<string>();
+                                        foreach (TypedValue tv in xrec.Data)
+                                        {
+                                            if (tv.Value != null)
+                                            {
+                                                xrecData.Add(tv.Value.ToString());
+                                            }
+                                        }
+                                        if (xrecData.Any())
+                                        {
+                                            dictValues.Add(string.Join("|", xrecData.Take(2))); // Limit to first 2 values
+                                        }
+                                    }
+                                    else
+                                    {
+                                        dictValues.Add(dictObj.GetType().Name);
+                                    }
+                                }
+                            }
+                            catch
+                            {
+                                dictValues.Add("(Error reading)");
+                            }
+                        }
+
+                        if (dictKeys.Any())
+                        {
+                            data["ext_dict_keys"] = string.Join(", ", dictKeys);
+                        }
+                        if (dictValues.Any())
+                        {
+                            data["ext_dict_values"] = string.Join(", ", dictValues);
+                        }
+                    }
+                    tr.Commit();
+                }
+            }
+        }
+        catch
+        {
+            // Skip if extension data can't be read
+        }
+    }
 }
 
 /// <summary>
@@ -567,10 +726,20 @@ public abstract class FilterElementsBase
                 .ToList();
 
             // Reorder to put most useful columns first
-            var orderedProps = new List<string> { "DisplayName", "Category", "Layer", "DocumentName", "Color", "LineType", "Handle" };
-            var remainingProps = propertyNames.Except(orderedProps).OrderBy(p => p);
+            var orderedProps = new List<string> { "Name", "Category", "Layer", "DocumentName", "Color", "LineType", "Handle" };
+            var remainingProps = propertyNames.Except(orderedProps);
+
+            // Separate attributes and extension data for better organization
+            var attributeProps = remainingProps.Where(p => p.StartsWith("attr_")).OrderBy(p => p);
+            var extensionProps = remainingProps.Where(p => p.StartsWith("xdata_") || p.StartsWith("ext_dict_")).OrderBy(p => p);
+            var otherProps = remainingProps.Where(p => !p.StartsWith("attr_") && !p.StartsWith("xdata_") && !p.StartsWith("ext_dict_") && p != "DocumentPath" && p != "DisplayName").OrderBy(p => p);
+            var documentPathProp = propertyNames.Contains("DocumentPath") ? new[] { "DocumentPath" } : new string[0];
+
             propertyNames = orderedProps.Where(p => propertyNames.Contains(p))
-                .Concat(remainingProps)
+                .Concat(attributeProps)
+                .Concat(extensionProps)
+                .Concat(otherProps)
+                .Concat(documentPathProp)
                 .ToList();
 
             var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
