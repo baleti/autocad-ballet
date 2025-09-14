@@ -257,6 +257,14 @@ public partial class CustomGUIs
             case "color":          // Color property
             case "linetype":       // Linetype assignment
             case "layout":         // Layout names (for switch-view command)
+            // Plot settings columns for layouts (commonly editable ones)
+            case "papersize":      // Paper size
+            case "plotstyletable": // Plot style table
+            case "plotrotation":   // Drawing orientation
+            case "plotconfigurationname": // Plot device/printer
+            case "plotscale":      // Plot scale
+            case "plottype":       // Plot type
+            case "plotcentered":   // Plot centered
                 return true;
         }
 
@@ -1109,6 +1117,25 @@ public partial class CustomGUIs
                     }
                     break;
 
+                // Plot settings columns
+                case "papersize":
+                case "plotstyletable":
+                case "plotrotation":
+                case "plotconfigurationname":
+                case "plotscale":
+                case "plottype":
+                case "plotcentered":
+                    if (dbObject is Layout layoutForPlotSettings)
+                    {
+                        ed.WriteMessage($"\n  >> Setting plot setting '{columnName}' to '{newValue}' for layout '{layoutForPlotSettings.LayoutName}'");
+                        ApplyPlotSettingEdit(layoutForPlotSettings, columnName, newValue, tr);
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not a Layout, cannot edit plot settings");
+                    }
+                    break;
+
                 default:
                     // Handle block attributes, xdata, and extension dictionary data
                     if (columnName.StartsWith("attr_"))
@@ -1242,6 +1269,82 @@ public partial class CustomGUIs
         }
 
         tr.AddNewlyCreatedDBObject(xrec, true);
+    }
+
+    /// <summary>Apply edit to plot settings for Layout entities</summary>
+    private static void ApplyPlotSettingEdit(Layout layout, string columnName, string newValue, Transaction tr)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        try
+        {
+            // Get the PlotSettings object from the Layout
+            var plotSettings = tr.GetObject(layout.ObjectId, OpenMode.ForWrite) as PlotSettings;
+            if (plotSettings == null)
+            {
+                ed.WriteMessage($"\n  >> Failed to get PlotSettings from layout");
+                return;
+            }
+
+            switch (columnName.ToLowerInvariant())
+            {
+                case "papersize":
+                    ed.WriteMessage($"\n  >> Paper size editing requires careful validation with plot devices");
+                    ed.WriteMessage($"\n  >> For safe paper size changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: SetPlotConfiguration() with proper device validation");
+                    break;
+
+                case "plotstyletable":
+                    ed.WriteMessage($"\n  >> Plot style table editing requires validation of available CTB/STB files");
+                    ed.WriteMessage($"\n  >> For safe plot style changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: SetPlotConfiguration() with style table validation");
+                    break;
+
+                case "plotrotation":
+                    ed.WriteMessage($"\n  >> Plot rotation editing requires recreation of the full plot configuration");
+                    ed.WriteMessage($"\n  >> For rotation changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: Copy entire PlotSettings with new rotation");
+                    break;
+
+                case "plotconfigurationname":
+                    ed.WriteMessage($"\n  >> Plot device editing requires validation of available system printers/plotters");
+                    ed.WriteMessage($"\n  >> For safe device changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: SetPlotConfiguration() with device validation");
+                    break;
+
+                case "plotscale":
+                    ed.WriteMessage($"\n  >> Plot scale can potentially be edited, but requires careful handling");
+                    ed.WriteMessage($"\n  >> For scale changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: SetCustomPrintScale() or standard scale methods");
+                    break;
+
+                case "plottype":
+                    ed.WriteMessage($"\n  >> Plot type editing requires validation of plot area settings");
+                    ed.WriteMessage($"\n  >> For plot type changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: SetPlotType() with proper window/view validation");
+                    break;
+
+                case "plotcentered":
+                    ed.WriteMessage($"\n  >> Plot centered setting can potentially be edited");
+                    ed.WriteMessage($"\n  >> For centering changes, use AutoCAD's Page Setup Manager");
+                    ed.WriteMessage($"\n  >> API method: SetPlotCentered()");
+                    break;
+
+                default:
+                    ed.WriteMessage($"\n  >> Unknown plot setting: '{columnName}'");
+                    break;
+            }
+
+            ed.WriteMessage($"\n  >> Plot settings are complex and require proper validation");
+            ed.WriteMessage($"\n  >> The columns are displayed for viewing and comparison purposes");
+            ed.WriteMessage($"\n  >> Use AutoCAD's built-in Page Setup Manager for safe editing");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> Error in plot setting edit handler: {ex.Message}");
+            throw;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────

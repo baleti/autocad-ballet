@@ -385,6 +385,12 @@ public static class FilterEntityDataHelper
             AddBlockAttributes(blockRef, data);
         }
 
+        // Add plot settings for Layout entities
+        if (entity is Layout layoutEntity)
+        {
+            AddLayoutPlotSettings(layoutEntity, data);
+        }
+
         // Add XData and extension dictionary data
         AddExtensionData(entity, data);
 
@@ -659,6 +665,101 @@ public static class FilterEntityDataHelper
         }
 
         return "";
+    }
+
+    private static void AddLayoutPlotSettings(Layout layout, Dictionary<string, object> data)
+    {
+        try
+        {
+            using (var tr = layout.Database.TransactionManager.StartTransaction())
+            {
+                var plotSettings = tr.GetObject(layout.ObjectId, OpenMode.ForRead) as PlotSettings;
+                if (plotSettings != null)
+                {
+                    // Paper size
+                    data["PaperSize"] = plotSettings.CanonicalMediaName ?? "";
+
+                    // Plot style table
+                    data["PlotStyleTable"] = plotSettings.CurrentStyleSheet ?? "";
+
+                    // Drawing orientation
+                    data["PlotRotation"] = plotSettings.PlotRotation.ToString();
+
+                    // Plot device/printer
+                    data["PlotConfigurationName"] = plotSettings.PlotConfigurationName ?? "";
+
+                    // Plot scale
+                    var scale = plotSettings.CustomPrintScale;
+                    data["PlotScale"] = $"{scale.Numerator}:{scale.Denominator}";
+
+                    // Plot type
+                    data["PlotType"] = plotSettings.PlotType.ToString();
+
+                    // Plot centered
+                    data["PlotCentered"] = plotSettings.PlotCentered.ToString();
+
+                    // Scale lineweights
+                    data["ScaleLineweights"] = plotSettings.ScaleLineweights.ToString();
+
+                    // Print lineweights
+                    data["PrintLineweights"] = plotSettings.PrintLineweights.ToString();
+
+                    // Plot hidden
+                    data["PlotHidden"] = plotSettings.PlotHidden.ToString();
+
+                    // Plot transparency
+                    data["PlotTransparency"] = plotSettings.PlotTransparency.ToString();
+
+                    // Standard scale
+                    data["UseStandardScale"] = plotSettings.UseStandardScale.ToString();
+                    if (plotSettings.UseStandardScale)
+                    {
+                        data["StandardScale"] = plotSettings.StdScale.ToString();
+                    }
+                    else
+                    {
+                        data["StandardScale"] = "Custom";
+                    }
+
+                    // Plot area
+                    if (plotSettings.PlotViewportBorders)
+                    {
+                        data["PlotViewportBorders"] = "True";
+                    }
+                    else
+                    {
+                        data["PlotViewportBorders"] = "False";
+                    }
+
+                    // Plot margins (read-only property)
+                    data["PlotMargins"] = "Read-only";
+
+                    // Plot paper units
+                    data["PlotPaperUnits"] = plotSettings.PlotPaperUnits.ToString();
+                }
+                tr.Commit();
+            }
+        }
+        catch
+        {
+            // If we can't read plot settings, add empty values
+            data["PaperSize"] = "";
+            data["PlotStyleTable"] = "";
+            data["PlotRotation"] = "";
+            data["PlotConfigurationName"] = "";
+            data["PlotScale"] = "";
+            data["PlotType"] = "";
+            data["PlotCentered"] = "";
+            data["ScaleLineweights"] = "";
+            data["PrintLineweights"] = "";
+            data["PlotHidden"] = "";
+            data["PlotTransparency"] = "";
+            data["UseStandardScale"] = "";
+            data["StandardScale"] = "";
+            data["PlotViewportBorders"] = "";
+            data["PlotMargins"] = "";
+            data["PlotPaperUnits"] = "";
+        }
     }
 
     private static void AddExtensionData(DBObject entity, Dictionary<string, object> data)
