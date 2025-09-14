@@ -311,6 +311,11 @@ public static class FilterEntityDataHelper
                 entityName = dim.DimensionText;
             }
         }
+        else if (entity is Layout layout)
+        {
+            // For Layout entities, show the layout name (what appears in AutoCAD tabs)
+            entityName = layout.LayoutName;
+        }
 
         var data = new Dictionary<string, object>
         {

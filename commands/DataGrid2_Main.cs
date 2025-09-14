@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 using System.IO;
+using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 public partial class CustomGUIs
 {
@@ -29,6 +30,9 @@ public partial class CustomGUIs
         _searchIndexAllColumns = null;
         _lastVisibleColumns.Clear();
         _lastColumnVisibilityFilter = "";
+
+        // Reset edit mode state
+        ResetEditMode();
 
         // Build search index upfront for performance
         BuildSearchIndex(entries, propertyNames);
@@ -236,11 +240,20 @@ public partial class CustomGUIs
         Action FinishSelection = () =>
         {
             selectedEntries.Clear();
-            foreach (DataGridViewRow row in grid.SelectedRows)
+            if (_isEditMode)
             {
-                if (row.Index < _cachedFilteredData.Count)
+                // In edit mode, return only modified entries
+                selectedEntries.AddRange(_modifiedEntries);
+            }
+            else
+            {
+                // In normal mode, return selected rows
+                foreach (DataGridViewRow row in grid.SelectedRows)
                 {
-                    selectedEntries.Add(_cachedFilteredData[row.Index]);
+                    if (row.Index < _cachedFilteredData.Count)
+                    {
+                        selectedEntries.Add(_cachedFilteredData[row.Index]);
+                    }
                 }
             }
             form.Close();
@@ -252,14 +265,51 @@ public partial class CustomGUIs
         // Key handling - restore original behavior
         Action<KeyEventArgs, Control> HandleKeyDown = (e, sender) =>
         {
-            if (e.KeyCode == Keys.Escape)
+            if (e.KeyCode == Keys.F2)
             {
+                if (_isEditMode && _selectedEditCells.Count > 0)
+                {
+                    // Enter cell edit mode - show text edit prompt
+                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                    var ed = doc.Editor;
+                    ed.WriteMessage($"\nOpening edit prompt for {_selectedEditCells.Count} selected cells");
+                    ShowCellEditPrompt(grid);
+                }
+                else
+                {
+                    // Toggle edit mode
+                    ToggleEditMode(grid);
+                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                    var ed = doc.Editor;
+                    ed.WriteMessage($"\nToggled edit mode. Now in {(_isEditMode ? "EDIT" : "NORMAL")} mode");
+                    form.Text = "Total Entries: " + workingSet.Count + " / " + entries.Count +
+                               (_isEditMode ? " [EDIT MODE]" : "");
+                }
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                // Escape cancels entire operation - no changes applied
                 selectedEntries.Clear();
                 form.Close();
             }
             else if (e.KeyCode == Keys.Enter)
             {
-                FinishSelection();
+                if (_isEditMode && _pendingCellEdits.Count > 0)
+                {
+                    // Apply pending edits to actual AutoCAD entities and return modified entries
+                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                    var ed = doc.Editor;
+                    ed.WriteMessage($"\nApplying {_pendingCellEdits.Count} edits to AutoCAD entities");
+                    ApplyCellEditsToEntities();
+                    selectedEntries.Clear();
+                    selectedEntries.AddRange(_modifiedEntries);
+                    form.Close();
+                }
+                else
+                {
+                    FinishSelection();
+                }
             }
             else if (e.KeyCode == Keys.Tab && sender == grid && !e.Shift)
             {
@@ -394,6 +444,22 @@ public partial class CustomGUIs
 
         grid.KeyDown += (s, e) => HandleKeyDown(e, grid);
         searchBox.KeyDown += (s, e) => HandleKeyDown(e, searchBox);
+
+        // Handle cell selection changes in edit mode
+        grid.SelectionChanged += (s, e) =>
+        {
+            if (_isEditMode && grid.SelectionMode == DataGridViewSelectionMode.CellSelect)
+            {
+                _selectedEditCells.Clear();
+                foreach (DataGridViewCell cell in grid.SelectedCells)
+                {
+                    if (cell.RowIndex >= 0 && cell.ColumnIndex >= 0)
+                    {
+                        _selectedEditCells.Add(cell);
+                    }
+                }
+            }
+        };
 
         // Form load - restore original sizing logic
         form.Load += delegate

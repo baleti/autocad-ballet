@@ -1,8 +1,11 @@
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Drawing;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.Geometry;
 
 public partial class CustomGUIs
 {
@@ -25,6 +28,12 @@ public partial class CustomGUIs
 
     // Column ordering cache
     private static string _lastColumnOrderingFilter = "";
+
+    // Edit mode state
+    private static bool _isEditMode = false;
+    private static Dictionary<string, object> _pendingCellEdits = new Dictionary<string, object>();
+    private static List<DataGridViewCell> _selectedEditCells = new List<DataGridViewCell>();
+    private static HashSet<Dictionary<string, object>> _modifiedEntries = new HashSet<Dictionary<string, object>>();
 
     // ──────────────────────────────────────────────────────────────
     //  Helper types
@@ -125,6 +134,17 @@ public partial class CustomGUIs
         public ListSortDirection Direction { get; set; }
     }
 
+    /// <summary>
+    /// Represents a cell edit operation
+    /// </summary>
+    private class CellEdit
+    {
+        public int RowIndex { get; set; }
+        public string ColumnName { get; set; }
+        public object OriginalValue { get; set; }
+        public object NewValue { get; set; }
+    }
+
     // ──────────────────────────────────────────────────────────────
     //  Utility Methods
     // ──────────────────────────────────────────────────────────────
@@ -200,5 +220,666 @@ public partial class CustomGUIs
 
             _searchIndexAllColumns[i] = allValuesBuilder.ToString();
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Edit Mode Helper Methods
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>Reset edit mode state</summary>
+    private static void ResetEditMode()
+    {
+        _isEditMode = false;
+        _pendingCellEdits.Clear();
+        _selectedEditCells.Clear();
+        _modifiedEntries.Clear();
+    }
+
+    /// <summary>Check if a column is editable</summary>
+    private static bool IsColumnEditable(string columnName)
+    {
+        string lowerName = columnName.ToLowerInvariant();
+
+        // Editable columns
+        switch (lowerName)
+        {
+            case "name":           // Entity names, layout names, etc.
+            case "layer":          // Layer assignment
+            case "color":          // Color property
+            case "linetype":       // Linetype assignment
+                return true;
+        }
+
+        // Block attributes are editable (start with "attr_")
+        if (lowerName.StartsWith("attr_"))
+            return true;
+
+        // XData is editable (start with "xdata_")
+        if (lowerName.StartsWith("xdata_"))
+            return true;
+
+        // Extension dictionary data is editable (start with "ext_dict_")
+        if (lowerName.StartsWith("ext_dict_"))
+            return true;
+
+        // Read-only columns
+        return false;
+    }
+
+    /// <summary>Toggle edit mode on/off</summary>
+    private static void ToggleEditMode(DataGridView grid)
+    {
+        if (_isEditMode)
+        {
+            // Switch back to row selection mode
+            _isEditMode = false;
+            grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            grid.MultiSelect = true;
+            _selectedEditCells.Clear();
+
+            // Reset column styles to normal
+            UpdateColumnEditableStyles(grid, false);
+        }
+        else
+        {
+            // Switch to cell selection mode
+            _isEditMode = true;
+            grid.SelectionMode = DataGridViewSelectionMode.CellSelect;
+            grid.MultiSelect = true;
+            grid.ClearSelection();
+
+            // Update column styles to show editable/non-editable
+            UpdateColumnEditableStyles(grid, true);
+        }
+    }
+
+    /// <summary>Update column styles to indicate editable vs non-editable columns</summary>
+    private static void UpdateColumnEditableStyles(DataGridView grid, bool editModeActive)
+    {
+        foreach (DataGridViewColumn column in grid.Columns)
+        {
+            if (editModeActive)
+            {
+                if (IsColumnEditable(column.Name))
+                {
+                    // Editable - normal appearance
+                    column.HeaderCell.Style.BackColor = Color.LightGreen;
+                    column.HeaderCell.Style.ForeColor = Color.Black;
+                    column.DefaultCellStyle.BackColor = Color.White;
+                    column.DefaultCellStyle.ForeColor = Color.Black;
+                }
+                else
+                {
+                    // Non-editable - greyed out
+                    column.HeaderCell.Style.BackColor = Color.LightGray;
+                    column.HeaderCell.Style.ForeColor = Color.DarkGray;
+                    column.DefaultCellStyle.BackColor = Color.WhiteSmoke;
+                    column.DefaultCellStyle.ForeColor = Color.Gray;
+                }
+            }
+            else
+            {
+                // Reset to default appearance
+                column.HeaderCell.Style.BackColor = Color.Empty;
+                column.HeaderCell.Style.ForeColor = Color.Empty;
+                column.DefaultCellStyle.BackColor = Color.Empty;
+                column.DefaultCellStyle.ForeColor = Color.Empty;
+            }
+        }
+    }
+
+    /// <summary>Apply pending edits to the underlying data and track modified entries</summary>
+    private static void ApplyPendingEdits()
+    {
+        foreach (var kvp in _pendingCellEdits)
+        {
+            string[] parts = kvp.Key.Split('|');
+            if (parts.Length == 2)
+            {
+                int rowIndex = int.Parse(parts[0]);
+                string columnName = parts[1];
+
+                if (rowIndex >= 0 && rowIndex < _cachedFilteredData.Count)
+                {
+                    var entry = _cachedFilteredData[rowIndex];
+                    entry[columnName] = kvp.Value;
+                    _modifiedEntries.Add(entry);
+                }
+            }
+        }
+        _pendingCellEdits.Clear();
+    }
+
+    /// <summary>Get a unique key for a cell</summary>
+    private static string GetCellKey(int rowIndex, string columnName)
+    {
+        return $"{rowIndex}|{columnName}";
+    }
+
+    /// <summary>Show text edit prompt for selected cells (Excel-like functionality)</summary>
+    private static void ShowCellEditPrompt(DataGridView grid)
+    {
+        if (_selectedEditCells.Count == 0) return;
+
+        // Filter out non-editable cells
+        var editableCells = _selectedEditCells.Where(cell =>
+            IsColumnEditable(grid.Columns[cell.ColumnIndex].Name)).ToList();
+
+        if (editableCells.Count == 0)
+        {
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+            ed.WriteMessage("\nNo editable cells selected. Editable columns are highlighted in green.");
+            return;
+        }
+
+        // Use only the editable cells
+        var originalSelectedCells = _selectedEditCells.ToList();
+        _selectedEditCells.Clear();
+        _selectedEditCells.AddRange(editableCells);
+
+        // Get the value from the first selected cell
+        var firstCell = _selectedEditCells[0];
+        string currentValue = "";
+
+        if (firstCell.RowIndex < _cachedFilteredData.Count)
+        {
+            var entry = _cachedFilteredData[firstCell.RowIndex];
+            string columnName = grid.Columns[firstCell.ColumnIndex].Name;
+            if (entry.ContainsKey(columnName) && entry[columnName] != null)
+            {
+                currentValue = entry[columnName].ToString();
+            }
+        }
+
+        // Create edit form (Excel-like input box)
+        using (Form editForm = new Form())
+        {
+            editForm.Text = "Edit Cell Value";
+            editForm.Size = new Size(400, 150);
+            editForm.StartPosition = FormStartPosition.CenterParent;
+            editForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+            editForm.MaximizeBox = false;
+            editForm.MinimizeBox = false;
+
+            Label label = new Label()
+            {
+                Text = $"Edit value for {_selectedEditCells.Count} cell(s):",
+                Location = new Point(10, 15),
+                Size = new Size(350, 20)
+            };
+
+            TextBox textBox = new TextBox()
+            {
+                Text = currentValue,
+                Location = new Point(10, 40),
+                Size = new Size(360, 25),
+                Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+            };
+
+            Button okButton = new Button()
+            {
+                Text = "OK",
+                Location = new Point(215, 80),
+                Size = new Size(75, 25),
+                DialogResult = DialogResult.OK
+            };
+
+            Button cancelButton = new Button()
+            {
+                Text = "Cancel",
+                Location = new Point(295, 80),
+                Size = new Size(75, 25),
+                DialogResult = DialogResult.Cancel
+            };
+
+            editForm.Controls.AddRange(new Control[] { label, textBox, okButton, cancelButton });
+            editForm.AcceptButton = okButton;
+            editForm.CancelButton = cancelButton;
+
+            // Handle Enter key for multi-line editing or confirmation
+            textBox.KeyDown += (sender, e) =>
+            {
+                if (e.KeyCode == Keys.Enter && !e.Shift)
+                {
+                    editForm.DialogResult = DialogResult.OK;
+                    editForm.Close();
+                    e.Handled = true;
+                }
+            };
+
+            textBox.SelectAll();
+            textBox.Focus();
+
+            if (editForm.ShowDialog() == DialogResult.OK)
+            {
+                // Apply the new value to all selected cells
+                string newValue = textBox.Text;
+                var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+                var ed = doc.Editor;
+                ed.WriteMessage($"\nApplying edit: '{newValue}' to {_selectedEditCells.Count} editable cells");
+                ApplyValueToSelectedCells(grid, newValue);
+
+                // Refresh grid to show changes
+                grid.Invalidate();
+                ed.WriteMessage($"\nTotal pending edits now: {_pendingCellEdits.Count}");
+            }
+            else
+            {
+                var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+                var ed = doc.Editor;
+                ed.WriteMessage("\nEdit cancelled");
+            }
+
+            // Restore original selection
+            _selectedEditCells.Clear();
+            _selectedEditCells.AddRange(originalSelectedCells);
+        }
+    }
+
+    /// <summary>Apply a value to all selected cells in edit mode</summary>
+    private static void ApplyValueToSelectedCells(DataGridView grid, string newValue)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        foreach (var cell in _selectedEditCells)
+        {
+            if (cell.RowIndex >= 0 && cell.RowIndex < _cachedFilteredData.Count)
+            {
+                string columnName = grid.Columns[cell.ColumnIndex].Name;
+                string cellKey = GetCellKey(cell.RowIndex, columnName);
+
+                ed.WriteMessage($"\nStoring edit: Row {cell.RowIndex}, Column '{columnName}', Value '{newValue}'");
+
+                // Store the pending edit
+                _pendingCellEdits[cellKey] = newValue;
+
+                // Update the display data immediately for visual feedback
+                var entry = _cachedFilteredData[cell.RowIndex];
+                entry[columnName] = newValue;
+                _modifiedEntries.Add(entry);
+            }
+        }
+    }
+
+    /// <summary>Apply pending cell edits to actual AutoCAD entities</summary>
+    public static void ApplyCellEditsToEntities()
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        ed.WriteMessage($"\n=== ApplyCellEditsToEntities START ===");
+        ed.WriteMessage($"\nPending edits count: {_pendingCellEdits.Count}");
+
+        if (_pendingCellEdits.Count == 0)
+        {
+            ed.WriteMessage("\nNo pending edits - returning early");
+            return;
+        }
+
+        var db = doc.Database;
+
+        try
+        {
+            ed.WriteMessage("\nStarting transaction...");
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                int appliedCount = 0;
+                int processedCount = 0;
+
+                foreach (var kvp in _pendingCellEdits)
+                {
+                    processedCount++;
+                    ed.WriteMessage($"\n--- Processing edit {processedCount}/{_pendingCellEdits.Count} ---");
+                    ed.WriteMessage($"\nEdit key: '{kvp.Key}', Value: '{kvp.Value}'");
+
+                    string[] parts = kvp.Key.Split('|');
+                    if (parts.Length == 2)
+                    {
+                        int rowIndex = int.Parse(parts[0]);
+                        string columnName = parts[1];
+                        string newValue = kvp.Value?.ToString() ?? "";
+
+                        ed.WriteMessage($"\nRowIndex: {rowIndex}, ColumnName: '{columnName}', NewValue: '{newValue}'");
+                        ed.WriteMessage($"\nCached data count: {_cachedFilteredData.Count}");
+
+                        if (rowIndex >= 0 && rowIndex < _cachedFilteredData.Count)
+                        {
+                            var entry = _cachedFilteredData[rowIndex];
+                            ed.WriteMessage($"\nEntry found at row {rowIndex}");
+
+                            // Get the ObjectId for this entity
+                            if (entry.TryGetValue("ObjectId", out var objIdValue))
+                            {
+                                ed.WriteMessage($"\nObjectId value type: {objIdValue?.GetType().Name}, Value: {objIdValue}");
+
+                                if (objIdValue is ObjectId objectId)
+                                {
+                                    ed.WriteMessage($"\nGot ObjectId: {objectId}");
+
+                                    try
+                                    {
+                                        ed.WriteMessage("\nOpening entity for write...");
+                                        var dbObject = tr.GetObject(objectId, OpenMode.ForWrite);
+
+                                        if (dbObject != null)
+                                        {
+                                            ed.WriteMessage($"\nDBObject opened successfully: {dbObject.GetType().Name}");
+                                            ApplyEditToDBObject(dbObject, columnName, newValue, tr);
+                                            appliedCount++;
+                                            ed.WriteMessage($"\nEdit applied successfully (#{appliedCount})");
+                                        }
+                                        else
+                                        {
+                                            ed.WriteMessage("\nDBObject is null");
+                                        }
+                                    }
+                                    catch (System.Exception ex)
+                                    {
+                                        // Log specific error for debugging
+                                        ed.WriteMessage($"\nError applying edit to {columnName}: {ex.Message}");
+                                        ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
+                                        continue;
+                                    }
+                                }
+                                else
+                                {
+                                    ed.WriteMessage("\nObjectId value is not of type ObjectId");
+                                }
+                            }
+                            else
+                            {
+                                ed.WriteMessage("\nNo ObjectId found in entry");
+                                // Debug: show what keys are available
+                                ed.WriteMessage($"\nAvailable keys: {string.Join(", ", entry.Keys)}");
+                            }
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\nRow index {rowIndex} out of range (0-{_cachedFilteredData.Count - 1})");
+                        }
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\nInvalid key format: '{kvp.Key}' (expected 'row|column')");
+                    }
+                }
+
+                ed.WriteMessage($"\nCommitting transaction with {appliedCount} modifications...");
+                tr.Commit();
+                ed.WriteMessage($"\nTransaction committed successfully!");
+                ed.WriteMessage($"\nFinal result: Applied {appliedCount} entity modifications out of {processedCount} processed.");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nERROR in ApplyCellEditsToEntities: {ex.Message}");
+            ed.WriteMessage($"\nStack trace: {ex.StackTrace}");
+        }
+        finally
+        {
+            ed.WriteMessage($"\nClearing {_pendingCellEdits.Count} pending edits...");
+            _pendingCellEdits.Clear();
+            ed.WriteMessage($"\n=== ApplyCellEditsToEntities END ===");
+        }
+    }
+
+    /// <summary>Apply a single edit to a DBObject (entity or layout) based on column name</summary>
+    private static void ApplyEditToDBObject(DBObject dbObject, string columnName, string newValue, Transaction tr)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        ed.WriteMessage($"\n  >> ApplyEditToDBObject: DBObject={dbObject.GetType().Name}, Column='{columnName}', Value='{newValue}'");
+
+        try
+        {
+            switch (columnName.ToLowerInvariant())
+            {
+                case "layer":
+                    if (dbObject is Entity entity)
+                    {
+                        ed.WriteMessage($"\n  >> Setting layer to '{newValue}'");
+                        entity.Layer = newValue;
+                        ed.WriteMessage($"\n  >> Layer set successfully");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot set layer");
+                    }
+                    break;
+
+                case "color":
+                    if (dbObject is Entity entity2)
+                    {
+                        ed.WriteMessage($"\n  >> Parsing color '{newValue}'");
+                        // Try to parse color - this is simplified
+                        if (int.TryParse(newValue, out int colorIndex))
+                        {
+                            ed.WriteMessage($"\n  >> Setting color index to {colorIndex}");
+                            entity2.ColorIndex = colorIndex;
+                            ed.WriteMessage($"\n  >> Color set successfully");
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Failed to parse color '{newValue}' as integer");
+                        }
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot set color");
+                    }
+                    break;
+
+                case "linetype":
+                    if (dbObject is Entity entity3)
+                    {
+                        ed.WriteMessage($"\n  >> Setting linetype to '{newValue}'");
+                        entity3.Linetype = newValue;
+                        ed.WriteMessage($"\n  >> Linetype set successfully");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot set linetype");
+                    }
+                    break;
+
+                case "name":
+                    ed.WriteMessage($"\n  >> Setting name/text to '{newValue}'");
+                    // Handle name changes for text entities, layouts, and other named objects
+                    if (dbObject is MText mtext)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is MText, setting Contents");
+                        mtext.Contents = newValue;
+                        ed.WriteMessage($"\n  >> MText Contents set successfully");
+                    }
+                    else if (dbObject is DBText text)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is DBText, setting TextString");
+                        text.TextString = newValue;
+                        ed.WriteMessage($"\n  >> DBText TextString set successfully");
+                    }
+                    else if (dbObject is Layout layout)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is Layout, setting LayoutName");
+                        layout.LayoutName = newValue;
+                        ed.WriteMessage($"\n  >> Layout name set successfully");
+                    }
+                    else if (dbObject is LayerTableRecord layer)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is LayerTableRecord, setting Name");
+                        layer.Name = newValue;
+                        ed.WriteMessage($"\n  >> Layer name set successfully");
+                    }
+                    else if (dbObject is BlockTableRecord btr)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is BlockTableRecord, setting Name");
+                        btr.Name = newValue;
+                        ed.WriteMessage($"\n  >> Block name set successfully");
+                    }
+                    else if (dbObject is TextStyleTableRecord textStyle)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is TextStyleTableRecord, setting Name");
+                        textStyle.Name = newValue;
+                        ed.WriteMessage($"\n  >> Text style name set successfully");
+                    }
+                    else if (dbObject is LinetypeTableRecord linetype)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is LinetypeTableRecord, setting Name");
+                        linetype.Name = newValue;
+                        ed.WriteMessage($"\n  >> Linetype name set successfully");
+                    }
+                    else if (dbObject is DimStyleTableRecord dimStyle)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is DimStyleTableRecord, setting Name");
+                        dimStyle.Name = newValue;
+                        ed.WriteMessage($"\n  >> Dimension style name set successfully");
+                    }
+                    else if (dbObject is UcsTableRecord ucs)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is UcsTableRecord, setting Name");
+                        ucs.Name = newValue;
+                        ed.WriteMessage($"\n  >> UCS name set successfully");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject type not supported for name editing ({dbObject.GetType().Name})");
+                    }
+                    break;
+
+                default:
+                    // Handle block attributes, xdata, and extension dictionary data
+                    if (columnName.StartsWith("attr_"))
+                    {
+                        ed.WriteMessage($"\n  >> Processing block attribute: '{columnName}'");
+                        // Block attribute
+                        if (dbObject is Entity entity4)
+                        {
+                            ApplyBlockAttributeEdit(entity4, columnName, newValue, tr);
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot edit block attributes");
+                        }
+                    }
+                    else if (columnName.StartsWith("xdata_"))
+                    {
+                        ed.WriteMessage($"\n  >> Processing XData: '{columnName}'");
+                        // XData
+                        if (dbObject is Entity entity5)
+                        {
+                            ApplyXDataEdit(entity5, columnName, newValue);
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot edit XData");
+                        }
+                    }
+                    else if (columnName.StartsWith("ext_dict_"))
+                    {
+                        ed.WriteMessage($"\n  >> Processing extension dictionary: '{columnName}'");
+                        // Extension dictionary
+                        if (dbObject is Entity entity6)
+                        {
+                            ApplyExtensionDictEdit(entity6, columnName, newValue, tr);
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot edit extension dictionary");
+                        }
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> Unknown column type: '{columnName}' - skipping");
+                    }
+                    break;
+            }
+            ed.WriteMessage($"\n  >> ApplyEditToDBObject completed successfully");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in ApplyEditToDBObject: {ex.Message}");
+            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+            throw; // Re-throw so parent can catch it
+        }
+    }
+
+    /// <summary>Apply edit to block attribute</summary>
+    private static void ApplyBlockAttributeEdit(Entity entity, string columnName, string newValue, Transaction tr)
+    {
+        if (entity is BlockReference blockRef)
+        {
+            string attributeTag = columnName.Substring(5); // Remove "attr_" prefix, keep original case
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+
+            ed.WriteMessage($"\nTrying to edit attribute: columnName='{columnName}', attributeTag='{attributeTag}', newValue='{newValue}'");
+            ed.WriteMessage($"\nBlock has {blockRef.AttributeCollection.Count} attributes");
+
+            bool found = false;
+            foreach (ObjectId attId in blockRef.AttributeCollection)
+            {
+                var attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                if (attRef != null)
+                {
+                    ed.WriteMessage($"\nChecking attribute: '{attRef.Tag}' (current value: '{attRef.TextString}')");
+                    if (attRef.Tag.ToLowerInvariant() == attributeTag.ToLowerInvariant())
+                    {
+                        ed.WriteMessage($"\nMatched! Changing '{attRef.Tag}' from '{attRef.TextString}' to '{newValue}'");
+                        attRef.TextString = newValue;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!found)
+            {
+                ed.WriteMessage($"\nAttribute '{attributeTag}' not found in block!");
+            }
+        }
+    }
+
+    /// <summary>Apply edit to XData</summary>
+    private static void ApplyXDataEdit(Entity entity, string columnName, string newValue)
+    {
+        // This is simplified - a full implementation would handle different XData types
+        string appName = columnName.Substring(6); // Remove "xdata_" prefix
+
+        var rb = new ResultBuffer(
+            new TypedValue((int)DxfCode.ExtendedDataRegAppName, appName),
+            new TypedValue((int)DxfCode.ExtendedDataAsciiString, newValue)
+        );
+        entity.XData = rb;
+        rb.Dispose();
+    }
+
+    /// <summary>Apply edit to extension dictionary</summary>
+    private static void ApplyExtensionDictEdit(Entity entity, string columnName, string newValue, Transaction tr)
+    {
+        // Create extension dictionary if it doesn't exist
+        if (entity.ExtensionDictionary == ObjectId.Null)
+        {
+            entity.CreateExtensionDictionary();
+        }
+
+        string key = columnName.Substring(9); // Remove "ext_dict_" prefix
+        var extDict = tr.GetObject(entity.ExtensionDictionary, OpenMode.ForWrite) as DBDictionary;
+
+        // This is simplified - a full implementation would handle different dictionary entry types
+        var xrec = new Xrecord();
+        xrec.Data = new ResultBuffer(new TypedValue((int)DxfCode.Text, newValue));
+
+        if (extDict.Contains(key))
+        {
+            extDict.SetAt(key, xrec);
+        }
+        else
+        {
+            extDict.SetAt(key, xrec);
+        }
+
+        tr.AddNewlyCreatedDBObject(xrec, true);
     }
 }

@@ -307,7 +307,6 @@ public static class SelectionScopeManager
                 }
 
                 AutoCADBallet.SelectionStorage.SaveSelection(selectionItems);
-                ed.SetImpliedSelection(ids);
                 break;
         }
     }

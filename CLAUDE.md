@@ -34,9 +34,15 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 - Uses `%APPDATA%/autocad-ballet/selection` file format: `DocumentPath|Handle`
 
 **Command Structure**:
-- C# commands use `[CommandMethod]` attributes 
+- C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "set-scope")
 - LISP files provide aliases and utility functions
 - Main command invocation through `InvokeAddinCommand.cs`
+
+**DataGrid Display Conventions**:
+- Column headers are automatically formatted to lowercase with spaces between words
+- Example: "DocumentName" becomes "document name", "LayoutType" becomes "layout type"
+- This is handled by the `FormatColumnHeader` method in `DataGrid2_Main.cs`
+- Actual property names remain unchanged (e.g., "DocumentName"), only display headers are formatted
 
 ## Building
 
@@ -95,7 +101,7 @@ Many commands in AutoCAD Ballet are ported from the revit-ballet repository. Whe
 
 Commands successfully ported from revit-ballet include:
 - `switch-view-last` - Switches to the most recent layout from log history
-- `switch-view-most-recent` - Shows layouts ordered by usage history for selection
+- `switch-view-recent` - Shows layouts ordered by usage history for selection
 
 ## AutoCAD .NET API Patterns
 
@@ -161,3 +167,58 @@ using (DocumentLock docLock = targetDoc.LockDocument())
 - Any operation that modifies document state across document boundaries
 
 This pattern is essential for reliable AutoCAD .NET development and prevents many common layout switching issues.
+
+### Selection Handling Patterns
+**CRITICAL**: AutoCAD commands should use existing selection (pickfirst set) by default. This is the expected AutoCAD workflow.
+
+**The Problem**: Commands that always prompt for selection instead of using pre-selected objects break AutoCAD's standard workflow where users select first, then run commands.
+
+**The Solution**: Always use `CommandFlags.UsePickSet` and proper selection handling:
+
+```csharp
+[CommandMethod("my-command", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+public void MyCommand()
+{
+    var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
+
+    // Get pickfirst set (pre-selected objects)
+    var selResult = ed.SelectImplied();
+
+    // If there is no pickfirst set, request user to select objects
+    if (selResult.Status == PromptStatus.Error)
+    {
+        var selectionOpts = new PromptSelectionOptions();
+        selectionOpts.MessageForAdding = "\nSelect objects: ";
+        selResult = ed.GetSelection(selectionOpts);
+    }
+    else if (selResult.Status == PromptStatus.OK)
+    {
+        // Clear the pickfirst set since we're consuming it
+        ed.SetImpliedSelection(new ObjectId[0]);
+    }
+
+    if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
+    {
+        ed.WriteMessage("\nNo objects selected.\n");
+        return;
+    }
+
+    var selectedObjects = selResult.Value.GetObjectIds();
+    // Process selected objects...
+}
+```
+
+**Command Flags Explained**:
+- **`CommandFlags.UsePickSet`**: **REQUIRED** - Makes pickfirst selection available to the command
+- **`CommandFlags.Redraw`**: Updates display after command completion
+- **`CommandFlags.Modal`**: Standard modal command behavior
+
+**Key Principles**:
+- **Always use `CommandFlags.UsePickSet`** - Without this flag, `ed.SelectImplied()` will always return `PromptStatus.Error`
+- **Prefer existing selection** - Check for pickfirst set first, only prompt if nothing is selected
+- **Clear pickfirst after use** - Call `ed.SetImpliedSelection(new ObjectId[0])` after consuming the selection
+- **Follow AutoCAD conventions** - Users expect to select objects first, then run commands
+
+**Examples in Codebase**:
+- `filter-selection.cs` - Perfect example of proper selection handling
+- `copy-selection-to-views-in-process.cs` - Uses this pattern correctly

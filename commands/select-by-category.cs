@@ -310,6 +310,7 @@ public class SelectByCategory
             case SelectionScopeManager.SelectionScope.network:
                 // For now, fall back to Document scope
                 GatherFromEntireDrawing(db, categories);
+                GatherLayouts(db, categories);
                 break;
         }
 
@@ -378,7 +379,7 @@ public class SelectByCategory
 
             if (layoutIds.Count > 0)
             {
-                categories["Layout/Sheet"] = layoutIds;
+                categories["Layout"] = layoutIds;
             }
 
             tr.Commit();
