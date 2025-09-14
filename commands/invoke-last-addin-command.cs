@@ -146,7 +146,7 @@ namespace AutocadBallet
             try
             {
                 string[] lines = File.ReadAllLines(LastCommandFilePath);
-                
+
                 for (int i = lines.Length - 1; i >= 0; i--)
                 {
                     if (!string.IsNullOrWhiteSpace(lines[i]))
@@ -154,12 +154,350 @@ namespace AutocadBallet
                         return lines[i].Trim();
                     }
                 }
-                
+
                 return null;
             }
             catch
             {
                 return null;
+            }
+        }
+
+        private Assembly LoadAssemblyWithCaching(string dllPath, Editor ed)
+        {
+            try
+            {
+                // Get file info for cache management
+                var fileInfo = new FileInfo(dllPath);
+                string cacheKey = $"{dllPath}|{fileInfo.LastWriteTimeUtc.Ticks}|{fileInfo.Length}";
+
+                Assembly assembly = null;
+
+                // Check strong cache first
+                if (strongAssemblyCache.ContainsKey(cacheKey))
+                {
+                    assembly = strongAssemblyCache[cacheKey];
+                    ed.WriteMessage("\nUsing strongly cached assembly (no file changes detected).");
+                }
+                // Check weak cache
+                else if (loadedAssemblyCache.ContainsKey(cacheKey))
+                {
+                    var weakRef = loadedAssemblyCache[cacheKey];
+                    if (weakRef.IsAlive)
+                    {
+                        assembly = weakRef.Target as Assembly;
+                        // Move to strong cache for future use
+                        strongAssemblyCache[cacheKey] = assembly;
+                        ed.WriteMessage("\nUsing cached assembly (no file changes detected).");
+                    }
+                }
+
+                // If not cached or cache is invalid, load the assembly
+                if (assembly == null)
+                {
+                    // Clear old cache entries for this file
+                    var strongKeysToRemove = strongAssemblyCache.Keys
+                        .Where(k => k.StartsWith(dllPath + "|"))
+                        .ToList();
+                    foreach (var key in strongKeysToRemove)
+                    {
+                        strongAssemblyCache.Remove(key);
+                    }
+
+                    // Limit strong cache size to prevent memory leaks
+                    if (strongAssemblyCache.Count > 10)
+                    {
+                        var oldestKeys = strongAssemblyCache.Keys.Take(strongAssemblyCache.Count - 5).ToList();
+                        foreach (var key in oldestKeys)
+                        {
+                            strongAssemblyCache.Remove(key);
+                        }
+                    }
+
+                    var keysToRemove = loadedAssemblyCache.Keys
+                        .Where(k => k.StartsWith(dllPath + "|"))
+                        .ToList();
+                    foreach (var key in keysToRemove)
+                    {
+                        loadedAssemblyCache.Remove(key);
+                    }
+
+                    // Register the assembly resolve event handler for dependencies
+                    AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+
+                    try
+                    {
+                        // Load without triggering AutoCAD registration
+                        try
+                        {
+                            assembly = LoadAssemblyWithoutRegistration(dllPath);
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acadEx) when (acadEx.ErrorStatus.ToString().Contains("eDuplicateKey"))
+                        {
+                            // This happens when commands are already registered - not a fatal error
+                            ed.WriteMessage("\nWarning: Commands already registered, reusing existing assembly.");
+                            // Try to find the assembly in already loaded assemblies
+                            assembly = AppDomain.CurrentDomain.GetAssemblies()
+                                .FirstOrDefault(a => a.Location.Equals(dllPath, StringComparison.OrdinalIgnoreCase));
+                            if (assembly == null) throw;
+                        }
+
+                        // Cache the assembly with a weak reference
+                        loadedAssemblyCache[cacheKey] = new WeakReference(assembly);
+                        strongAssemblyCache[cacheKey] = assembly;
+                        ed.WriteMessage("\nLoaded fresh assembly from disk.");
+                    }
+                    finally
+                    {
+                        AppDomain.CurrentDomain.AssemblyResolve -= CurrentDomain_AssemblyResolve;
+                    }
+                }
+
+                return assembly;
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n[LoadAssembly] Error: {ex.Message}");
+                return null;
+            }
+        }
+
+        private Assembly LoadAssemblyWithoutRegistration(string assemblyPath)
+        {
+            byte[] assemblyBytes = File.ReadAllBytes(assemblyPath);
+
+            // Store in session for dependency resolution
+            string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+
+            // First, load all potential dependencies in the same directory
+            string directory = Path.GetDirectoryName(assemblyPath);
+            foreach (string dllFile in Directory.GetFiles(directory, "*.dll"))
+            {
+                if (dllFile != assemblyPath)
+                {
+                    string dllName = Path.GetFileNameWithoutExtension(dllFile);
+                    if (!sessionAssemblies.ContainsKey(dllName))
+                    {
+                        try
+                        {
+                            byte[] dllBytes = File.ReadAllBytes(dllFile);
+                            Assembly dllAssembly = Assembly.Load(dllBytes);
+                            sessionAssemblies[dllName] = dllAssembly;
+                        }
+                        catch (BadImageFormatException)
+                        {
+                            // Skip native DLLs or incompatible assemblies
+                            continue;
+                        }
+                        catch (System.Exception)
+                        {
+                            // Skip assemblies that fail to load
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Now load the main assembly
+            Assembly assembly = null;
+
+            // Try to load in a way that bypasses AutoCAD's automatic processing
+            try
+            {
+                assembly = Assembly.Load(assemblyBytes);
+            }
+            catch
+            {
+                try
+                {
+                    assembly = Assembly.LoadFrom(assemblyPath);
+                }
+                catch
+                {
+                    throw new InvalidOperationException($"Failed to load assembly: {assemblyPath}");
+                }
+            }
+
+            sessionAssemblies[assemblyName] = assembly;
+            return assembly;
+        }
+
+        private Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
+        {
+            // Parse the assembly name
+            AssemblyName assemblyName = new AssemblyName(args.Name);
+            string shortName = assemblyName.Name;
+
+            // Check session assemblies first
+            if (sessionAssemblies.ContainsKey(shortName))
+            {
+                return sessionAssemblies[shortName];
+            }
+
+            // Check cached assemblies
+            foreach (var kvp in loadedAssemblyCache)
+            {
+                if (kvp.Value.IsAlive)
+                {
+                    var asm = kvp.Value.Target as Assembly;
+                    if (asm != null && asm.GetName().Name == shortName)
+                    {
+                        return asm;
+                    }
+                }
+            }
+
+            // Try to load from the target directory
+            string dllPath = Environment.ExpandEnvironmentVariables(TargetDllPath);
+            string directory = Path.GetDirectoryName(dllPath);
+            string assemblyPath = Path.Combine(directory, shortName + ".dll");
+
+            if (File.Exists(assemblyPath))
+            {
+                try
+                {
+                    byte[] bytes = File.ReadAllBytes(assemblyPath);
+                    Assembly assembly = Assembly.Load(bytes);
+                    sessionAssemblies[shortName] = assembly;
+                    return assembly;
+                }
+                catch (System.Exception)
+                {
+                    return null;
+                }
+            }
+
+            return null;
+        }
+
+        private List<CommandInfo> ExtractCommandsFromAssembly(Assembly assembly)
+        {
+            var list = new List<CommandInfo>();
+
+            try
+            {
+                foreach (var type in assembly.GetTypes())
+                {
+                    var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                    foreach (var method in methods)
+                    {
+                        var attributes = method.GetCustomAttributes(false);
+                        foreach (var attr in attributes)
+                        {
+                            // Check for CommandMethodAttribute
+                            if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
+                            {
+                                string commandName = TryGetCommandName(attr) ?? method.Name;
+                                list.Add(new CommandInfo(
+                                    commandName,
+                                    type.Name,
+                                    type.FullName ?? type.Name,
+                                    method.Name));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                // Handle partial loading
+                foreach (var type in ex.Types.Where(t => t != null))
+                {
+                    try
+                    {
+                        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                        foreach (var method in methods)
+                        {
+                            var attributes = method.GetCustomAttributes(false);
+                            foreach (var attr in attributes)
+                            {
+                                if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
+                                {
+                                    string commandName = TryGetCommandName(attr) ?? method.Name;
+                                    list.Add(new CommandInfo(
+                                        commandName,
+                                        type.Name,
+                                        type.FullName ?? type.Name,
+                                        method.Name));
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip types that can't be processed
+                        continue;
+                    }
+                }
+            }
+
+            return list.OrderBy(c => c.CommandName, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private string TryGetCommandName(object cmdAttr)
+        {
+            var type = cmdAttr.GetType();
+
+            // Try GlobalName property (the actual command name in AutoCAD)
+            var prop = type.GetProperty("GlobalName", BindingFlags.Public | BindingFlags.Instance);
+            if (prop != null)
+            {
+                var val = prop.GetValue(cmdAttr) as string;
+                if (!string.IsNullOrWhiteSpace(val))
+                    return val;
+            }
+
+            // Fallback to any string property
+            foreach (var p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (p.PropertyType == typeof(string))
+                {
+                    var v = p.GetValue(cmdAttr) as string;
+                    if (!string.IsNullOrWhiteSpace(v))
+                        return v;
+                }
+            }
+
+            return null;
+        }
+
+        private void InvokeCommandMethod(CommandInfo info, Assembly assembly, Editor ed)
+        {
+            try
+            {
+                var type = assembly.GetType(info.FullTypeName, throwOnError: true);
+                if (type == null)
+                    throw new TypeLoadException($"Could not find type: {info.FullTypeName}");
+
+                var method = type.GetMethod(info.MethodName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+
+                if (method == null)
+                    throw new MissingMethodException(info.FullTypeName, info.MethodName);
+
+                object instance = null;
+                if (!method.IsStatic)
+                {
+                    instance = Activator.CreateInstance(type);
+                }
+
+                // Command methods in AutoCAD typically take no parameters
+                method.Invoke(instance, parameters: null);
+            }
+            catch (TargetInvocationException tie)
+            {
+                if (ed != null)
+                {
+                    var message = tie.InnerException != null ? tie.InnerException.Message : tie.Message;
+                    ed.WriteMessage($"\n[InvokeLastAddin] Command threw: {message}");
+                }
+                throw;
+            }
+            catch (System.Exception ex)
+            {
+                if (ed != null)
+                    ed.WriteMessage($"\n[InvokeLastAddin] Failed to invoke: {ex.Message}");
+                throw;
             }
         }
     }
