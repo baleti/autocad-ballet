@@ -77,7 +77,7 @@ public partial class CustomGUIs
             var column = new DataGridViewTextBoxColumn
             {
                 Name = col,
-                HeaderText = col,
+                HeaderText = FormatColumnHeader(col),
                 DataPropertyName = col,
                 SortMode = DataGridViewColumnSortMode.Programmatic
             };
@@ -464,5 +464,29 @@ public partial class CustomGUIs
             return "\"" + value.Replace("\"", "\"\"") + "\"";
         }
         return value;
+    }
+
+    private static string FormatColumnHeader(string columnName)
+    {
+        if (string.IsNullOrEmpty(columnName))
+            return columnName;
+
+        var result = new StringBuilder();
+
+        for (int i = 0; i < columnName.Length; i++)
+        {
+            char c = columnName[i];
+
+            // Add space before uppercase letters (except at start)
+            if (i > 0 && char.IsUpper(c) && !char.IsUpper(columnName[i - 1]))
+            {
+                result.Append(' ');
+            }
+
+            // Convert to lowercase
+            result.Append(char.ToLower(c));
+        }
+
+        return result.ToString();
     }
 }
