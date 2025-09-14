@@ -43,9 +43,10 @@ namespace AutocadBallet
 #endif
 
         private const string FolderName = "autocad-ballet";
+        private const string RuntimeFolderName = "runtime";
         private const string ConfigFileName = "InvokeAddinCommand-last-dll-path";
         private const string LastCommandFileName = "InvokeAddinCommand-history";
-        private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName);
+        private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName, RuntimeFolderName);
         private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
         private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
 
@@ -75,7 +76,7 @@ namespace AutocadBallet
             }
         }
 
-        [CommandMethod("invoke-addin-command", CommandFlags.Session)]
+        [CommandMethod("invoke-addin-command", CommandFlags.Session | CommandFlags.UsePickSet)]
         public void InvokeAddin()
         {
             var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;
@@ -298,12 +299,9 @@ namespace AutocadBallet
             }
             catch
             {
-                // Method 2: If that fails, try reflection-only context first to validate
+                // Method 2: If that fails, load directly from file
                 try
                 {
-                    var refAssembly = Assembly.ReflectionOnlyLoadFrom(assemblyPath);
-                    // If reflection-only succeeds, we know the assembly is valid
-                    // Now load it for real
                     assembly = Assembly.LoadFrom(assemblyPath);
                 }
                 catch
@@ -508,8 +506,8 @@ namespace AutocadBallet
                 // Save the DLL path
                 File.WriteAllText(ConfigFilePath, dllPath);
 
-                // Save the command class name (full type name)
-                File.WriteAllText(LastCommandFilePath, selectedCmd.FullTypeName);
+                // Save the user-friendly command name
+                File.WriteAllText(LastCommandFilePath, selectedCmd.CommandName);
             }
             catch (System.Exception ex)
             {

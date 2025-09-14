@@ -128,43 +128,24 @@ public class SelectByCategory
             }
         }
 
-        // Save to CSV file
-        string runtimePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "autocad-ballet",
-            "runtime"
-        );
-
-        if (!Directory.Exists(runtimePath))
-            Directory.CreateDirectory(runtimePath);
-
-        string fileName = $"process_selection_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
-        string filePath = Path.Combine(runtimePath, fileName);
+        // Convert to unified SelectionItem format and save using SelectionStorage
+        var selectionItems = new List<AutoCADBallet.SelectionItem>();
+        foreach (var entityRef in selectedEntities)
+        {
+            selectionItems.Add(new AutoCADBallet.SelectionItem
+            {
+                DocumentPath = entityRef.DocumentPath,
+                Handle = entityRef.Handle,
+                SessionId = null // Will be auto-generated
+            });
+        }
 
         try
         {
-            using (var writer = new StreamWriter(filePath, false, Encoding.UTF8))
-            {
-                // Write header
-                writer.WriteLine("DocumentPath,DocumentName,Handle,Category,SpaceName");
+            // Save using unified selection storage
+            AutoCADBallet.SelectionStorage.SaveSelection(selectionItems);
 
-                // Write entity references
-                foreach (var entityRef in selectedEntities)
-                {
-                    // Escape commas in paths if needed
-                    string docPath = entityRef.DocumentPath.Contains(",")
-                        ? $"\"{entityRef.DocumentPath}\""
-                        : entityRef.DocumentPath;
-
-                    string docName = entityRef.DocumentName.Contains(",")
-                        ? $"\"{entityRef.DocumentName}\""
-                        : entityRef.DocumentName;
-
-                    writer.WriteLine($"{docPath},{docName},{entityRef.Handle},{entityRef.Category},{entityRef.SpaceName}");
-                }
-            }
-
-            ed.WriteMessage($"\nProcess selection saved to:\n{filePath}\n");
+            ed.WriteMessage($"\nProcess selection saved to unified selection storage.\n");
             ed.WriteMessage($"\nSummary:\n");
             ed.WriteMessage($"  Total entities: {selectedEntities.Count}\n");
             ed.WriteMessage($"  Categories: {selectedCategoryNames.Count}\n");
@@ -173,28 +154,6 @@ public class SelectByCategory
             foreach (var cat in categoryCounts)
             {
                 ed.WriteMessage($"    {cat.Key}: {cat.Value} entities\n");
-            }
-
-            // Also save a "latest" copy for easy access
-            string latestPath = Path.Combine(runtimePath, "latest_process_selection.csv");
-            File.Copy(filePath, latestPath, true);
-            ed.WriteMessage($"\nLatest selection also available at:\n{latestPath}\n");
-
-            // Write a summary file for quick reference
-            string summaryPath = Path.Combine(runtimePath, "latest_process_selection_summary.txt");
-            using (var writer = new StreamWriter(summaryPath, false, Encoding.UTF8))
-            {
-                writer.WriteLine($"Process Selection Summary");
-                writer.WriteLine($"Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-                writer.WriteLine($"Total Entities: {selectedEntities.Count}");
-                writer.WriteLine($"Categories: {string.Join(", ", selectedCategoryNames)}");
-                writer.WriteLine($"Documents: {selectedEntities.Select(e => e.DocumentName).Distinct().Count()}");
-                writer.WriteLine();
-                writer.WriteLine("Category Counts:");
-                foreach (var cat in categoryCounts)
-                {
-                    writer.WriteLine($"  {cat.Key}: {cat.Value}");
-                }
             }
         }
         catch (System.Exception ex)
@@ -342,14 +301,14 @@ public class SelectByCategory
                 GatherFromCurrentSpace(db, categories);
                 break;
 
-            case SelectionScopeManager.SelectionScope.drawing:
+            case SelectionScopeManager.SelectionScope.document:
                 GatherFromEntireDrawing(db, categories);
                 GatherLayouts(db, categories);
                 break;
 
             case SelectionScopeManager.SelectionScope.desktop:
             case SelectionScopeManager.SelectionScope.network:
-                // For now, fall back to Drawing scope
+                // For now, fall back to Document scope
                 GatherFromEntireDrawing(db, categories);
                 break;
         }

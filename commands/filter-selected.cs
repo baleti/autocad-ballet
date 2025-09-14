@@ -18,6 +18,14 @@ using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 /// </summary>
 public static class FilterEntityDataHelper
 {
+    private static string GetCurrentSessionId()
+    {
+        // Generate unique session identifier combining process ID and session ID (same as SelectionStorage)
+        int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+        int sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId;
+        return $"{processId}_{sessionId}";
+    }
+
     public static List<Dictionary<string, object>> GetEntityData(Editor ed, bool selectedOnly = false, bool includeProperties = false)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
@@ -25,11 +33,25 @@ public static class FilterEntityDataHelper
         var entityData = new List<Dictionary<string, object>>();
         var currentScope = SelectionScopeManager.CurrentScope;
 
-        // Special handling for view scope - use current AutoCAD selection
+        // Handle selection based on current scope
         if (currentScope == SelectionScopeManager.SelectionScope.view)
         {
-            // Get the current implied selection
+            // Get pickfirst set (pre-selected objects)
             var selResult = ed.SelectImplied();
+
+            // If there is no pickfirst set, request user to select objects
+            if (selResult.Status == PromptStatus.Error)
+            {
+                var selectionOpts = new PromptSelectionOptions();
+                selectionOpts.MessageForAdding = "\nSelect objects to filter: ";
+                selResult = ed.GetSelection(selectionOpts);
+            }
+            else if (selResult.Status == PromptStatus.OK)
+            {
+                // Clear the pickfirst set since we're consuming it
+                ed.SetImpliedSelection(new ObjectId[0]);
+            }
+
             if (selResult.Status == PromptStatus.OK && selResult.Value.Count > 0)
             {
                 // Get current selection
@@ -59,45 +81,6 @@ public static class FilterEntityDataHelper
             }
             else
             {
-                // If SelectImplied fails in view mode, try using stored selection as fallback
-                // This handles cases where AutoCAD's implied selection doesn't work as expected
-                var storedSelection = SelectionStorage.LoadSelection();
-                if (storedSelection != null && storedSelection.Count > 0)
-                {
-                    // Process stored selection items from current document only
-                    foreach (var item in storedSelection.Where(s => Path.GetFullPath(s.DocumentPath) == Path.GetFullPath(doc.Name)))
-                    {
-                        try
-                        {
-                            var handle = Convert.ToInt64(item.Handle, 16);
-                            var objectId = db.GetObjectId(false, new Handle(handle), 0);
-
-                            if (objectId != ObjectId.Null)
-                            {
-                                using (var tr = db.TransactionManager.StartTransaction())
-                                {
-                                    var entity = tr.GetObject(objectId, OpenMode.ForRead);
-                                    if (entity != null)
-                                    {
-                                        var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties);
-                                        data["ObjectId"] = objectId; // Store for selection
-                                        entityData.Add(data);
-                                    }
-                                    tr.Commit();
-                                }
-                            }
-                        }
-                        catch
-                        {
-                            // Skip problematic entities
-                            continue;
-                        }
-                    }
-
-                    if (entityData.Count > 0)
-                        return entityData;
-                }
-
                 throw new InvalidOperationException("No selection found. Please select entities first when in 'view' scope.");
             }
         }
@@ -111,6 +94,11 @@ public static class FilterEntityDataHelper
                 throw new InvalidOperationException("No stored selection found. Use commands like 'select-by-category' first.");
             }
 
+            // Filter to current session to avoid confusion with selections from different AutoCAD processes
+            var currentSessionId = GetCurrentSessionId();
+            storedSelection = storedSelection.Where(item =>
+                string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
+
             // Process stored selection items
             foreach (var item in storedSelection)
             {
@@ -122,7 +110,7 @@ public static class FilterEntityDataHelper
                         // Current document - get entity directly
                         var handle = Convert.ToInt64(item.Handle, 16);
                         var objectId = db.GetObjectId(false, new Handle(handle), 0);
-                        
+
                         if (objectId != ObjectId.Null)
                         {
                             using (var tr = db.TransactionManager.StartTransaction())
@@ -131,6 +119,7 @@ public static class FilterEntityDataHelper
                                 if (entity != null)
                                 {
                                     var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
+                                    data["ObjectId"] = objectId; // Store for selection
                                     entityData.Add(data);
                                 }
                                 tr.Commit();
@@ -139,19 +128,8 @@ public static class FilterEntityDataHelper
                     }
                     else
                     {
-                        // Different document - add as reference only
-                        var data = new Dictionary<string, object>
-                        {
-                            ["Name"] = "External Reference",
-                            ["Category"] = "External Entity",
-                            ["Layer"] = "N/A",
-                            ["DocumentPath"] = item.DocumentPath,
-                            ["DocumentName"] = Path.GetFileName(item.DocumentPath),
-                            ["Handle"] = item.Handle,
-                            ["Id"] = item.Handle,
-                            ["IsExternal"] = true,
-                            ["DisplayName"] = $"External: {Path.GetFileName(item.DocumentPath)}"
-                        };
+                        // Different document - retrieve properties from external document
+                        var data = GetExternalEntityData(item.DocumentPath, item.Handle);
                         entityData.Add(data);
                     }
                 }
@@ -164,7 +142,7 @@ public static class FilterEntityDataHelper
         }
         else
         {
-            // Get all entities from current scope
+            // Get all entities from current scope (fallback - should not be used by filter-selected)
             var entities = GatherEntitiesFromScope(db, currentScope);
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -191,6 +169,106 @@ public static class FilterEntityDataHelper
         }
 
         return entityData;
+    }
+
+    private static Dictionary<string, object> GetExternalEntityData(string documentPath, string handle)
+    {
+        var data = new Dictionary<string, object>
+        {
+            ["Name"] = "External Reference",
+            ["Category"] = "External Entity",
+            ["Layer"] = "N/A",
+            ["Color"] = "N/A",
+            ["LineType"] = "N/A",
+            ["DocumentPath"] = documentPath,
+            ["DocumentName"] = Path.GetFileName(documentPath),
+            ["Handle"] = handle,
+            ["Id"] = handle,
+            ["IsExternal"] = true,
+            ["DisplayName"] = $"External: {Path.GetFileName(documentPath)}"
+        };
+
+        try
+        {
+            // Try to open the external document and get real entity properties
+            var docs = AcadApp.DocumentManager;
+            Document externalDoc = null;
+            bool docWasAlreadyOpen = false;
+
+            // Check if the document is already open in the current session
+            foreach (Document openDoc in docs)
+            {
+                if (string.Equals(Path.GetFullPath(openDoc.Name), Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    externalDoc = openDoc;
+                    docWasAlreadyOpen = true;
+                    break;
+                }
+            }
+
+            // If not already open, try to open it temporarily
+            if (externalDoc == null && File.Exists(documentPath))
+            {
+                try
+                {
+                    externalDoc = docs.Open(documentPath, false); // Open read-only
+                    docWasAlreadyOpen = false;
+                }
+                catch
+                {
+                    // If we can't open the document, return the N/A data
+                    return data;
+                }
+            }
+
+            // If we have the external document, get the entity properties
+            if (externalDoc != null)
+            {
+                try
+                {
+                    var handleValue = Convert.ToInt64(handle, 16);
+                    var objectId = externalDoc.Database.GetObjectId(false, new Handle(handleValue), 0);
+
+                    if (objectId != ObjectId.Null)
+                    {
+                        using (var tr = externalDoc.Database.TransactionManager.StartTransaction())
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                            if (entity != null)
+                            {
+                                // Get the real entity data
+                                data = GetEntityDataDictionary(entity, documentPath, null, false);
+                                data["IsExternal"] = true;
+                                data["DisplayName"] = $"External: {data["Name"]}";
+                            }
+                            tr.Commit();
+                        }
+                    }
+                }
+                finally
+                {
+                    // Close the document if we opened it temporarily
+                    if (!docWasAlreadyOpen && externalDoc != null)
+                    {
+                        try
+                        {
+                            externalDoc.CloseAndDiscard();
+                        }
+                        catch
+                        {
+                            // Ignore close errors
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // If anything goes wrong, return the default N/A data
+            // The data dictionary is already initialized with N/A values above
+        }
+
+        return data;
     }
 
     private static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties)
@@ -290,7 +368,7 @@ public static class FilterEntityDataHelper
                     }
                     break;
 
-                case SelectionScopeManager.SelectionScope.drawing:
+                case SelectionScopeManager.SelectionScope.document:
                     var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
                     foreach (DBDictionaryEntry entry in layoutDict)
                     {
@@ -304,8 +382,8 @@ public static class FilterEntityDataHelper
                     break;
 
                 default:
-                    // For Process, Desktop, Network - fall back to Drawing scope for now
-                    goto case SelectionScopeManager.SelectionScope.drawing;
+                    // For Process, Desktop, Network - fall back to Document scope for now
+                    goto case SelectionScopeManager.SelectionScope.document;
             }
 
             tr.Commit();
@@ -540,8 +618,8 @@ public abstract class FilterElementsBase
                 }
             }
 
-            // Save the selected entities to selection storage for other commands
-            if (selectedIds.Count > 0)
+            // Save the selected entities to selection storage for other commands (except in view mode)
+            if (selectedIds.Count > 0 && SelectionScopeManager.CurrentScope != SelectionScopeManager.SelectionScope.view)
             {
                 var selectionItems = new List<SelectionItem>();
                 foreach (var id in selectedIds)
@@ -549,7 +627,8 @@ public abstract class FilterElementsBase
                     selectionItems.Add(new SelectionItem
                     {
                         DocumentPath = doc.Name,
-                        Handle = id.Handle.ToString()
+                        Handle = id.Handle.ToString(),
+                        SessionId = null // Will be auto-generated by SelectionStorage
                     });
                 }
                 SelectionStorage.SaveSelection(selectionItems);
@@ -572,7 +651,7 @@ public abstract class FilterElementsBase
 /// </summary>
 public class FilterSelectedElements
 {
-    [CommandMethod("filter-selected")]
+    [CommandMethod("filter-selected", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
     public void FilterSelectedCommand()
     {
         var command = new FilterSelectedImpl();

@@ -7,6 +7,7 @@
 (defun c:we () (command "switch-view-last"))
 (defun c:wr () (command "switch-view-recent"))
 (defun c:`` () (command "set-scope"))
+(defun c:sco () (command "set-scope"))
 (defun c:fse () (command "filter-selected-elements"))
 (defun c:fses () (command "filter-selected-elements-span"))
 (defun c:scc () (command "select-by-category"))

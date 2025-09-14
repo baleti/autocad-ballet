@@ -26,9 +26,9 @@ public static class SelectionScopeManager
     public enum SelectionScope
     {
         view,           // Current active space/layout only (was SpaceLayout)
-        drawing,        // Entire current drawing (all layouts)
-        process,        // All opened drawings in current AutoCAD process
-        desktop,        // All drawings in all AutoCAD instances on desktop (IPC later)
+        document,       // Entire current document (all layouts)
+        process,        // All opened documents in current AutoCAD process
+        desktop,        // All documents in all AutoCAD instances on desktop (IPC later)
         network         // Across network (to implement later)
     }
 
@@ -45,7 +45,7 @@ public static class SelectionScopeManager
     {
         // Ensure directories exist
         Directory.CreateDirectory(AppDataPath);
-        Directory.CreateDirectory(StoredSelectionsPath);
+        // Note: StoredSelectionsPath is legacy - we now use unified SelectionStorage
     }
 
     public static SelectionScope CurrentScope
@@ -134,12 +134,12 @@ public static class SelectionScopeManager
                 // Default behavior - current space/layout
                 return filter != null ? ed.GetSelection(filter) : ed.GetSelection();
 
-            case SelectionScope.drawing:
-                // Get selection from all layouts in current drawing
-                return GetDrawingWideSelection(ed, db, filter);
+            case SelectionScope.document:
+                // Get selection from all layouts in current document
+                return GetDocumentWideSelection(ed, db, filter);
 
             case SelectionScope.process:
-                // Get selection from all open drawings
+                // Get selection from all open documents
                 return GetProcessWideSelection(ed, filter);
 
             case SelectionScope.desktop:
@@ -157,8 +157,8 @@ public static class SelectionScopeManager
         }
     }
 
-    // Get selection from entire drawing (all layouts)
-    private static PromptSelectionResult GetDrawingWideSelection(Editor ed, Database db, SelectionFilter filter)
+    // Get selection from entire document (all layouts)
+    private static PromptSelectionResult GetDocumentWideSelection(Editor ed, Database db, SelectionFilter filter)
     {
         var allIds = new List<ObjectId>();
 
@@ -219,7 +219,7 @@ public static class SelectionScopeManager
         return ed.SelectImplied();
     }
 
-    // Get selection from all open drawings in process
+    // Get selection from all open documents in process
     private static PromptSelectionResult GetProcessWideSelection(Editor ed, SelectionFilter filter)
     {
         var allIds = new List<ObjectId>();
@@ -234,7 +234,7 @@ public static class SelectionScopeManager
             if (doc == currentDoc)
             {
                 // For current document, use regular selection
-                var result = GetDrawingWideSelection(ed, doc.Database, filter);
+                var result = GetDocumentWideSelection(ed, doc.Database, filter);
                 if (result.Status == PromptStatus.OK)
                 {
                     currentDocIds.AddRange(result.Value.GetObjectIds());
@@ -246,11 +246,12 @@ public static class SelectionScopeManager
                 // Note: This is simplified - in production, you'd want to handle this more carefully
                 ed.WriteMessage($"\nScanning document: {doc.Name}\n");
 
-                // Load stored selection for this document if it exists
-                var storedSel = LoadStoredSelection(doc);
-                if (storedSel != null && storedSel.Handles.Count > 0)
+                // Load stored selection from unified storage if it exists
+                var storedSelection = AutoCADBallet.SelectionStorage.LoadSelection();
+                var docSelections = storedSelection.Where(s => Path.GetFullPath(s.DocumentPath) == Path.GetFullPath(doc.Name)).ToList();
+                if (docSelections.Count > 0)
                 {
-                    ed.WriteMessage($"  Found {storedSel.Handles.Count} stored objects\n");
+                    ed.WriteMessage($"  Found {docSelections.Count} stored objects\n");
                 }
             }
         }
@@ -277,10 +278,15 @@ public static class SelectionScopeManager
         switch (scope)
         {
             case SelectionScope.view:
-                // Default behavior - also save to storage for filter-selected compatibility
+                // Default behavior - use AutoCAD's built-in selection (no storage needed)
                 ed.SetImpliedSelection(ids);
+                break;
 
-                // Also save to SelectionStorage for filter-selected compatibility
+            case SelectionScope.document:
+            case SelectionScope.process:
+            case SelectionScope.desktop:
+            case SelectionScope.network:
+                // Store selection using unified SelectionStorage
                 var selectionItems = new List<AutoCADBallet.SelectionItem>();
                 using (var tr = doc.TransactionManager.StartTransaction())
                 {
@@ -292,42 +298,15 @@ public static class SelectionScopeManager
                             selectionItems.Add(new AutoCADBallet.SelectionItem
                             {
                                 DocumentPath = doc.Name,
-                                Handle = obj.Handle.ToString()
+                                Handle = obj.Handle.ToString(),
+                                SessionId = null // Will be auto-generated by SelectionStorage
                             });
                         }
                     }
                     tr.Commit();
                 }
+
                 AutoCADBallet.SelectionStorage.SaveSelection(selectionItems);
-                break;
-
-            case SelectionScope.drawing:
-            case SelectionScope.process:
-            case SelectionScope.desktop:
-            case SelectionScope.network:
-                // Store selection for retrieval
-                var selection = new StoredSelection
-                {
-                    DrawingPath = doc.Name,
-                    LayoutName = LayoutManager.Current.CurrentLayout,
-                    Timestamp = DateTime.Now
-                };
-
-                // Convert ObjectIds to handles for persistence
-                using (var tr = doc.TransactionManager.StartTransaction())
-                {
-                    foreach (var id in ids)
-                    {
-                        if (id.IsValid && !id.IsErased)
-                        {
-                            var obj = tr.GetObject(id, OpenMode.ForRead);
-                            selection.Handles.Add(obj.Handle.ToString());
-                        }
-                    }
-                    tr.Commit();
-                }
-
-                SaveStoredSelection(doc, selection);
                 ed.SetImpliedSelection(ids);
                 break;
         }
@@ -336,6 +315,19 @@ public static class SelectionScopeManager
     // Clear stored selections
     public static void ClearStoredSelections()
     {
+        // Clear unified selection storage
+        try
+        {
+            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var unifiedSelectionPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "selection");
+            if (File.Exists(unifiedSelectionPath))
+            {
+                File.Delete(unifiedSelectionPath);
+            }
+        }
+        catch { }
+
+        // Also clear legacy stored selections for compatibility
         if (Directory.Exists(StoredSelectionsPath))
         {
             foreach (var file in Directory.GetFiles(StoredSelectionsPath, "*_selection.txt"))

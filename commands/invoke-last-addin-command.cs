@@ -1,7 +1,10 @@
 using Autodesk.AutoCAD.Runtime;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.EditorInput;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
@@ -11,172 +14,153 @@ namespace AutocadBallet
 {
     public class InvokeLastAddinCommand
     {
-    private const string FolderName = "autocad-ballet";
-    private const string ConfigFileName = "InvokeAddinCommand-last-dll-path";
-    private const string LastCommandFileName = "InvokeAddinCommand-history";
-    private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName);
-    private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
-    private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
+#if ACAD2017
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2017\autocad-ballet.dll";
+#elif ACAD2018
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2018\autocad-ballet.dll";
+#elif ACAD2019
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2019\autocad-ballet.dll";
+#elif ACAD2020
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2020\autocad-ballet.dll";
+#elif ACAD2021
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2021\autocad-ballet.dll";
+#elif ACAD2022
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2022\autocad-ballet.dll";
+#elif ACAD2023
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2023\autocad-ballet.dll";
+#elif ACAD2024
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2024\autocad-ballet.dll";
+#elif ACAD2025
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2025\autocad-ballet.dll";
+#elif ACAD2026
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll";
+#else
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll"; // Default
+#endif
 
-    private Dictionary<string, Assembly> loadedAssemblies = new Dictionary<string, Assembly>();
+        private const string FolderName = "autocad-ballet";
+        private const string RuntimeFolderName = "runtime";
+        private const string ConfigFileName = "InvokeAddinCommand-last-dll-path";
+        private const string LastCommandFileName = "InvokeAddinCommand-history";
+        private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName, RuntimeFolderName);
+        private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
+        private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
 
-    [CommandMethod("invoke-last-addin-command")]
-    public void Execute()
-    {
-        try
+        // Static dictionary to track assemblies loaded in this AppDomain
+        private static Dictionary<string, WeakReference> loadedAssemblyCache = new Dictionary<string, WeakReference>();
+
+        // Stronger cache for recently used assemblies to prevent GC
+        private static Dictionary<string, Assembly> strongAssemblyCache = new Dictionary<string, Assembly>();
+
+        // Instance dictionary for dependency resolution within a single invocation
+        private Dictionary<string, Assembly> sessionAssemblies = new Dictionary<string, Assembly>();
+
+        // Command info class
+        private class CommandInfo
         {
-            if (!File.Exists(ConfigFilePath) || !File.Exists(LastCommandFilePath))
+            public string CommandName { get; }
+            public string TypeName { get; }
+            public string FullTypeName { get; }
+            public string MethodName { get; }
+
+            public CommandInfo(string commandName, string typeName, string fullTypeName, string methodName)
             {
-                AcApp.DocumentManager.MdiActiveDocument.Editor.WriteMessage("\nNo previous command found. Run a command using InvokeAddinCommand first.");
-                return;
-            }
-
-            string dllPath = File.ReadAllText(ConfigFilePath);
-            
-            string commandClassName = GetLastCommand();
-            
-            if (string.IsNullOrEmpty(commandClassName))
-            {
-                AcApp.DocumentManager.MdiActiveDocument.Editor.WriteMessage("\nNo command history found.");
-                return;
-            }
-
-            if (string.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
-            {
-                AcApp.DocumentManager.MdiActiveDocument.Editor.WriteMessage("\nInvalid DLL path.");
-                return;
-            }
-
-            AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
-
-            Assembly assembly = LoadAssembly(dllPath);
-            Type commandType = assembly.GetType(commandClassName);
-
-            if (commandType == null)
-            {
-                AcApp.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\nCould not find type: {commandClassName}");
-                return;
-            }
-
-            object commandInstance = Activator.CreateInstance(commandType);
-            MethodInfo method = commandType.GetMethod("Execute");
-
-            if (method != null)
-            {
-                method.Invoke(commandInstance, null);
-            }
-            else
-            {
-                AcApp.DocumentManager.MdiActiveDocument.Editor.WriteMessage("\nExecute method not found.");
+                CommandName = commandName;
+                TypeName = typeName;
+                FullTypeName = fullTypeName;
+                MethodName = methodName;
             }
         }
-        catch (System.Exception ex)
-        {
-            string message = $"An error occurred: {ex.Message}";
-            if (ex.InnerException != null)
-            {
-                message += $"\nInner Exception: {ex.InnerException.Message}";
-            }
-            AcApp.DocumentManager.MdiActiveDocument.Editor.WriteMessage($"\n{message}");
-        }
-        finally
-        {
-            AppDomain.CurrentDomain.AssemblyResolve -= CurrentDomain_AssemblyResolve;
-        }
-    }
 
-    private string GetLastCommand()
-    {
-        try
+        [CommandMethod("invoke-last-addin-command", CommandFlags.UsePickSet)]
+        public void Execute()
         {
-            string[] lines = File.ReadAllLines(LastCommandFilePath);
-            
-            for (int i = lines.Length - 1; i >= 0; i--)
+            var ed = AcApp.DocumentManager.MdiActiveDocument?.Editor;
+            if (ed == null) return;
+
+            try
             {
-                if (!string.IsNullOrWhiteSpace(lines[i]))
+                if (!File.Exists(LastCommandFilePath))
                 {
-                    return lines[i].Trim();
+                    ed.WriteMessage("\nNo previous command found. Run a command using InvokeAddinCommand first.");
+                    return;
+                }
+
+                string lastCommandName = GetLastCommand();
+
+                if (string.IsNullOrEmpty(lastCommandName))
+                {
+                    ed.WriteMessage("\nNo command history found.");
+                    return;
+                }
+
+                ed.WriteMessage($"\nInvoking last command: {lastCommandName}");
+
+                // Resolve the path
+                string dllPath = Environment.ExpandEnvironmentVariables(TargetDllPath);
+
+                if (!File.Exists(dllPath))
+                {
+                    ed.WriteMessage($"\nTarget DLL not found: {dllPath}");
+                    ed.WriteMessage($"\nPlease ensure autocad-ballet.dll exists in the expected location.");
+                    return;
+                }
+
+                // Load assembly using same mechanism as invoke-addin-command
+                Assembly assembly = LoadAssemblyWithCaching(dllPath, ed);
+                if (assembly == null) return;
+
+                // Find the command in the assembly
+                var commands = ExtractCommandsFromAssembly(assembly);
+                var targetCommand = commands.FirstOrDefault(c =>
+                    c.CommandName.Equals(lastCommandName, StringComparison.OrdinalIgnoreCase));
+
+                if (targetCommand == null)
+                {
+                    ed.WriteMessage($"\nCommand '{lastCommandName}' not found in the assembly.");
+                    return;
+                }
+
+                // Invoke the command method directly
+                InvokeCommandMethod(targetCommand, assembly, ed);
+
+                ed.WriteMessage($"\nCommand completed successfully.");
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n[InvokeLastAddin] Error: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    ed.WriteMessage($"\n  Inner: {ex.InnerException.Message}");
                 }
             }
-            
-            return null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private Assembly LoadAssembly(string assemblyPath)
-    {
-        string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
-
-        if (loadedAssemblies.ContainsKey(assemblyName))
-        {
-            return loadedAssemblies[assemblyName];
-        }
-
-        byte[] assemblyBytes = File.ReadAllBytes(assemblyPath);
-        Assembly assembly = Assembly.Load(assemblyBytes);
-        loadedAssemblies[assemblyName] = assembly;
-
-        string directory = Path.GetDirectoryName(assemblyPath);
-        foreach (string dllFile in Directory.GetFiles(directory, "*.dll"))
-        {
-            if (dllFile != assemblyPath)
+            finally
             {
-                string dllName = Path.GetFileNameWithoutExtension(dllFile);
-                if (!loadedAssemblies.ContainsKey(dllName))
-                {
-                    try
-                    {
-                        byte[] dllBytes = File.ReadAllBytes(dllFile);
-                        Assembly dllAssembly = Assembly.Load(dllBytes);
-                        loadedAssemblies[dllName] = dllAssembly;
-                    }
-                    catch (BadImageFormatException)
-                    {
-                        continue;
-                    }
-                }
+                // Clear session assemblies
+                sessionAssemblies.Clear();
             }
         }
 
-        return assembly;
-    }
-
-    private Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
-    {
-        AssemblyName assemblyName = new AssemblyName(args.Name);
-        string shortName = assemblyName.Name;
-
-        if (loadedAssemblies.ContainsKey(shortName))
-        {
-            return loadedAssemblies[shortName];
-        }
-
-        if (!File.Exists(ConfigFilePath))
-        {
-            return null;
-        }
-
-        string dllPath = File.ReadAllText(ConfigFilePath);
-        string directory = Path.GetDirectoryName(dllPath);
-        string assemblyPath = Path.Combine(directory, shortName + ".dll");
-
-        if (File.Exists(assemblyPath))
+        private string GetLastCommand()
         {
             try
             {
-                return LoadAssembly(assemblyPath);
+                string[] lines = File.ReadAllLines(LastCommandFilePath);
+                
+                for (int i = lines.Length - 1; i >= 0; i--)
+                {
+                    if (!string.IsNullOrWhiteSpace(lines[i]))
+                    {
+                        return lines[i].Trim();
+                    }
+                }
+                
+                return null;
             }
-            catch (System.Exception)
+            catch
             {
                 return null;
             }
         }
-
-        return null;
-    }
     }
 }
