@@ -204,7 +204,7 @@ public partial class CustomGUIs
         // Column header click for sorting
         grid.ColumnHeaderMouseClick += (s, e) =>
         {
-            string colName = grid.Columns[e.ColumnIndex].HeaderText;
+            string colName = grid.Columns[e.ColumnIndex].Name;
             SortCriteria existing = sortCriteria.FirstOrDefault(sc => sc.ColumnName == colName);
 
             if ((Control.ModifierKeys & Keys.Shift) == Keys.Shift)
@@ -289,9 +289,22 @@ public partial class CustomGUIs
             }
             else if (e.KeyCode == Keys.Escape)
             {
-                // Escape cancels entire operation - no changes applied
-                selectedEntries.Clear();
-                form.Close();
+                if (_isEditMode)
+                {
+                    // In edit mode, first press of escape cancels edit mode and returns to normal mode
+                    ToggleEditMode(grid);
+                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                    var ed = doc.Editor;
+                    ed.WriteMessage($"\nExited edit mode. Now in NORMAL mode");
+                    form.Text = "Total Entries: " + workingSet.Count + " / " + entries.Count;
+                    e.Handled = true;
+                }
+                else
+                {
+                    // In normal mode, escape cancels entire operation - no changes applied
+                    selectedEntries.Clear();
+                    form.Close();
+                }
             }
             else if (e.KeyCode == Keys.Enter)
             {
@@ -344,19 +357,22 @@ public partial class CustomGUIs
                     e.Handled = true;
                 }
             }
-            else if ((e.KeyCode == Keys.Right || e.KeyCode == Keys.Left) && (e.Shift && sender == grid))
+            else if (!_isEditMode && (e.KeyCode == Keys.Right || e.KeyCode == Keys.Left) && (e.Shift && sender == grid))
             {
+                // Only scroll when NOT in edit mode
                 int offset = e.KeyCode == Keys.Right ? 1000 : -1000;
                 grid.HorizontalScrollingOffset += offset;
                 e.Handled = true;
             }
-            else if (e.KeyCode == Keys.Right && sender == grid)
+            else if (!_isEditMode && e.KeyCode == Keys.Right && sender == grid)
             {
+                // Only scroll when NOT in edit mode
                 grid.HorizontalScrollingOffset += 50;
                 e.Handled = true;
             }
-            else if (e.KeyCode == Keys.Left && sender == grid)
+            else if (!_isEditMode && e.KeyCode == Keys.Left && sender == grid)
             {
+                // Only scroll when NOT in edit mode
                 grid.HorizontalScrollingOffset = Math.Max(grid.HorizontalScrollingOffset - 50, 0);
                 e.Handled = true;
             }
@@ -440,6 +456,43 @@ public partial class CustomGUIs
                 }
                 e.Handled = true;
             }
+            else if (_isEditMode && sender == grid)
+            {
+                // Excel-like shortcuts and navigation in edit mode
+                if (e.KeyCode == Keys.Space && e.Shift)
+                {
+                    // Shift+Space: Select entire rows of currently selected cells
+                    SelectRowsOfSelectedCells(grid);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == Keys.Space && e.Control)
+                {
+                    // Ctrl+Space: Select entire columns of currently selected cells
+                    SelectColumnsOfSelectedCells(grid);
+                    e.Handled = true;
+                }
+                else if ((e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.Left || e.KeyCode == Keys.Right))
+                {
+                    if (e.Shift && grid.CurrentCell != null)
+                    {
+                        // Shift+Arrow: Extend selection (Excel-like)
+                        ExtendSelectionWithArrows(grid, e.KeyCode, true);
+                        e.Handled = true;
+                    }
+                    else if (e.Control && grid.CurrentCell != null)
+                    {
+                        // Ctrl+Arrow: Extend selection (original behavior)
+                        ExtendSelectionWithArrows(grid, e.KeyCode, false);
+                        e.Handled = true;
+                    }
+                    else if (grid.CurrentCell != null)
+                    {
+                        // Arrow keys: Move current cell
+                        MoveCellWithArrows(grid, e.KeyCode);
+                        e.Handled = true;
+                    }
+                }
+            }
         };
 
         grid.KeyDown += (s, e) => HandleKeyDown(e, grid);
@@ -457,6 +510,23 @@ public partial class CustomGUIs
                     {
                         _selectedEditCells.Add(cell);
                     }
+                }
+            }
+        };
+
+        // Handle mouse clicks to set selection anchor in edit mode
+        grid.CellMouseDown += (s, e) =>
+        {
+            if (_isEditMode && e.RowIndex >= 0 && e.ColumnIndex >= 0)
+            {
+                // Set the clicked cell as the new anchor for Shift+Arrow operations
+                try
+                {
+                    SetSelectionAnchor(grid.Rows[e.RowIndex].Cells[e.ColumnIndex]);
+                }
+                catch (System.Exception)
+                {
+                    // Ignore errors in virtual mode
                 }
             }
         };

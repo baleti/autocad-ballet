@@ -180,6 +180,7 @@ public static class FilterEntityDataHelper
             ["Layer"] = "N/A",
             ["Color"] = "N/A",
             ["LineType"] = "N/A",
+            ["Layout"] = "N/A",
             ["DocumentPath"] = documentPath,
             ["DocumentName"] = Path.GetFileName(documentPath),
             ["Handle"] = handle,
@@ -277,12 +278,14 @@ public static class FilterEntityDataHelper
         string layer = "";
         string color = "";
         string lineType = "";
+        string layoutName = "";
 
         if (entity is Entity ent)
         {
             layer = ent.Layer;
             color = ent.Color.ToString();
             lineType = ent.Linetype;
+            layoutName = GetEntityLayoutName(ent);
 
             // Get entity-specific name
             if (entity is BlockReference br)
@@ -324,6 +327,7 @@ public static class FilterEntityDataHelper
             ["Layer"] = layer,
             ["Color"] = color,
             ["LineType"] = lineType,
+            ["Layout"] = layoutName,
             ["DocumentPath"] = documentPath,
             ["DocumentName"] = Path.GetFileName(documentPath),
             ["Handle"] = entity.Handle.ToString(),
@@ -588,6 +592,40 @@ public static class FilterEntityDataHelper
         }
     }
 
+    private static string GetEntityLayoutName(Entity entity)
+    {
+        try
+        {
+            using (var tr = entity.Database.TransactionManager.StartTransaction())
+            {
+                // Get the layout dictionary
+                var layoutDict = (DBDictionary)tr.GetObject(entity.Database.LayoutDictionaryId, OpenMode.ForRead);
+
+                // Check each layout to see if it contains this entity
+                foreach (DBDictionaryEntry entry in layoutDict)
+                {
+                    var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                    var btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+
+                    // Check if this entity belongs to this layout's block table record
+                    if (entity.BlockId == layout.BlockTableRecordId)
+                    {
+                        tr.Commit();
+                        return layout.LayoutName;
+                    }
+                }
+
+                tr.Commit();
+            }
+        }
+        catch
+        {
+            // If we can't determine the layout, return empty string
+        }
+
+        return "";
+    }
+
     private static void AddExtensionData(DBObject entity, Dictionary<string, object> data)
     {
         try
@@ -731,7 +769,7 @@ public abstract class FilterElementsBase
                 .ToList();
 
             // Reorder to put most useful columns first
-            var orderedProps = new List<string> { "Name", "Category", "Layer", "DocumentName", "Color", "LineType", "Handle" };
+            var orderedProps = new List<string> { "Name", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
             var remainingProps = propertyNames.Except(orderedProps);
 
             // Separate attributes and extension data for better organization

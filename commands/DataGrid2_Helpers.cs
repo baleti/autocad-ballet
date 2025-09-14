@@ -1,11 +1,16 @@
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Drawing;
 using System.Linq;
 using System.Text.RegularExpressions;
-using System.Windows.Forms;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
+using System.Globalization;
+using System.Text;
+using System;
+
+// Alias to avoid naming conflicts
+using WinForms = System.Windows.Forms;
+using Drawing = System.Drawing;
 
 public partial class CustomGUIs
 {
@@ -34,6 +39,9 @@ public partial class CustomGUIs
     private static Dictionary<string, object> _pendingCellEdits = new Dictionary<string, object>();
     private static List<DataGridViewCell> _selectedEditCells = new List<DataGridViewCell>();
     private static HashSet<Dictionary<string, object>> _modifiedEntries = new HashSet<Dictionary<string, object>>();
+
+    // Selection anchor for Shift+Arrow behavior (Excel-like)
+    private static DataGridViewCell _selectionAnchor = null;
 
     // ──────────────────────────────────────────────────────────────
     //  Helper types
@@ -233,6 +241,7 @@ public partial class CustomGUIs
         _pendingCellEdits.Clear();
         _selectedEditCells.Clear();
         _modifiedEntries.Clear();
+        _selectionAnchor = null;
     }
 
     /// <summary>Check if a column is editable</summary>
@@ -356,7 +365,7 @@ public partial class CustomGUIs
         return $"{rowIndex}|{columnName}";
     }
 
-    /// <summary>Show text edit prompt for selected cells (Excel-like functionality)</summary>
+    /// <summary>Show advanced edit prompt for selected cells with find/replace, patterns, and math operations</summary>
     private static void ShowCellEditPrompt(DataGridView grid)
     {
         if (_selectedEditCells.Count == 0) return;
@@ -378,103 +387,87 @@ public partial class CustomGUIs
         _selectedEditCells.Clear();
         _selectedEditCells.AddRange(editableCells);
 
-        // Get the value from the first selected cell
-        var firstCell = _selectedEditCells[0];
-        string currentValue = "";
+        // Collect current values and corresponding data rows for advanced processing
+        var currentValues = new List<string>();
+        var dataRows = new List<Dictionary<string, object>>();
 
-        if (firstCell.RowIndex < _cachedFilteredData.Count)
+        foreach (var cell in _selectedEditCells)
         {
-            var entry = _cachedFilteredData[firstCell.RowIndex];
-            string columnName = grid.Columns[firstCell.ColumnIndex].Name;
-            if (entry.ContainsKey(columnName) && entry[columnName] != null)
+            if (cell.RowIndex < _cachedFilteredData.Count)
             {
-                currentValue = entry[columnName].ToString();
+                var entry = _cachedFilteredData[cell.RowIndex];
+                string columnName = grid.Columns[cell.ColumnIndex].Name;
+                string currentValue = "";
+
+                if (entry.ContainsKey(columnName) && entry[columnName] != null)
+                {
+                    currentValue = entry[columnName].ToString();
+                }
+
+                currentValues.Add(currentValue);
+                dataRows.Add(entry); // Full row data for pattern references
+            }
+            else
+            {
+                currentValues.Add("");
+                dataRows.Add(new Dictionary<string, object>());
             }
         }
 
-        // Create edit form (Excel-like input box)
-        using (Form editForm = new Form())
+        // Show the advanced rename form
+        using (var advancedForm = new AdvancedRenameForm(currentValues, dataRows))
         {
-            editForm.Text = "Edit Cell Value";
-            editForm.Size = new Size(400, 150);
-            editForm.StartPosition = FormStartPosition.CenterParent;
-            editForm.FormBorderStyle = FormBorderStyle.FixedDialog;
-            editForm.MaximizeBox = false;
-            editForm.MinimizeBox = false;
-
-            Label label = new Label()
+            if (advancedForm.ShowDialog() == WinForms.DialogResult.OK)
             {
-                Text = $"Edit value for {_selectedEditCells.Count} cell(s):",
-                Location = new Point(10, 15),
-                Size = new Size(350, 20)
-            };
-
-            TextBox textBox = new TextBox()
-            {
-                Text = currentValue,
-                Location = new Point(10, 40),
-                Size = new Size(360, 25),
-                Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
-            };
-
-            Button okButton = new Button()
-            {
-                Text = "OK",
-                Location = new Point(215, 80),
-                Size = new Size(75, 25),
-                DialogResult = DialogResult.OK
-            };
-
-            Button cancelButton = new Button()
-            {
-                Text = "Cancel",
-                Location = new Point(295, 80),
-                Size = new Size(75, 25),
-                DialogResult = DialogResult.Cancel
-            };
-
-            editForm.Controls.AddRange(new Control[] { label, textBox, okButton, cancelButton });
-            editForm.AcceptButton = okButton;
-            editForm.CancelButton = cancelButton;
-
-            // Handle Enter key for multi-line editing or confirmation
-            textBox.KeyDown += (sender, e) =>
-            {
-                if (e.KeyCode == Keys.Enter && !e.Shift)
-                {
-                    editForm.DialogResult = DialogResult.OK;
-                    editForm.Close();
-                    e.Handled = true;
-                }
-            };
-
-            textBox.SelectAll();
-            textBox.Focus();
-
-            if (editForm.ShowDialog() == DialogResult.OK)
-            {
-                // Apply the new value to all selected cells
-                string newValue = textBox.Text;
                 var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
                 var ed = doc.Editor;
-                ed.WriteMessage($"\nApplying edit: '{newValue}' to {_selectedEditCells.Count} editable cells");
-                ApplyValueToSelectedCells(grid, newValue);
+                ed.WriteMessage($"\nApplying advanced edits to {_selectedEditCells.Count} cells");
+
+                // Apply transformations to each cell
+                for (int i = 0; i < _selectedEditCells.Count; i++)
+                {
+                    var cell = _selectedEditCells[i];
+                    string originalValue = i < currentValues.Count ? currentValues[i] : "";
+                    var dataRow = i < dataRows.Count ? dataRows[i] : null;
+
+                    // Apply the transformation
+                    string newValue = DataRenamerHelper.TransformValue(originalValue, advancedForm, dataRow);
+
+                    if (newValue != originalValue)
+                    {
+                        string columnName = grid.Columns[cell.ColumnIndex].Name;
+                        string cellKey = GetCellKey(cell.RowIndex, columnName);
+
+                        ed.WriteMessage($"\nCell [{cell.RowIndex}, {columnName}]: '{originalValue}' → '{newValue}'");
+
+                        // Store the pending edit
+                        _pendingCellEdits[cellKey] = newValue;
+
+                        // Update the display data immediately for visual feedback
+                        if (cell.RowIndex < _cachedFilteredData.Count)
+                        {
+                            var entry = _cachedFilteredData[cell.RowIndex];
+                            entry[columnName] = newValue;
+                            _modifiedEntries.Add(entry);
+                        }
+                    }
+                }
 
                 // Refresh grid to show changes
                 grid.Invalidate();
-                ed.WriteMessage($"\nTotal pending edits now: {_pendingCellEdits.Count}");
+                ed.WriteMessage($"\nAdvanced edit complete. Total pending edits: {_pendingCellEdits.Count}");
             }
             else
             {
                 var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
                 var ed = doc.Editor;
-                ed.WriteMessage("\nEdit cancelled");
+                ed.WriteMessage("\nAdvanced edit cancelled");
             }
-
-            // Restore original selection
-            _selectedEditCells.Clear();
-            _selectedEditCells.AddRange(originalSelectedCells);
         }
+
+        // Restore original selection
+        _selectedEditCells.Clear();
+        _selectedEditCells.AddRange(originalSelectedCells);
     }
 
     /// <summary>Apply a value to all selected cells in edit mode</summary>
@@ -1244,5 +1237,564 @@ public partial class CustomGUIs
         }
 
         tr.AddNewlyCreatedDBObject(xrec, true);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Excel-like Selection and Navigation Helper Methods
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>Select entire rows of currently selected cells (Excel Shift+Space behavior)</summary>
+    private static void SelectRowsOfSelectedCells(DataGridView grid)
+    {
+        if (_selectedEditCells.Count == 0) return;
+
+        // Get unique row indices from selected cells
+        var rowIndices = _selectedEditCells.Select(cell => cell.RowIndex).Distinct().ToList();
+
+        // Clear current selection and select entire rows (only editable columns)
+        grid.ClearSelection();
+
+        foreach (int rowIndex in rowIndices)
+        {
+            if (rowIndex >= 0 && rowIndex < grid.Rows.Count)
+            {
+                foreach (DataGridViewCell cell in grid.Rows[rowIndex].Cells)
+                {
+                    if (cell.Visible && IsColumnEditable(grid.Columns[cell.ColumnIndex].Name))
+                    {
+                        cell.Selected = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>Select entire columns of currently selected cells (Excel Ctrl+Space behavior)</summary>
+    private static void SelectColumnsOfSelectedCells(DataGridView grid)
+    {
+        if (_selectedEditCells.Count == 0) return;
+
+        // Get unique column indices from selected cells (only editable ones)
+        var columnIndices = _selectedEditCells.Select(cell => cell.ColumnIndex).Distinct()
+            .Where(colIndex => IsColumnEditable(grid.Columns[colIndex].Name)).ToList();
+
+        if (columnIndices.Count == 0) return;
+
+        // Clear current selection and select entire columns
+        grid.ClearSelection();
+
+        foreach (int columnIndex in columnIndices)
+        {
+            if (columnIndex >= 0 && columnIndex < grid.Columns.Count)
+            {
+                for (int rowIndex = 0; rowIndex < grid.Rows.Count; rowIndex++)
+                {
+                    if (rowIndex < grid.Rows.Count && grid.Rows[rowIndex].Cells[columnIndex].Visible)
+                    {
+                        grid.Rows[rowIndex].Cells[columnIndex].Selected = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>Move current cell with arrow keys in edit mode, skipping non-editable columns</summary>
+    private static void MoveCellWithArrows(DataGridView grid, Keys keyCode)
+    {
+        if (grid.CurrentCell == null) return;
+
+        int currentRow = grid.CurrentCell.RowIndex;
+        int currentCol = grid.CurrentCell.ColumnIndex;
+        int newRow = currentRow;
+        int newCol = currentCol;
+
+        switch (keyCode)
+        {
+            case Keys.Up:
+                newRow = Math.Max(0, currentRow - 1);
+                break;
+            case Keys.Down:
+                newRow = Math.Min(grid.Rows.Count - 1, currentRow + 1);
+                break;
+            case Keys.Left:
+                newCol = FindNextEditableColumn(grid, currentCol, -1);
+                break;
+            case Keys.Right:
+                newCol = FindNextEditableColumn(grid, currentCol, 1);
+                break;
+        }
+
+        if (newRow != currentRow || newCol != currentCol)
+        {
+            // Clear current selection and move to new cell
+            grid.ClearSelection();
+            try
+            {
+                grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
+                grid.Rows[newRow].Cells[newCol].Selected = true;
+                // Set the new anchor point for future Shift+Arrow operations
+                _selectionAnchor = grid.Rows[newRow].Cells[newCol];
+            }
+            catch (System.Exception)
+            {
+                // Ignore errors in virtual mode
+            }
+        }
+    }
+
+    /// <summary>Extend selection with Ctrl+Arrow or Shift+Arrow keys in edit mode</summary>
+    private static void ExtendSelectionWithArrows(DataGridView grid, Keys keyCode, bool isShiftKey)
+    {
+        if (grid.CurrentCell == null) return;
+
+        int currentRow = grid.CurrentCell.RowIndex;
+        int currentCol = grid.CurrentCell.ColumnIndex;
+        int newRow = currentRow;
+        int newCol = currentCol;
+
+        switch (keyCode)
+        {
+            case Keys.Up:
+                newRow = Math.Max(0, currentRow - 1);
+                break;
+            case Keys.Down:
+                newRow = Math.Min(grid.Rows.Count - 1, currentRow + 1);
+                break;
+            case Keys.Left:
+                newCol = FindNextEditableColumn(grid, currentCol, -1);
+                break;
+            case Keys.Right:
+                newCol = FindNextEditableColumn(grid, currentCol, 1);
+                break;
+        }
+
+        if (newRow != currentRow || newCol != currentCol)
+        {
+            try
+            {
+                if (isShiftKey)
+                {
+                    // Shift+Arrow: Excel-like behavior - extend selection from anchor point
+                    if (_selectionAnchor == null)
+                    {
+                        // Set current cell as anchor if none exists
+                        _selectionAnchor = grid.CurrentCell;
+                    }
+
+                    // Clear current selection
+                    grid.ClearSelection();
+
+                    // Select all cells in the rectangular area from anchor to new position
+                    SelectRectangularArea(grid, _selectionAnchor.RowIndex, _selectionAnchor.ColumnIndex,
+                                        newRow, newCol);
+
+                    // Set current cell to new position
+                    grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
+                }
+                else
+                {
+                    // Ctrl+Arrow: Original behavior - add to selection
+                    grid.Rows[newRow].Cells[newCol].Selected = true;
+                    grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
+                }
+            }
+            catch (System.Exception)
+            {
+                // Ignore errors in virtual mode
+            }
+        }
+    }
+
+    /// <summary>Find the next editable column in the specified direction</summary>
+    private static int FindNextEditableColumn(DataGridView grid, int currentCol, int direction)
+    {
+        int newCol = currentCol + direction;
+
+        // Keep moving in the specified direction until we find an editable column or hit the boundary
+        while (newCol >= 0 && newCol < grid.Columns.Count)
+        {
+            string columnName = grid.Columns[newCol].Name;
+            if (IsColumnEditable(columnName))
+            {
+                return newCol;
+            }
+            newCol += direction;
+        }
+
+        // If we can't find an editable column in that direction, stay in current column
+        return currentCol;
+    }
+
+    /// <summary>Select all cells in a rectangular area (Excel-like selection)</summary>
+    private static void SelectRectangularArea(DataGridView grid, int anchorRow, int anchorCol, int targetRow, int targetCol)
+    {
+        // Determine the bounds of the selection rectangle
+        int startRow = Math.Min(anchorRow, targetRow);
+        int endRow = Math.Max(anchorRow, targetRow);
+        int startCol = Math.Min(anchorCol, targetCol);
+        int endCol = Math.Max(anchorCol, targetCol);
+
+        // Select all cells in the rectangle, but only in editable columns
+        for (int row = startRow; row <= endRow; row++)
+        {
+            if (row >= 0 && row < grid.Rows.Count)
+            {
+                for (int col = startCol; col <= endCol; col++)
+                {
+                    if (col >= 0 && col < grid.Columns.Count)
+                    {
+                        string columnName = grid.Columns[col].Name;
+                        if (IsColumnEditable(columnName))
+                        {
+                            try
+                            {
+                                grid.Rows[row].Cells[col].Selected = true;
+                            }
+                            catch (System.Exception)
+                            {
+                                // Ignore errors in virtual mode
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>Set the selection anchor for Shift+Arrow operations</summary>
+    public static void SetSelectionAnchor(DataGridViewCell cell)
+    {
+        _selectionAnchor = cell;
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Integrated Rename Data Helper Classes (from rename-data-of-selection)
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>Helper class for math operations and data transformations</summary>
+    public static class DataRenamerHelper
+    {
+        #region Math helpers ----------------------------------------------------------------------
+
+        /// <summary>Interprets <paramref name="mathOp"/> ("2x", "x/2", "x+1", …) and applies it to <paramref name="x"/>.</summary>
+        public static double ApplyMathOperation(double x, string mathOp)
+        {
+            if (string.IsNullOrWhiteSpace(mathOp))
+                return x;
+
+            mathOp = mathOp.Replace(" ", string.Empty);
+
+            // identity / negate
+            if (mathOp.Equals("x", StringComparison.OrdinalIgnoreCase)) return x;
+            if (mathOp.Equals("-x", StringComparison.OrdinalIgnoreCase)) return -x;
+
+            // "2x" (multiplier before x)
+            if (!mathOp.StartsWith("x", StringComparison.OrdinalIgnoreCase) &&
+                 mathOp.EndsWith("x", StringComparison.OrdinalIgnoreCase))
+            {
+                string multStr = mathOp.Substring(0, mathOp.Length - 1);
+                if (double.TryParse(multStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double mult))
+                    return mult * x;
+            }
+
+            // operations after x
+            if (mathOp.StartsWith("x", StringComparison.OrdinalIgnoreCase) && mathOp.Length >= 3)
+            {
+                char op = mathOp[1];
+                string num = mathOp.Substring(2);
+                if (double.TryParse(num, NumberStyles.Any, CultureInfo.InvariantCulture, out double n))
+                {
+                    switch (op)
+                    {
+                        case '+': return x + n;
+                        case '-': return x - n;
+                        case '*': return x * n;
+                        case '/': return Math.Abs(n) < double.Epsilon ? x : x / n;
+                    }
+                }
+            }
+            return x;   // unrecognised -> unchanged
+        }
+
+        /// <summary>Applies <see cref="ApplyMathOperation"/> to every numeric token in <paramref name="input"/>.</summary>
+        public static string ApplyMathToNumbersInString(string input, string mathOp)
+        {
+            if (string.IsNullOrEmpty(input) || string.IsNullOrWhiteSpace(mathOp))
+                return input;
+
+            return Regex.Replace(
+                input,
+                @"-?\d+(?:\.\d+)?",                              // signed integers/decimals
+                m =>
+                {
+                    if (!double.TryParse(m.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out double n))
+                        return m.Value;                           // shouldn't happen
+
+                    double res = ApplyMathOperation(n, mathOp);
+
+                    // keep integer look-and-feel where possible
+                    return Math.Abs(res % 1) < 1e-10
+                         ? Math.Round(res).ToString(CultureInfo.InvariantCulture)
+                         : res.ToString(CultureInfo.InvariantCulture);
+                });
+        }
+
+        #endregion
+
+        #region Pattern parsing helper ------------------------------------------------------------
+
+        /// <summary>
+        /// Parses pattern string and replaces data references.
+        /// Supports: {} for current value, $"DataName" or $DataName for other data.
+        /// Also supports pseudo data on entities: "Layer", "Color", "LineType", "Handle".
+        /// </summary>
+        public static string ParsePatternWithDataReferences(string pattern, string currentValue, Dictionary<string, object> dataRow)
+        {
+            if (string.IsNullOrEmpty(pattern))
+                return currentValue;
+
+            // First replace {} with current value
+            string result = pattern.Replace("{}", currentValue);
+
+            // Regex to match $"Data Name" or $DataNameWithoutSpaces
+            var regex = new Regex(@"\$""([^""]+)""|(?<!\$)\$(\w+)");
+
+            result = regex.Replace(result, match =>
+            {
+                string dataName = !string.IsNullOrEmpty(match.Groups[1].Value)
+                    ? match.Groups[1].Value
+                    : match.Groups[2].Value;
+
+                // Try getting data value from the row
+                string dataValue = GetDataValueFromRow(dataRow, dataName);
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+            });
+
+            return result;
+        }
+
+        /// <summary>Gets data value from the DataGrid row</summary>
+        private static string GetDataValueFromRow(Dictionary<string, object> dataRow, string dataName)
+        {
+            if (dataRow == null || string.IsNullOrEmpty(dataName))
+                return string.Empty;
+
+            // Try exact match first
+            if (dataRow.TryGetValue(dataName, out object value) && value != null)
+                return value.ToString();
+
+            // Try case-insensitive match
+            foreach (var kvp in dataRow)
+            {
+                if (string.Equals(kvp.Key, dataName, StringComparison.OrdinalIgnoreCase))
+                    return kvp.Value?.ToString() ?? string.Empty;
+            }
+
+            return string.Empty;
+        }
+
+        #endregion
+
+        #region Value transformation --------------------------------------------------------------
+
+        /// <summary>Transform a value using the rename form settings</summary>
+        public static string TransformValue(string original, AdvancedRenameForm form, Dictionary<string, object> dataRow = null)
+        {
+            string value = original;
+
+            // 1. Find / Replace
+            if (!string.IsNullOrEmpty(form.FindText))
+                value = value.Replace(form.FindText, form.ReplaceText);
+            else if (!string.IsNullOrEmpty(form.ReplaceText))
+                value = form.ReplaceText;
+
+            // 2. Pattern (with data reference support)
+            if (!string.IsNullOrEmpty(form.PatternText))
+            {
+                if (dataRow != null)
+                {
+                    value = ParsePatternWithDataReferences(form.PatternText, value, dataRow);
+                }
+                else
+                {
+                    // Fallback for preview mode (no dataRow available)
+                    value = form.PatternText.Replace("{}", value);
+                }
+            }
+
+            // 3. Math
+            if (!string.IsNullOrEmpty(form.MathOperationText))
+            {
+                if (double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double n))
+                    value = ApplyMathOperation(n, form.MathOperationText).ToString(CultureInfo.InvariantCulture);
+                else
+                    value = ApplyMathToNumbersInString(value, form.MathOperationText);
+            }
+            return value;
+        }
+
+        #endregion
+    }
+
+    /// <summary>Advanced rename form with find/replace, patterns, math operations, and live preview</summary>
+    public class AdvancedRenameForm : WinForms.Form
+    {
+        private readonly List<string> _originalValues;
+        private readonly List<Dictionary<string, object>> _dataRows;
+
+        private WinForms.TextBox _txtFind;
+        private WinForms.TextBox _txtReplace;
+        private WinForms.TextBox _txtPattern;
+        private WinForms.TextBox _txtMath;
+        private WinForms.RichTextBox _rtbBefore;
+        private WinForms.RichTextBox _rtbAfter;
+
+        #region Exposed properties
+
+        public string FindText => _txtFind.Text;
+        public string ReplaceText => _txtReplace.Text;
+        public string PatternText => _txtPattern.Text;
+        public string MathOperationText => _txtMath.Text;
+
+        #endregion
+
+        public AdvancedRenameForm(List<string> originalValues, List<Dictionary<string, object>> dataRows = null)
+        {
+            _originalValues = originalValues ?? new List<string>();
+            _dataRows = dataRows ?? new List<Dictionary<string, object>>();
+            BuildUI();
+            LoadCurrentValues();
+        }
+
+        private void BuildUI()
+        {
+            Text = "Advanced Cell Editor";
+            Font = new Drawing.Font("Segoe UI", 9);
+            MinimumSize = new Drawing.Size(520, 480);
+            Size = new Drawing.Size(640, 560);
+            KeyPreview = true;
+            KeyDown += (s, e) => { if (e.KeyCode == WinForms.Keys.Escape) Close(); };
+
+            // === layout ========================================================================
+            var grid = new WinForms.TableLayoutPanel
+            {
+                Dock = WinForms.DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 8,
+                Padding = new WinForms.Padding(8)
+            };
+            grid.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Absolute, 90));
+            grid.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Percent, 100));
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 0: Find
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 36)); // Row 1: Replace (increased for spacing)
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 2: Pattern
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 3: Pattern hint
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 4: Math
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 5: Math hint
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
+
+            // Find / Replace
+            grid.Controls.Add(MakeLabel("Find:"), 0, 0);
+            _txtFind = MakeTextBox();
+            grid.Controls.Add(_txtFind, 1, 0);
+
+            grid.Controls.Add(MakeLabel("Replace:"), 0, 1);
+            _txtReplace = MakeTextBox();
+            grid.Controls.Add(_txtReplace, 1, 1);
+
+            // Pattern
+            grid.Controls.Add(MakeLabel("Pattern:"), 0, 2);
+            _txtPattern = MakeTextBox("{}");   // default
+            grid.Controls.Add(_txtPattern, 1, 2);
+
+            grid.Controls.Add(MakeHint("Use {} for current value. Use $\"Column Name\" or $ColumnName to reference other columns."), 1, 3);
+
+            // Math
+            grid.Controls.Add(MakeLabel("Math:"), 0, 4);
+            _txtMath = MakeTextBox();
+            grid.Controls.Add(_txtMath, 1, 4);
+
+            grid.Controls.Add(MakeHint("Use x to represent current value (e.g. 2x, x/2, x+3, -x)."), 1, 5);
+
+            // Before / After preview
+            _rtbBefore = new WinForms.RichTextBox { ReadOnly = true, Dock = WinForms.DockStyle.Fill };
+            var grpBefore = new WinForms.GroupBox { Text = "Current Values", Dock = WinForms.DockStyle.Fill };
+            grpBefore.Controls.Add(_rtbBefore);
+            grid.Controls.Add(grpBefore, 0, 6);
+            grid.SetColumnSpan(grpBefore, 2);
+
+            _rtbAfter = new WinForms.RichTextBox { ReadOnly = true, Dock = WinForms.DockStyle.Fill };
+            var grpAfter = new WinForms.GroupBox { Text = "Preview", Dock = WinForms.DockStyle.Fill };
+            grpAfter.Controls.Add(_rtbAfter);
+            grid.Controls.Add(grpAfter, 0, 7);
+            grid.SetColumnSpan(grpAfter, 2);
+
+            // buttons
+            var buttons = new WinForms.FlowLayoutPanel
+            {
+                FlowDirection = WinForms.FlowDirection.RightToLeft,
+                Dock = WinForms.DockStyle.Bottom,
+                Padding = new WinForms.Padding(8)
+            };
+
+            var btnOK = new WinForms.Button { Text = "OK", DialogResult = WinForms.DialogResult.OK };
+            var btnCancel = new WinForms.Button { Text = "Cancel", DialogResult = WinForms.DialogResult.Cancel };
+            buttons.Controls.Add(btnOK);
+            buttons.Controls.Add(btnCancel);
+
+            AcceptButton = btnOK;
+            CancelButton = btnCancel;
+
+            // events
+            _txtFind.TextChanged += (s, e) => RefreshPreview();
+            _txtReplace.TextChanged += (s, e) => RefreshPreview();
+            _txtPattern.TextChanged += (s, e) => RefreshPreview();
+            _txtMath.TextChanged += (s, e) => RefreshPreview();
+
+            Controls.Add(grid);
+            Controls.Add(buttons);
+        }
+
+        private static WinForms.Label MakeLabel(string txt) =>
+            new WinForms.Label
+            {
+                Text = txt,
+                TextAlign = Drawing.ContentAlignment.MiddleRight,
+                Dock = WinForms.DockStyle.Fill
+            };
+
+        private static WinForms.TextBox MakeTextBox(string initial = "") =>
+            new WinForms.TextBox { Text = initial, Dock = WinForms.DockStyle.Fill };
+
+        private static WinForms.Label MakeHint(string txt) =>
+            new WinForms.Label
+            {
+                Text = txt,
+                Dock = WinForms.DockStyle.Fill,
+                ForeColor = Drawing.Color.Gray,
+                Font = new Drawing.Font("Segoe UI", 8, Drawing.FontStyle.Italic)
+            };
+
+        private void LoadCurrentValues()
+        {
+            foreach (var value in _originalValues)
+                _rtbBefore.AppendText(value + Environment.NewLine);
+
+            RefreshPreview();
+        }
+
+        private void RefreshPreview()
+        {
+            _rtbAfter.Clear();
+            for (int i = 0; i < _originalValues.Count; i++)
+            {
+                string originalValue = _originalValues[i];
+                Dictionary<string, object> dataRow = i < _dataRows.Count ? _dataRows[i] : null;
+
+                string transformedValue = DataRenamerHelper.TransformValue(originalValue, this, dataRow);
+                _rtbAfter.AppendText(transformedValue + Environment.NewLine);
+            }
+        }
     }
 }
