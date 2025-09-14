@@ -71,7 +71,7 @@ namespace AutoCADBallet
             {
                 string chosenLayoutName = chosen.First()["layout"].ToString();
                 LayoutManager.Current.CurrentLayout = chosenLayoutName;
-                LayoutChangeTracker.LogLayoutChange(projectName, chosenLayoutName, true);
+                SwitchViewLogging.LogLayoutChange(projectName, chosenLayoutName, true);
             }
         }
     }

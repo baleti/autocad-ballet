@@ -191,7 +191,7 @@ namespace AutoCADBallet
                                         LayoutManager.Current.CurrentLayout = chosenLayoutName;
                                     }
 
-                                    LayoutChangeTracker.LogLayoutChange(targetDocName, chosenLayoutName, true);
+                                    SwitchViewLogging.LogLayoutChange(targetDocName, chosenLayoutName, true);
                                 }
                                 catch (Autodesk.AutoCAD.Runtime.Exception)
                                 {
@@ -213,7 +213,7 @@ namespace AutoCADBallet
                                 LayoutManager.Current.CurrentLayout = chosenLayoutName;
                             }
 
-                            LayoutChangeTracker.LogLayoutChange(targetDocName, chosenLayoutName, true);
+                            SwitchViewLogging.LogLayoutChange(targetDocName, chosenLayoutName, true);
                         }
                         catch (Autodesk.AutoCAD.Runtime.Exception)
                         {
