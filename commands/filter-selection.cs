@@ -11,7 +11,7 @@ using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 // Register the command class
-[assembly: CommandClass(typeof(FilterSelectedElements))]
+[assembly: CommandClass(typeof(FilterSelectionElements))]
 
 /// <summary>
 /// Helper class to extract entity data for filtering and display
@@ -142,7 +142,7 @@ public static class FilterEntityDataHelper
         }
         else
         {
-            // Get all entities from current scope (fallback - should not be used by filter-selected)
+            // Get all entities from current scope (fallback - should not be used by filter-selection)
             var entities = GatherEntitiesFromScope(db, currentScope);
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -649,17 +649,17 @@ public abstract class FilterElementsBase
 /// <summary>
 /// Concrete command class
 /// </summary>
-public class FilterSelectedElements
+public class FilterSelectionElements
 {
-    [CommandMethod("filter-selected", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void FilterSelectedCommand()
+    [CommandMethod("filter-selection", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    public void FilterSelectionCommand()
     {
-        var command = new FilterSelectedImpl();
+        var command = new FilterSelectionImpl();
         command.Execute();
     }
 }
 
-public class FilterSelectedImpl : FilterElementsBase
+public class FilterSelectionImpl : FilterElementsBase
 {
     public override bool SpanAllScreens => false;
     public override bool UseSelectedElements => SelectionScopeManager.CurrentScope != SelectionScopeManager.SelectionScope.view;

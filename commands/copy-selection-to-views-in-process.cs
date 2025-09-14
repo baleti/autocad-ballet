@@ -11,11 +11,11 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(CopySelectedToViewsInProcess))]
+[assembly: CommandClass(typeof(CopySelectionToViewsInProcess))]
 
-public class CopySelectedToViewsInProcess
+public class CopySelectionToViewsInProcess
 {
-    [CommandMethod("copy-selected-to-views-in-process", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    [CommandMethod("copy-selection-to-views-in-process", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
     public void CopyToViews()
     {
         DocumentCollection docs = AcadApp.DocumentManager;
@@ -27,7 +27,7 @@ public class CopySelectedToViewsInProcess
 
         try
         {
-            // Get current selection using pickfirst pattern (same as filter-selected)
+            // Get current selection using pickfirst pattern (same as filter-selection)
             List<ObjectId> selectedObjects = new List<ObjectId>();
 
             // Get pickfirst set (pre-selected objects)

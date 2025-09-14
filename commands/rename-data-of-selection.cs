@@ -17,7 +17,7 @@ using WinForms = System.Windows.Forms;
 using Drawing = System.Drawing;
 
 // Register the command class
-[assembly: CommandClass(typeof(RenameDataOfSelectedElements))]
+[assembly: CommandClass(typeof(RenameDataOfSelectionElements))]
 
 namespace AutoCADBallet
 {
@@ -780,10 +780,10 @@ namespace AutoCADBallet
     // =============================================================================================
     // 3. External command – rename data of selection
     // =============================================================================================
-    public class RenameDataOfSelectedElements
+    public class RenameDataOfSelectionElements
     {
-        [CommandMethod("rename-data-of-selected", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-        public void RenameDataOfSelectedCommand()
+        [CommandMethod("rename-data-of-selection", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+        public void RenameDataOfSelectionCommand()
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc.Editor;
