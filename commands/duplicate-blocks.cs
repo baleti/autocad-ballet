@@ -9,15 +9,15 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(DuplicateBlock))]
+[assembly: CommandClass(typeof(DuplicateBlocks))]
 
 /// <summary>
 /// Command to duplicate selected blocks by creating new block definitions with " 2" appended to their names
 /// </summary>
-public class DuplicateBlock
+public class DuplicateBlocks
 {
-    [CommandMethod("duplicate-block", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void DuplicateBlockCommand()
+    [CommandMethod("duplicate-blocks", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    public void DuplicateBlocksCommand()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
