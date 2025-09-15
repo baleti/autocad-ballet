@@ -1,6 +1,8 @@
 ;; autocad-ballet
 (defun c:q` () (command "invoke-addin-command"))
 (defun c:qq` () (command "invoke-last-addin-command"))
+(defun c:qw () (command "close" "yes"))
+(defun c:qs () (command "close" "no"))
 (defun c:ww () (command "switch-view"))
 (defun c:wwl () (command "switch-layout"))
 (defun c:wwd () (command "switch-document"))
@@ -12,6 +14,7 @@
 (defun c:fses () (command "filter-selection-elements-span"))
 (defun c:scc () (command "select-by-category"))
 (defun c:ep () (command "filter-selection"))
+(defun c:du () (command "duplicate-layouts"))
 
 ;; autocad
 (defun c:fs () (command "refclose" "save"))
@@ -23,18 +26,17 @@
 (defun c:ze () (command "zoom" "extents"))
 (defun c:cbb () (command "copybase" "0,0,0"))
 (defun c:ccb () (command "cutbase" "0,0,0"))
-(defun c:ppb () (command "pasteclip" "0,0,0"))
 (defun c:cbb () (command "copybase" "0,0,0"))
-;; (defun c:ee () (command "-etransmit" "c" "close")(princ))
+(defun c:pbb () (command "pasteclip" "0,0,0"))
 (defun c:hh () (command "hideobjects"))
 (defun c:ii () (command "isolate-objects"))
 (defun c:jj () (command "lay-mcur-make-object-layer-current"))
 (defun c:uu () (command "unisolateobjects"))
-;; (defun c:ww () (command "quickproperties"))
 (defun c:dps () (command "toggle-display-plot-styles"))
 (defun c:ss () (command "_.pselect" "_p" "")(princ))
-;; (defun c:ssc () (command "select-current-layer"))
 (defun c:ssc () (sssetfirst nil (ssget "x" (list (cons 8 (getvar "clayer")))))(princ))
 (defun c:sbc () (command "select-by-color"))
 (defun c:bf () (command "draworder" "front"))
 (defun c:sb () (command "draworder" "back"))
+;; needed until i find out why ctrl+double click no longer edits block attributes in-place
+(defun c:at () (command "attipedit"))
