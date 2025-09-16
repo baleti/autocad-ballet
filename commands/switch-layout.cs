@@ -31,24 +31,34 @@ namespace AutoCADBallet
             {
                 var layoutDict = tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead) as DBDictionary;
 
-                var layoutsWithOrder = new List<(string name, int order)>();
+                var layoutsWithOrder = new List<Dictionary<string, object>>();
                 foreach (DictionaryEntry entry in layoutDict)
                 {
                     var layout = tr.GetObject((ObjectId)entry.Value, OpenMode.ForRead) as Layout;
                     if (layout != null)
                     {
-                        layoutsWithOrder.Add((layout.LayoutName, layout.TabOrder));
+                        layoutsWithOrder.Add(new Dictionary<string, object>
+                        {
+                            ["LayoutName"] = layout.LayoutName,
+                            ["TabOrder"] = layout.TabOrder,
+                            ["ObjectId"] = (ObjectId)entry.Value,
+                            ["Handle"] = layout.Handle.ToString()
+                        });
                     }
                 }
                 tr.Commit();
 
                 // Sort by tab order, then add to availableLayouts in that order
-                layoutsWithOrder = layoutsWithOrder.OrderBy(l => l.order).ToList();
-                foreach (var (name, order) in layoutsWithOrder)
+                layoutsWithOrder = layoutsWithOrder.OrderBy(l => (int)l["TabOrder"]).ToList();
+                foreach (var layoutInfo in layoutsWithOrder)
                 {
                     availableLayouts.Add(new Dictionary<string, object>
                     {
-                        ["layout"] = name
+                        ["layout"] = layoutInfo["LayoutName"],
+                        ["ObjectId"] = layoutInfo["ObjectId"],
+                        ["Handle"] = layoutInfo["Handle"],
+                        ["DocumentPath"] = doc.Name,
+                        ["DocumentObject"] = doc
                     });
                 }
             }
@@ -69,9 +79,25 @@ namespace AutoCADBallet
 
             if (chosen != null && chosen.Count > 0)
             {
-                string chosenLayoutName = chosen.First()["layout"].ToString();
-                LayoutManager.Current.CurrentLayout = chosenLayoutName;
-                SwitchViewLogging.LogLayoutChange(projectName, chosenLayoutName, true);
+                var selected = chosen.First();
+                string chosenLayoutName = selected["layout"].ToString();
+                Document targetDoc = selected["DocumentObject"] as Document;
+
+                if (targetDoc != null)
+                {
+                    try
+                    {
+                        using (DocumentLock docLock = targetDoc.LockDocument())
+                        {
+                            LayoutManager.Current.CurrentLayout = chosenLayoutName;
+                        }
+                        SwitchViewLogging.LogLayoutChange(projectName, chosenLayoutName, true);
+                    }
+                    catch (Autodesk.AutoCAD.Runtime.Exception)
+                    {
+                        ed.WriteMessage($"\nFailed to switch to layout: {chosenLayoutName}\n");
+                    }
+                }
             }
         }
     }
