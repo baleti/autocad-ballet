@@ -216,6 +216,7 @@ public static class FilterEntityDataHelper
             ["Color"] = "N/A",
             ["LineType"] = "N/A",
             ["Layout"] = "N/A",
+            ["Contents"] = "N/A",
             ["DocumentPath"] = documentPath,
             ["DocumentName"] = Path.GetFileName(documentPath),
             ["Handle"] = handle,
@@ -363,6 +364,7 @@ public static class FilterEntityDataHelper
             ["Color"] = color,
             ["LineType"] = lineType,
             ["Layout"] = layoutName,
+            ["Contents"] = GetEntityContents(entity),
             ["DocumentPath"] = documentPath,
             ["DocumentName"] = Path.GetFileName(documentPath),
             ["Handle"] = entity.Handle.ToString(),
@@ -455,6 +457,28 @@ public static class FilterEntityDataHelper
         }
 
         return entities;
+    }
+
+    private static string GetEntityContents(DBObject entity)
+    {
+        if (entity is MText mtext)
+        {
+            return mtext.Contents;
+        }
+        else if (entity is DBText text)
+        {
+            return text.TextString;
+        }
+        else if (entity is Dimension dim)
+        {
+            return dim.DimensionText;
+        }
+        else if (entity is Layout layout)
+        {
+            return layout.LayoutName;
+        }
+
+        return "";
     }
 
     private static string GetEntityCategory(DBObject entity)
@@ -1159,7 +1183,7 @@ public abstract class FilterElementsBase
                 .ToList();
 
             // Reorder to put most useful columns first
-            var orderedProps = new List<string> { "Name", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
+            var orderedProps = new List<string> { "Name", "Contents", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
             var remainingProps = propertyNames.Except(orderedProps);
 
             // Separate geometry properties, attributes and extension data for better organization
