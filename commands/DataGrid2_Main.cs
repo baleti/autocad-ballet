@@ -11,6 +11,13 @@ using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 public partial class CustomGUIs
 {
     // ──────────────────────────────────────────────────────────────
+    //  Screen expansion state tracking
+    // ──────────────────────────────────────────────────────────────
+    private static int _currentScreenState = 0; // 0 = original, 1+ = expanded to N screens
+    private static Rectangle _originalFormBounds;
+    private static Screen _originalScreen;
+
+    // ──────────────────────────────────────────────────────────────
     //  Main DataGrid Method
     // ──────────────────────────────────────────────────────────────
 
@@ -414,6 +421,12 @@ public partial class CustomGUIs
                 searchBox.Focus();
                 e.Handled = true;
             }
+            else if (e.KeyCode == Keys.S && e.Alt)
+            {
+                // Alt+S: Cycle through screen expansion states
+                CycleScreenExpansion(form);
+                e.Handled = true;
+            }
             else if (e.KeyCode == Keys.E && e.Control)
             {
                 string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -547,6 +560,7 @@ public partial class CustomGUIs
 
             if (spanAllScreens)
             {
+                _currentScreenState = Screen.AllScreens.Length;
                 form.Width = Screen.AllScreens.Sum(s => s.WorkingArea.Width);
                 form.Location = new Point(
                     Screen.AllScreens.Min(s => s.Bounds.X),
@@ -554,6 +568,7 @@ public partial class CustomGUIs
             }
             else
             {
+                _currentScreenState = 0;
                 int reqWidth = grid.Columns.GetColumnsWidth(DataGridViewElementStates.Visible)
                               + SystemInformation.VerticalScrollBarWidth + 43;
                 form.Width = Math.Min(reqWidth, Screen.PrimaryScreen.WorkingArea.Width - padding * 2);
@@ -561,6 +576,10 @@ public partial class CustomGUIs
                     (Screen.PrimaryScreen.WorkingArea.Width - form.Width) / 2,
                     (Screen.PrimaryScreen.WorkingArea.Height - form.Height) / 2);
             }
+
+            // Store original bounds and screen for cycling
+            _originalFormBounds = form.Bounds;
+            _originalScreen = Screen.FromControl(form);
         };
 
         // Add controls and show
@@ -624,5 +643,94 @@ public partial class CustomGUIs
         }
 
         return result.ToString();
+    }
+
+    private static void CycleScreenExpansion(Form form)
+    {
+        Screen[] allScreens = Screen.AllScreens.OrderBy(s => s.Bounds.X).ToArray();
+        Screen currentScreen = Screen.FromControl(form);
+
+        // Set window state to normal first (in case it was maximized)
+        form.WindowState = FormWindowState.Normal;
+
+        if (allScreens.Length <= 1)
+        {
+            // Only one screen available, toggle between original size and maximized
+            if (_currentScreenState == 0)
+            {
+                form.WindowState = FormWindowState.Maximized;
+                _currentScreenState = 1;
+            }
+            else
+            {
+                form.Bounds = _originalFormBounds;
+                _currentScreenState = 0;
+            }
+            return;
+        }
+
+        // Multi-screen cycling logic
+        if (_currentScreenState == 0)
+        {
+            // State 0: Original -> State 1: Expand to screen on right
+            int currentIndex = Array.IndexOf(allScreens, currentScreen);
+            int rightIndex = (currentIndex + 1) % allScreens.Length;
+            Screen rightScreen = allScreens[rightIndex];
+
+            // Calculate combined bounds of current and right screen
+            int leftX = Math.Min(currentScreen.WorkingArea.X, rightScreen.WorkingArea.X);
+            int rightX = Math.Max(currentScreen.WorkingArea.Right, rightScreen.WorkingArea.Right);
+            int topY = Math.Min(currentScreen.WorkingArea.Y, rightScreen.WorkingArea.Y);
+            int maxHeight = Math.Max(currentScreen.WorkingArea.Height, rightScreen.WorkingArea.Height);
+
+            form.Location = new Point(leftX, topY);
+            form.Width = rightX - leftX;
+            form.Height = Math.Min(form.Height, maxHeight);
+            _currentScreenState = 1;
+        }
+        else if (_currentScreenState == 1)
+        {
+            // State 1: Right expansion -> State 2: Expand to screen on left
+            int currentIndex = Array.IndexOf(allScreens, _originalScreen);
+            int leftIndex = currentIndex == 0 ? allScreens.Length - 1 : currentIndex - 1;
+            Screen leftScreen = allScreens[leftIndex];
+
+            // Calculate combined bounds of original and left screen
+            int leftX = Math.Min(_originalScreen.WorkingArea.X, leftScreen.WorkingArea.X);
+            int rightX = Math.Max(_originalScreen.WorkingArea.Right, leftScreen.WorkingArea.Right);
+            int topY = Math.Min(_originalScreen.WorkingArea.Y, leftScreen.WorkingArea.Y);
+            int maxHeight = Math.Max(_originalScreen.WorkingArea.Height, leftScreen.WorkingArea.Height);
+
+            form.Location = new Point(leftX, topY);
+            form.Width = rightX - leftX;
+            form.Height = Math.Min(form.Height, maxHeight);
+            _currentScreenState = 2;
+        }
+        else if (_currentScreenState < allScreens.Length)
+        {
+            // Continue expanding to include more screens until all are covered
+            _currentScreenState++;
+
+            // Calculate bounds for first N screens
+            var screensToInclude = allScreens.Take(_currentScreenState).ToArray();
+            int leftX = screensToInclude.Min(s => s.WorkingArea.X);
+            int rightX = screensToInclude.Max(s => s.WorkingArea.Right);
+            int topY = screensToInclude.Min(s => s.WorkingArea.Y);
+            int maxHeight = screensToInclude.Max(s => s.WorkingArea.Height);
+
+            form.Location = new Point(leftX, topY);
+            form.Width = rightX - leftX;
+            form.Height = Math.Min(form.Height, maxHeight);
+        }
+        else
+        {
+            // All screens covered -> Reset to original
+            form.Bounds = _originalFormBounds;
+            _currentScreenState = 0;
+        }
+
+        // Bring form to front
+        form.BringToFront();
+        form.Focus();
     }
 }
