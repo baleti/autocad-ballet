@@ -18,6 +18,11 @@ public partial class CustomGUIs
     private static Screen _originalScreen;
 
     // ──────────────────────────────────────────────────────────────
+    //  DataGrid sizing state tracking
+    // ──────────────────────────────────────────────────────────────
+    private static bool _initialSizingDone = false;
+
+    // ──────────────────────────────────────────────────────────────
     //  Main DataGrid Method
     // ──────────────────────────────────────────────────────────────
 
@@ -38,7 +43,8 @@ public partial class CustomGUIs
         _lastVisibleColumns.Clear();
         _lastColumnVisibilityFilter = "";
 
-        // Reset edit mode state
+        // Reset sizing and edit mode state
+        _initialSizingDone = false;
         ResetEditMode();
 
         // Build search index upfront for performance
@@ -145,15 +151,20 @@ public partial class CustomGUIs
             // Update form title
             form.Text = "Total Entries: " + workingSet.Count + " / " + entries.Count;
 
-            // Auto-resize columns only on initial load or if column count is reasonable
-            if (grid.Columns.Count < 20)
+            // Auto-resize columns and form width only on initial load
+            if (!_initialSizingDone)
             {
-                grid.AutoResizeColumns();
-            }
+                if (grid.Columns.Count < 20)
+                {
+                    grid.AutoResizeColumns();
+                }
 
-            int reqWidth = grid.Columns.GetColumnsWidth(DataGridViewElementStates.Visible)
-                          + SystemInformation.VerticalScrollBarWidth + 50;
-            form.Width = Math.Min(reqWidth, Screen.PrimaryScreen.WorkingArea.Width - 20);
+                int reqWidth = grid.Columns.GetColumnsWidth(DataGridViewElementStates.Visible)
+                              + SystemInformation.VerticalScrollBarWidth + 50;
+                form.Width = Math.Min(reqWidth, Screen.PrimaryScreen.WorkingArea.Width - 20);
+
+                _initialSizingDone = true;
+            }
         };
 
         // Apply initial sorting and set up grid
