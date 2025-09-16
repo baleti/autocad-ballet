@@ -402,8 +402,14 @@ public static class FilterEntityDataHelper
                 // Add common AutoCAD properties
                 data["Area"] = GetEntityArea(entityWithProps);
                 data["Length"] = GetEntityLength(entityWithProps);
-                // data["Thickness"] = entityWithProps.Thickness; // Not available on base Entity
                 data["Elevation"] = GetEntityElevation(entityWithProps);
+
+                // Add geometry properties
+                var geometryProps = GetEntityGeometryProperties(entityWithProps);
+                foreach (var prop in geometryProps)
+                {
+                    data[prop.Key] = prop.Value;
+                }
             }
             catch { /* Skip if properties can't be read */ }
         }
@@ -586,6 +592,203 @@ public static class FilterEntityDataHelper
         }
         catch { }
         return "";
+    }
+
+    private static Dictionary<string, object> GetEntityGeometryProperties(Entity entity)
+    {
+        var props = new Dictionary<string, object>();
+
+        try
+        {
+            // Get center coordinates and dimensions based on entity type
+            if (entity is Circle circle)
+            {
+                props["CenterX"] = circle.Center.X.ToString("F3");
+                props["CenterY"] = circle.Center.Y.ToString("F3");
+                props["CenterZ"] = circle.Center.Z.ToString("F3");
+                props["Radius"] = circle.Radius.ToString("F3");
+                props["Diameter"] = (circle.Radius * 2).ToString("F3");
+                props["Circumference"] = (2 * Math.PI * circle.Radius).ToString("F3");
+            }
+            else if (entity is Arc arc)
+            {
+                props["CenterX"] = arc.Center.X.ToString("F3");
+                props["CenterY"] = arc.Center.Y.ToString("F3");
+                props["CenterZ"] = arc.Center.Z.ToString("F3");
+                props["Radius"] = arc.Radius.ToString("F3");
+                props["StartAngle"] = (arc.StartAngle * 180 / Math.PI).ToString("F1"); // Convert to degrees
+                props["EndAngle"] = (arc.EndAngle * 180 / Math.PI).ToString("F1");
+                props["ArcLength"] = arc.Length.ToString("F3");
+            }
+            else if (entity is Line line)
+            {
+                var midPoint = line.StartPoint + (line.EndPoint - line.StartPoint) * 0.5;
+                props["CenterX"] = midPoint.X.ToString("F3");
+                props["CenterY"] = midPoint.Y.ToString("F3");
+                props["CenterZ"] = midPoint.Z.ToString("F3");
+                props["StartX"] = line.StartPoint.X.ToString("F3");
+                props["StartY"] = line.StartPoint.Y.ToString("F3");
+                props["StartZ"] = line.StartPoint.Z.ToString("F3");
+                props["EndX"] = line.EndPoint.X.ToString("F3");
+                props["EndY"] = line.EndPoint.Y.ToString("F3");
+                props["EndZ"] = line.EndPoint.Z.ToString("F3");
+                props["LineLength"] = line.Length.ToString("F3");
+                props["Angle"] = (line.Angle * 180 / Math.PI).ToString("F1");
+            }
+            else if (entity is Polyline pline)
+            {
+                var bounds = pline.GeometricExtents;
+                var center = bounds.MinPoint + (bounds.MaxPoint - bounds.MinPoint) * 0.5;
+                props["CenterX"] = center.X.ToString("F3");
+                props["CenterY"] = center.Y.ToString("F3");
+                props["CenterZ"] = center.Z.ToString("F3");
+                props["Width"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                props["Height"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                props["Depth"] = (bounds.MaxPoint.Z - bounds.MinPoint.Z).ToString("F3");
+                props["IsClosed"] = pline.Closed.ToString();
+                props["VertexCount"] = pline.NumberOfVertices.ToString();
+                if (pline.HasWidth)
+                {
+                    props["ConstantWidth"] = pline.ConstantWidth.ToString("F3");
+                }
+            }
+            else if (entity is Ellipse ellipse)
+            {
+                props["CenterX"] = ellipse.Center.X.ToString("F3");
+                props["CenterY"] = ellipse.Center.Y.ToString("F3");
+                props["CenterZ"] = ellipse.Center.Z.ToString("F3");
+                props["MajorRadius"] = ellipse.MajorRadius.ToString("F3");
+                props["MinorRadius"] = ellipse.MinorRadius.ToString("F3");
+                props["RadiusRatio"] = ellipse.RadiusRatio.ToString("F3");
+            }
+            else if (entity is Spline spline)
+            {
+                var bounds = spline.GeometricExtents;
+                var center = bounds.MinPoint + (bounds.MaxPoint - bounds.MinPoint) * 0.5;
+                props["CenterX"] = center.X.ToString("F3");
+                props["CenterY"] = center.Y.ToString("F3");
+                props["CenterZ"] = center.Z.ToString("F3");
+                props["Width"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                props["Height"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                props["Depth"] = (bounds.MaxPoint.Z - bounds.MinPoint.Z).ToString("F3");
+                props["Degree"] = spline.Degree.ToString();
+                props["IsPeriodic"] = spline.IsPeriodic.ToString();
+            }
+            else if (entity is BlockReference blockRef)
+            {
+                props["CenterX"] = blockRef.Position.X.ToString("F3");
+                props["CenterY"] = blockRef.Position.Y.ToString("F3");
+                props["CenterZ"] = blockRef.Position.Z.ToString("F3");
+                props["ScaleX"] = blockRef.ScaleFactors.X.ToString("F3");
+                props["ScaleY"] = blockRef.ScaleFactors.Y.ToString("F3");
+                props["ScaleZ"] = blockRef.ScaleFactors.Z.ToString("F3");
+                props["Rotation"] = (blockRef.Rotation * 180 / Math.PI).ToString("F1");
+
+                // Get bounds if possible
+                try
+                {
+                    var bounds = blockRef.GeometricExtents;
+                    props["Width"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                    props["Height"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                    props["Depth"] = (bounds.MaxPoint.Z - bounds.MinPoint.Z).ToString("F3");
+                }
+                catch { /* Bounds may not be available for some blocks */ }
+            }
+            else if (entity is DBText text)
+            {
+                props["CenterX"] = text.Position.X.ToString("F3");
+                props["CenterY"] = text.Position.Y.ToString("F3");
+                props["CenterZ"] = text.Position.Z.ToString("F3");
+                props["TextHeight"] = text.Height.ToString("F3");
+                props["Rotation"] = (text.Rotation * 180 / Math.PI).ToString("F1");
+                props["WidthFactor"] = text.WidthFactor.ToString("F3");
+            }
+            else if (entity is MText mtext)
+            {
+                props["CenterX"] = mtext.Location.X.ToString("F3");
+                props["CenterY"] = mtext.Location.Y.ToString("F3");
+                props["CenterZ"] = mtext.Location.Z.ToString("F3");
+                props["TextHeight"] = mtext.TextHeight.ToString("F3");
+                props["Width"] = mtext.Width.ToString("F3");
+                props["Rotation"] = (mtext.Rotation * 180 / Math.PI).ToString("F1");
+
+                // Get actual height if possible
+                try
+                {
+                    var bounds = mtext.GeometricExtents;
+                    props["ActualHeight"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                    props["ActualWidth"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                }
+                catch { /* Bounds may not be available */ }
+            }
+            else if (entity is Hatch hatch)
+            {
+                try
+                {
+                    var bounds = hatch.GeometricExtents;
+                    var center = bounds.MinPoint + (bounds.MaxPoint - bounds.MinPoint) * 0.5;
+                    props["CenterX"] = center.X.ToString("F3");
+                    props["CenterY"] = center.Y.ToString("F3");
+                    props["CenterZ"] = center.Z.ToString("F3");
+                    props["Width"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                    props["Height"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                    props["PatternName"] = hatch.PatternName ?? "";
+                    props["PatternScale"] = hatch.PatternScale.ToString("F3");
+                    props["NumLoops"] = hatch.NumberOfLoops.ToString();
+                }
+                catch { /* Some hatches may not have valid bounds */ }
+            }
+            else if (entity is Dimension dim)
+            {
+                try
+                {
+                    var bounds = dim.GeometricExtents;
+                    var center = bounds.MinPoint + (bounds.MaxPoint - bounds.MinPoint) * 0.5;
+                    props["CenterX"] = center.X.ToString("F3");
+                    props["CenterY"] = center.Y.ToString("F3");
+                    props["CenterZ"] = center.Z.ToString("F3");
+                    props["Width"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                    props["Height"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                    props["TextHeight"] = ""; // Text height not directly accessible from base Dimension
+                    props["Measurement"] = dim.Measurement.ToString("F3");
+                }
+                catch { /* Some dimensions may not have valid bounds */ }
+            }
+            else if (entity is DBPoint point)
+            {
+                props["CenterX"] = point.Position.X.ToString("F3");
+                props["CenterY"] = point.Position.Y.ToString("F3");
+                props["CenterZ"] = point.Position.Z.ToString("F3");
+            }
+            else
+            {
+                // For other entity types, try to get geometric extents
+                try
+                {
+                    var bounds = entity.GeometricExtents;
+                    var center = bounds.MinPoint + (bounds.MaxPoint - bounds.MinPoint) * 0.5;
+                    props["CenterX"] = center.X.ToString("F3");
+                    props["CenterY"] = center.Y.ToString("F3");
+                    props["CenterZ"] = center.Z.ToString("F3");
+                    props["Width"] = (bounds.MaxPoint.X - bounds.MinPoint.X).ToString("F3");
+                    props["Height"] = (bounds.MaxPoint.Y - bounds.MinPoint.Y).ToString("F3");
+                    props["Depth"] = (bounds.MaxPoint.Z - bounds.MinPoint.Z).ToString("F3");
+                }
+                catch
+                {
+                    // Entity doesn't have geometric extents or they can't be calculated
+                    props["CenterX"] = "";
+                    props["CenterY"] = "";
+                    props["CenterZ"] = "";
+                    props["Width"] = "";
+                    props["Height"] = "";
+                    props["Depth"] = "";
+                }
+            }
+        }
+        catch { /* Skip if geometry properties can't be read */ }
+
+        return props;
     }
 
     private static void AddBlockAttributes(BlockReference blockRef, Dictionary<string, object> data)
@@ -866,6 +1069,57 @@ public static class FilterEntityDataHelper
             // Skip if extension data can't be read
         }
     }
+
+    public static bool IsGeometryProperty(string propertyName)
+    {
+        var geometryProps = new HashSet<string>
+        {
+            "CenterX", "CenterY", "CenterZ", "Width", "Height", "Depth",
+            "Radius", "Diameter", "Circumference", "MajorRadius", "MinorRadius", "RadiusRatio",
+            "StartX", "StartY", "StartZ", "EndX", "EndY", "EndZ", "LineLength", "ArcLength",
+            "StartAngle", "EndAngle", "Angle", "Rotation", "ScaleX", "ScaleY", "ScaleZ",
+            "TextHeight", "ActualHeight", "ActualWidth", "WidthFactor", "PatternScale",
+            "Measurement", "IsClosed", "VertexCount", "ConstantWidth", "Degree", "IsPeriodic",
+            "PatternName", "NumLoops", "Area", "Length", "Elevation"
+        };
+
+        return geometryProps.Contains(propertyName);
+    }
+
+    public static int GetGeometryPropertyOrder(string propertyName)
+    {
+        var orderMap = new Dictionary<string, int>
+        {
+            // Position properties first
+            ["CenterX"] = 1, ["CenterY"] = 2, ["CenterZ"] = 3,
+            ["StartX"] = 4, ["StartY"] = 5, ["StartZ"] = 6,
+            ["EndX"] = 7, ["EndY"] = 8, ["EndZ"] = 9,
+
+            // Dimensions
+            ["Width"] = 10, ["Height"] = 11, ["Depth"] = 12,
+            ["Radius"] = 13, ["Diameter"] = 14, ["MajorRadius"] = 15, ["MinorRadius"] = 16,
+            ["TextHeight"] = 17, ["ActualHeight"] = 18, ["ActualWidth"] = 19,
+
+            // Measurements
+            ["Area"] = 20, ["Length"] = 21, ["LineLength"] = 22, ["ArcLength"] = 23,
+            ["Circumference"] = 24, ["Measurement"] = 25,
+
+            // Angles and rotation
+            ["Angle"] = 30, ["StartAngle"] = 31, ["EndAngle"] = 32, ["Rotation"] = 33,
+
+            // Scale factors
+            ["ScaleX"] = 40, ["ScaleY"] = 41, ["ScaleZ"] = 42, ["WidthFactor"] = 43,
+            ["RadiusRatio"] = 44, ["PatternScale"] = 45,
+
+            // Boolean and count properties
+            ["IsClosed"] = 50, ["IsPeriodic"] = 51, ["VertexCount"] = 52, ["NumLoops"] = 53,
+
+            // Misc properties
+            ["ConstantWidth"] = 60, ["Degree"] = 61, ["PatternName"] = 62, ["Elevation"] = 63
+        };
+
+        return orderMap.TryGetValue(propertyName, out int order) ? order : 999;
+    }
 }
 
 /// <summary>
@@ -908,13 +1162,15 @@ public abstract class FilterElementsBase
             var orderedProps = new List<string> { "Name", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
             var remainingProps = propertyNames.Except(orderedProps);
 
-            // Separate attributes and extension data for better organization
+            // Separate geometry properties, attributes and extension data for better organization
+            var geometryProps = remainingProps.Where(p => FilterEntityDataHelper.IsGeometryProperty(p)).OrderBy(p => FilterEntityDataHelper.GetGeometryPropertyOrder(p));
             var attributeProps = remainingProps.Where(p => p.StartsWith("attr_")).OrderBy(p => p);
             var extensionProps = remainingProps.Where(p => p.StartsWith("xdata_") || p.StartsWith("ext_dict_")).OrderBy(p => p);
-            var otherProps = remainingProps.Where(p => !p.StartsWith("attr_") && !p.StartsWith("xdata_") && !p.StartsWith("ext_dict_") && p != "DocumentPath" && p != "DisplayName").OrderBy(p => p);
+            var otherProps = remainingProps.Where(p => !p.StartsWith("attr_") && !p.StartsWith("xdata_") && !p.StartsWith("ext_dict_") && p != "DocumentPath" && p != "DisplayName" && !FilterEntityDataHelper.IsGeometryProperty(p)).OrderBy(p => p);
             var documentPathProp = propertyNames.Contains("DocumentPath") ? new[] { "DocumentPath" } : new string[0];
 
             propertyNames = orderedProps.Where(p => propertyNames.Contains(p))
+                .Concat(geometryProps)
                 .Concat(attributeProps)
                 .Concat(extensionProps)
                 .Concat(otherProps)
