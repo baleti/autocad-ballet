@@ -367,7 +367,12 @@ public class SelectByCategory
 
             foreach (ObjectId id in currentSpace)
             {
-                var entity = tr.GetObject(id, OpenMode.ForRead);
+                var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
+
+                // Skip entities that are hidden (not visible) in current view
+                if (entity != null && !entity.Visible)
+                    continue;
+
                 string categoryName = GetEntityCategory(entity);
 
                 if (!categories.ContainsKey(categoryName))
