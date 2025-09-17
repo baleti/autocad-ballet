@@ -465,38 +465,24 @@ namespace AutocadBallet
         {
             try
             {
-                var type = assembly.GetType(info.FullTypeName, throwOnError: true);
-                if (type == null)
-                    throw new TypeLoadException($"Could not find type: {info.FullTypeName}");
+                // Use AutoCAD's command line to properly invoke the command
+                // This preserves the complete command context including pickfirst set
+                string commandName = info.CommandName;
 
-                var method = type.GetMethod(info.MethodName,
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                ed.WriteMessage($"\nExecuting command: {commandName}");
 
-                if (method == null)
-                    throw new MissingMethodException(info.FullTypeName, info.MethodName);
+                // Queue the command to be executed by AutoCAD's command processor
+                // This approach maintains the proper command context
+                var doc = AcApp.DocumentManager.MdiActiveDocument;
 
-                object instance = null;
-                if (!method.IsStatic)
-                {
-                    instance = Activator.CreateInstance(type);
-                }
-
-                // Command methods in AutoCAD typically take no parameters
-                method.Invoke(instance, parameters: null);
-            }
-            catch (TargetInvocationException tie)
-            {
-                if (ed != null)
-                {
-                    var message = tie.InnerException != null ? tie.InnerException.Message : tie.Message;
-                    ed.WriteMessage($"\n[InvokeLastAddin] Command threw: {message}");
-                }
-                throw;
+                // Use synchronous execution to maintain the command flow
+                // The key is to let AutoCAD's command processor handle it
+                doc.SendStringToExecute($"{commandName} ", true, false, true);
             }
             catch (System.Exception ex)
             {
                 if (ed != null)
-                    ed.WriteMessage($"\n[InvokeLastAddin] Failed to invoke: {ex.Message}");
+                    ed.WriteMessage($"\n[InvokeLastAddin] Failed to invoke command '{info.CommandName}': {ex.Message}");
                 throw;
             }
         }
