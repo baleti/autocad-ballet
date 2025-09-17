@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.Geometry;
 using System.Globalization;
 using System.Text;
@@ -253,6 +254,7 @@ public partial class CustomGUIs
         switch (lowerName)
         {
             case "name":           // Entity names, layout names, etc.
+            case "contents":       // Text contents of MText, DBText, and dimensions
             case "layer":          // Layer assignment
             case "color":          // Color property
             case "linetype":       // Linetype assignment
@@ -265,6 +267,19 @@ public partial class CustomGUIs
             case "plotscale":      // Plot scale
             case "plottype":       // Plot type
             case "plotcentered":   // Plot centered
+            // Geometry properties (position, scale, rotation)
+            case "centerx":        // Center X coordinate
+            case "centery":        // Center Y coordinate
+            case "centerz":        // Center Z coordinate
+            case "scalex":         // X scale factor
+            case "scaley":         // Y scale factor
+            case "scalez":         // Z scale factor
+            case "rotation":       // Rotation angle
+            case "width":          // Width (for rectangles, text boxes, etc.)
+            case "height":         // Height (for rectangles, text boxes, etc.)
+            case "radius":         // Radius (for circles)
+            case "textheight":     // Text height
+            case "widthfactor":    // Width factor for text
                 return true;
         }
 
@@ -636,7 +651,9 @@ public partial class CustomGUIs
         int appliedCount = 0;
 
         ed.WriteMessage("\nStarting transaction for current document...");
-        using (var tr = db.TransactionManager.StartTransaction())
+        using (DocumentLock docLock = doc.LockDocument())
+        {
+            using (var tr = db.TransactionManager.StartTransaction())
         {
             foreach (var edit in edits)
             {
@@ -690,6 +707,7 @@ public partial class CustomGUIs
             ed.WriteMessage($"\nCommitting transaction with {appliedCount} modifications...");
             tr.Commit();
             ed.WriteMessage($"\nTransaction committed successfully!");
+            }
         }
 
         return appliedCount;
@@ -812,6 +830,33 @@ public partial class CustomGUIs
         {
             switch (columnName.ToLowerInvariant())
             {
+                case "contents":
+                    ed.WriteMessage($"\n  >> Setting contents/text to '{newValue}' in external document");
+                    // Handle contents changes for text entities
+                    if (dbObject is MText mtextExt)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is MText, setting Contents in external document");
+                        mtextExt.Contents = newValue;
+                        ed.WriteMessage($"\n  >> MText Contents set successfully in external document");
+                    }
+                    else if (dbObject is DBText textExt)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is DBText, setting TextString in external document");
+                        textExt.TextString = newValue;
+                        ed.WriteMessage($"\n  >> DBText TextString set successfully in external document");
+                    }
+                    else if (dbObject is Dimension dimExt)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is Dimension, setting DimensionText in external document");
+                        dimExt.DimensionText = newValue;
+                        ed.WriteMessage($"\n  >> Dimension text set successfully in external document");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject type not supported for contents editing in external document ({dbObject.GetType().Name})");
+                    }
+                    break;
+
                 case "layout":
                 case "name":
                     ed.WriteMessage($"\n  >> Setting name/text to '{newValue}' in external document");
@@ -861,17 +906,59 @@ public partial class CustomGUIs
                             throw; // Re-throw other exceptions for debugging
                         }
                     }
-                    else if (dbObject is MText mtext)
+                    else if (dbObject is MText mtextExt2)
                     {
                         ed.WriteMessage($"\n  >> DBObject is MText, setting Contents in external document");
-                        mtext.Contents = newValue;
+                        mtextExt2.Contents = newValue;
                         ed.WriteMessage($"\n  >> MText Contents set successfully in external document");
                     }
-                    else if (dbObject is DBText text)
+                    else if (dbObject is DBText textExt2)
                     {
                         ed.WriteMessage($"\n  >> DBObject is DBText, setting TextString in external document");
-                        text.TextString = newValue;
+                        textExt2.TextString = newValue;
                         ed.WriteMessage($"\n  >> DBText TextString set successfully in external document");
+                    }
+                    else if (dbObject is BlockReference blockRef)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is BlockReference, renaming the block definition in external document");
+                        try
+                        {
+                            // For block references, we need to rename the block definition (BlockTableRecord)
+                            var blockTableRecord = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
+                            if (blockTableRecord != null)
+                            {
+                                string oldName = blockTableRecord.Name;
+                                ed.WriteMessage($"\n  >> Renaming block definition from '{oldName}' to '{newValue}' in external document");
+
+                                // Check if the new name would conflict with existing blocks
+                                var blockTable = (Autodesk.AutoCAD.DatabaseServices.BlockTable)tr.GetObject(dbObject.Database.BlockTableId, OpenMode.ForRead);
+                                if (blockTable.Has(newValue))
+                                {
+                                    // Generate unique name if there's a conflict
+                                    int counter = 1;
+                                    string uniqueName = newValue;
+                                    while (blockTable.Has(uniqueName))
+                                    {
+                                        uniqueName = $"{newValue}_{counter}";
+                                        counter++;
+                                    }
+                                    newValue = uniqueName;
+                                    ed.WriteMessage($"\n  >> Block name conflict resolved in external document, using: '{uniqueName}'");
+                                }
+
+                                blockTableRecord.Name = newValue;
+                                ed.WriteMessage($"\n  >> Block definition name set successfully in external document");
+                            }
+                            else
+                            {
+                                ed.WriteMessage($"\n  >> Failed to get BlockTableRecord for block reference in external document");
+                            }
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+                        {
+                            ed.WriteMessage($"\n  >> AutoCAD Runtime Exception renaming block in external document: {acEx.ErrorStatus} - {acEx.Message}");
+                            throw;
+                        }
                     }
                     else
                     {
@@ -889,6 +976,30 @@ public partial class CustomGUIs
                     else
                     {
                         ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot set layer in external document");
+                    }
+                    break;
+
+                // Geometry properties for external documents
+                case "centerx":
+                case "centery":
+                case "centerz":
+                case "scalex":
+                case "scaley":
+                case "scalez":
+                case "rotation":
+                case "width":
+                case "height":
+                case "radius":
+                case "textheight":
+                case "widthfactor":
+                    if (dbObject is Entity externalGeometryEntity)
+                    {
+                        ed.WriteMessage($"\n  >> Setting geometry property '{columnName}' to '{newValue}' in external document");
+                        ApplyGeometryPropertyEdit(externalGeometryEntity, columnName, newValue, tr);
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot edit geometry properties in external document");
                     }
                     break;
 
@@ -1014,6 +1125,33 @@ public partial class CustomGUIs
                     }
                     break;
 
+                case "contents":
+                    ed.WriteMessage($"\n  >> Setting contents/text to '{newValue}'");
+                    // Handle contents changes for text entities
+                    if (dbObject is MText mtextContents)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is MText, setting Contents");
+                        mtextContents.Contents = newValue;
+                        ed.WriteMessage($"\n  >> MText Contents set successfully");
+                    }
+                    else if (dbObject is DBText textContents)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is DBText, setting TextString");
+                        textContents.TextString = newValue;
+                        ed.WriteMessage($"\n  >> DBText TextString set successfully");
+                    }
+                    else if (dbObject is Dimension dimContents)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is Dimension, setting DimensionText");
+                        dimContents.DimensionText = newValue;
+                        ed.WriteMessage($"\n  >> Dimension text set successfully");
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject type not supported for contents editing ({dbObject.GetType().Name})");
+                    }
+                    break;
+
                 case "layout":
                 case "name":
                     ed.WriteMessage($"\n  >> Setting name/text to '{newValue}'");
@@ -1111,6 +1249,48 @@ public partial class CustomGUIs
                         ucs.Name = newValue;
                         ed.WriteMessage($"\n  >> UCS name set successfully");
                     }
+                    else if (dbObject is BlockReference blockRef)
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is BlockReference, renaming the block definition");
+                        try
+                        {
+                            // For block references, we need to rename the block definition (BlockTableRecord)
+                            var blockTableRecord = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
+                            if (blockTableRecord != null)
+                            {
+                                string oldName = blockTableRecord.Name;
+                                ed.WriteMessage($"\n  >> Renaming block definition from '{oldName}' to '{newValue}'");
+
+                                // Check if the new name would conflict with existing blocks
+                                var blockTable = (Autodesk.AutoCAD.DatabaseServices.BlockTable)tr.GetObject(dbObject.Database.BlockTableId, OpenMode.ForRead);
+                                if (blockTable.Has(newValue))
+                                {
+                                    // Generate unique name if there's a conflict
+                                    int counter = 1;
+                                    string uniqueName = newValue;
+                                    while (blockTable.Has(uniqueName))
+                                    {
+                                        uniqueName = $"{newValue}_{counter}";
+                                        counter++;
+                                    }
+                                    newValue = uniqueName;
+                                    ed.WriteMessage($"\n  >> Block name conflict resolved, using: '{uniqueName}'");
+                                }
+
+                                blockTableRecord.Name = newValue;
+                                ed.WriteMessage($"\n  >> Block definition name set successfully");
+                            }
+                            else
+                            {
+                                ed.WriteMessage($"\n  >> Failed to get BlockTableRecord for block reference");
+                            }
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+                        {
+                            ed.WriteMessage($"\n  >> AutoCAD Runtime Exception renaming block: {acEx.ErrorStatus} - {acEx.Message}");
+                            throw;
+                        }
+                    }
                     else
                     {
                         ed.WriteMessage($"\n  >> DBObject type not supported for name editing ({dbObject.GetType().Name})");
@@ -1133,6 +1313,30 @@ public partial class CustomGUIs
                     else
                     {
                         ed.WriteMessage($"\n  >> DBObject is not a Layout, cannot edit plot settings");
+                    }
+                    break;
+
+                // Geometry properties
+                case "centerx":
+                case "centery":
+                case "centerz":
+                case "scalex":
+                case "scaley":
+                case "scalez":
+                case "rotation":
+                case "width":
+                case "height":
+                case "radius":
+                case "textheight":
+                case "widthfactor":
+                    if (dbObject is Entity geometryEntity)
+                    {
+                        ed.WriteMessage($"\n  >> Setting geometry property '{columnName}' to '{newValue}'");
+                        ApplyGeometryPropertyEdit(geometryEntity, columnName, newValue, tr);
+                    }
+                    else
+                    {
+                        ed.WriteMessage($"\n  >> DBObject is not an Entity, cannot edit geometry properties");
                     }
                     break;
 
@@ -1344,6 +1548,280 @@ public partial class CustomGUIs
         {
             ed.WriteMessage($"\n  >> Error in plot setting edit handler: {ex.Message}");
             throw;
+        }
+    }
+
+    /// <summary>Apply edit to geometry properties for Entity objects</summary>
+    private static void ApplyGeometryPropertyEdit(Entity entity, string columnName, string newValue, Transaction tr)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        try
+        {
+            // Parse the numeric value
+            if (!double.TryParse(newValue, NumberStyles.Any, CultureInfo.InvariantCulture, out double numericValue))
+            {
+                ed.WriteMessage($"\n  >> Failed to parse '{newValue}' as a number for geometry property '{columnName}'");
+                return;
+            }
+
+            string lowerColumnName = columnName.ToLowerInvariant();
+
+            // Apply geometry property edits based on entity type and property
+            if (entity is Circle circle)
+            {
+                ApplyCircleGeometryEdit(circle, lowerColumnName, numericValue);
+            }
+            else if (entity is Arc arc)
+            {
+                ApplyArcGeometryEdit(arc, lowerColumnName, numericValue);
+            }
+            else if (entity is Line line)
+            {
+                ApplyLineGeometryEdit(line, lowerColumnName, numericValue);
+            }
+            else if (entity is Polyline polyline)
+            {
+                ApplyPolylineGeometryEdit(polyline, lowerColumnName, numericValue);
+            }
+            else if (entity is Ellipse ellipse)
+            {
+                ApplyEllipseGeometryEdit(ellipse, lowerColumnName, numericValue);
+            }
+            else if (entity is BlockReference blockRef)
+            {
+                ApplyBlockReferenceGeometryEdit(blockRef, lowerColumnName, numericValue);
+            }
+            else if (entity is DBText dbText)
+            {
+                ApplyDBTextGeometryEdit(dbText, lowerColumnName, numericValue);
+            }
+            else if (entity is MText mText)
+            {
+                ApplyMTextGeometryEdit(mText, lowerColumnName, numericValue);
+            }
+            else
+            {
+                ed.WriteMessage($"\n  >> Geometry property editing not implemented for entity type: {entity.GetType().Name}");
+            }
+
+            ed.WriteMessage($"\n  >> Geometry property '{columnName}' set to {numericValue} successfully");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> Error setting geometry property '{columnName}' to '{newValue}': {ex.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>Apply geometry edits to Circle entities</summary>
+    private static void ApplyCircleGeometryEdit(Circle circle, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                circle.Center = new Point3d(value, circle.Center.Y, circle.Center.Z);
+                break;
+            case "centery":
+                circle.Center = new Point3d(circle.Center.X, value, circle.Center.Z);
+                break;
+            case "centerz":
+                circle.Center = new Point3d(circle.Center.X, circle.Center.Y, value);
+                break;
+            case "radius":
+                if (value > 0) circle.Radius = value;
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to Arc entities</summary>
+    private static void ApplyArcGeometryEdit(Arc arc, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                arc.Center = new Point3d(value, arc.Center.Y, arc.Center.Z);
+                break;
+            case "centery":
+                arc.Center = new Point3d(arc.Center.X, value, arc.Center.Z);
+                break;
+            case "centerz":
+                arc.Center = new Point3d(arc.Center.X, arc.Center.Y, value);
+                break;
+            case "radius":
+                if (value > 0) arc.Radius = value;
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to Line entities</summary>
+    private static void ApplyLineGeometryEdit(Line line, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                var currentCenter = line.StartPoint + (line.EndPoint - line.StartPoint) * 0.5;
+                var offset = new Vector3d(value - currentCenter.X, 0, 0);
+                line.StartPoint = line.StartPoint + offset;
+                line.EndPoint = line.EndPoint + offset;
+                break;
+            case "centery":
+                var currentCenterY = line.StartPoint + (line.EndPoint - line.StartPoint) * 0.5;
+                var offsetY = new Vector3d(0, value - currentCenterY.Y, 0);
+                line.StartPoint = line.StartPoint + offsetY;
+                line.EndPoint = line.EndPoint + offsetY;
+                break;
+            case "centerz":
+                var currentCenterZ = line.StartPoint + (line.EndPoint - line.StartPoint) * 0.5;
+                var offsetZ = new Vector3d(0, 0, value - currentCenterZ.Z);
+                line.StartPoint = line.StartPoint + offsetZ;
+                line.EndPoint = line.EndPoint + offsetZ;
+                break;
+            case "rotation":
+                // Convert degrees to radians for rotation
+                var angleRadians = value * Math.PI / 180.0;
+                var center = line.StartPoint + (line.EndPoint - line.StartPoint) * 0.5;
+                var transform = Matrix3d.Rotation(angleRadians, Vector3d.ZAxis, center);
+                line.TransformBy(transform);
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to Polyline entities</summary>
+    private static void ApplyPolylineGeometryEdit(Polyline polyline, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+            case "centery":
+            case "centerz":
+                var bounds = polyline.GeometricExtents;
+                var currentCenter = bounds.MinPoint + (bounds.MaxPoint - bounds.MinPoint) * 0.5;
+                Vector3d offset = new Vector3d(0, 0, 0);
+
+                if (columnName == "centerx")
+                    offset = new Vector3d(value - currentCenter.X, 0, 0);
+                else if (columnName == "centery")
+                    offset = new Vector3d(0, value - currentCenter.Y, 0);
+                else if (columnName == "centerz")
+                    offset = new Vector3d(0, 0, value - currentCenter.Z);
+
+                polyline.TransformBy(Matrix3d.Displacement(offset));
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to Ellipse entities</summary>
+    private static void ApplyEllipseGeometryEdit(Ellipse ellipse, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                ellipse.Center = new Point3d(value, ellipse.Center.Y, ellipse.Center.Z);
+                break;
+            case "centery":
+                ellipse.Center = new Point3d(ellipse.Center.X, value, ellipse.Center.Z);
+                break;
+            case "centerz":
+                ellipse.Center = new Point3d(ellipse.Center.X, ellipse.Center.Y, value);
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to BlockReference entities</summary>
+    private static void ApplyBlockReferenceGeometryEdit(BlockReference blockRef, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                blockRef.Position = new Point3d(value, blockRef.Position.Y, blockRef.Position.Z);
+                break;
+            case "centery":
+                blockRef.Position = new Point3d(blockRef.Position.X, value, blockRef.Position.Z);
+                break;
+            case "centerz":
+                blockRef.Position = new Point3d(blockRef.Position.X, blockRef.Position.Y, value);
+                break;
+            case "scalex":
+                if (value > 0)
+                {
+                    var newScale = new Scale3d(value, blockRef.ScaleFactors.Y, blockRef.ScaleFactors.Z);
+                    blockRef.ScaleFactors = newScale;
+                }
+                break;
+            case "scaley":
+                if (value > 0)
+                {
+                    var newScale = new Scale3d(blockRef.ScaleFactors.X, value, blockRef.ScaleFactors.Z);
+                    blockRef.ScaleFactors = newScale;
+                }
+                break;
+            case "scalez":
+                if (value > 0)
+                {
+                    var newScale = new Scale3d(blockRef.ScaleFactors.X, blockRef.ScaleFactors.Y, value);
+                    blockRef.ScaleFactors = newScale;
+                }
+                break;
+            case "rotation":
+                // Convert degrees to radians
+                blockRef.Rotation = value * Math.PI / 180.0;
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to DBText entities</summary>
+    private static void ApplyDBTextGeometryEdit(DBText dbText, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                dbText.Position = new Point3d(value, dbText.Position.Y, dbText.Position.Z);
+                break;
+            case "centery":
+                dbText.Position = new Point3d(dbText.Position.X, value, dbText.Position.Z);
+                break;
+            case "centerz":
+                dbText.Position = new Point3d(dbText.Position.X, dbText.Position.Y, value);
+                break;
+            case "textheight":
+                if (value > 0) dbText.Height = value;
+                break;
+            case "widthfactor":
+                if (value > 0) dbText.WidthFactor = value;
+                break;
+            case "rotation":
+                // Convert degrees to radians
+                dbText.Rotation = value * Math.PI / 180.0;
+                break;
+        }
+    }
+
+    /// <summary>Apply geometry edits to MText entities</summary>
+    private static void ApplyMTextGeometryEdit(MText mText, string columnName, double value)
+    {
+        switch (columnName)
+        {
+            case "centerx":
+                mText.Location = new Point3d(value, mText.Location.Y, mText.Location.Z);
+                break;
+            case "centery":
+                mText.Location = new Point3d(mText.Location.X, value, mText.Location.Z);
+                break;
+            case "centerz":
+                mText.Location = new Point3d(mText.Location.X, mText.Location.Y, value);
+                break;
+            case "textheight":
+                if (value > 0) mText.TextHeight = value;
+                break;
+            case "width":
+                if (value > 0) mText.Width = value;
+                break;
+            case "rotation":
+                // Convert degrees to radians
+                mText.Rotation = value * Math.PI / 180.0;
+                break;
         }
     }
 
@@ -1772,6 +2250,7 @@ public partial class CustomGUIs
             _dataRows = dataRows ?? new List<Dictionary<string, object>>();
             BuildUI();
             LoadCurrentValues();
+            InitializePatternValue();
         }
 
         private void BuildUI()
@@ -1793,30 +2272,30 @@ public partial class CustomGUIs
             };
             grid.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Absolute, 90));
             grid.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Percent, 100));
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 0: Find
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 36)); // Row 1: Replace (increased for spacing)
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 2: Pattern
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 3: Pattern hint
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 0: Pattern
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 1: Pattern hint
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 2: Find
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 36)); // Row 3: Replace (increased for spacing)
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 4: Math
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 5: Math hint
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
 
-            // Find / Replace
-            grid.Controls.Add(MakeLabel("Find:"), 0, 0);
-            _txtFind = MakeTextBox();
-            grid.Controls.Add(_txtFind, 1, 0);
-
-            grid.Controls.Add(MakeLabel("Replace:"), 0, 1);
-            _txtReplace = MakeTextBox();
-            grid.Controls.Add(_txtReplace, 1, 1);
-
-            // Pattern
-            grid.Controls.Add(MakeLabel("Pattern:"), 0, 2);
+            // Pattern (moved to top)
+            grid.Controls.Add(MakeLabel("Pattern:"), 0, 0);
             _txtPattern = MakeTextBox("{}");   // default
-            grid.Controls.Add(_txtPattern, 1, 2);
+            grid.Controls.Add(_txtPattern, 1, 0);
 
-            grid.Controls.Add(MakeHint("Use {} for current value. Use $\"Column Name\" or $ColumnName to reference other columns."), 1, 3);
+            grid.Controls.Add(MakeHint("Use {} for current value. Use $\"Column Name\" or $ColumnName to reference other columns."), 1, 1);
+
+            // Find / Replace
+            grid.Controls.Add(MakeLabel("Find:"), 0, 2);
+            _txtFind = MakeTextBox();
+            grid.Controls.Add(_txtFind, 1, 2);
+
+            grid.Controls.Add(MakeLabel("Replace:"), 0, 3);
+            _txtReplace = MakeTextBox();
+            grid.Controls.Add(_txtReplace, 1, 3);
 
             // Math
             grid.Controls.Add(MakeLabel("Math:"), 0, 4);
@@ -1902,6 +2381,29 @@ public partial class CustomGUIs
 
                 string transformedValue = DataRenamerHelper.TransformValue(originalValue, this, dataRow);
                 _rtbAfter.AppendText(transformedValue + Environment.NewLine);
+            }
+        }
+
+        /// <summary>Initialize pattern value - replace {} with actual value if all selected values are the same</summary>
+        private void InitializePatternValue()
+        {
+            // Check if all original values are the same (or only one value)
+            if (_originalValues.Count <= 1 || _originalValues.All(v => v == _originalValues[0]))
+            {
+                // All values are the same, replace {} with the actual value
+                string actualValue = _originalValues.Count > 0 ? _originalValues[0] : "";
+                _txtPattern.Text = _txtPattern.Text.Replace("{}", actualValue);
+
+                // Set focus to pattern field since it's first in the list
+                _txtPattern.Focus();
+                _txtPattern.SelectAll();
+            }
+            else
+            {
+                // Values are different, keep {} symbol
+                // Set focus to pattern field
+                _txtPattern.Focus();
+                _txtPattern.SelectAll();
             }
         }
     }
