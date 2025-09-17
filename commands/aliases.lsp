@@ -14,7 +14,6 @@
 (defun c:fses () (command "filter-selection-elements-span"))
 (defun c:scc () (command "select-by-category"))
 (defun c:ep () (command "filter-selection"))
-(defun c:du () (command "duplicate-layouts"))
 
 ;; autocad
 (defun c:fs () (command "refclose" "save"))
@@ -40,3 +39,5 @@
 (defun c:sb () (command "draworder" "back"))
 ;; needed until i find out why ctrl+double click no longer edits block attributes in-place
 (defun c:at () (command "attipedit"))
+(defun c:fr () (command "layfrz"))
+(defun c:tg () (setvar "PICKSTYLE" (- 1 (getvar "PICKSTYLE"))))
