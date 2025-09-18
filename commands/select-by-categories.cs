@@ -9,9 +9,9 @@ using System.Text;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 // Register the command class
-[assembly: CommandClass(typeof(SelectByCategory))]
+[assembly: CommandClass(typeof(SelectByCategories))]
 
-public class SelectByCategory
+public class SelectByCategories
 {
     // Simple class to store entity references for process scope
     public class EntityReference
@@ -23,8 +23,8 @@ public class SelectByCategory
         public string SpaceName { get; set; }
     }
 
-    [CommandMethod("select-by-category")]
-    public void SelectByCategoryCommand()
+    [CommandMethod("select-by-categories", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    public void SelectByCategoriesCommand()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
