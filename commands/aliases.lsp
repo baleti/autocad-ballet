@@ -12,11 +12,17 @@
 (defun c:sco () (command "set-scope"))
 (defun c:fse () (command "filter-selection-elements"))
 (defun c:fses () (command "filter-selection-elements-span"))
-(defun c:scc () (command "select-by-category"))
+(defun c:scc () (command "select-by-categories"))
+(defun c:scl () (command "select-by-layers"))
 (defun c:ep () (command "filter-selection"))
+(defun c:ee () (command "filter-selection"))
+(defun c:ssl () (command "select-entities-on-same-layer"))
 
 ;; autocad
 (defun c:fs () (command "refclose" "save"))
+(defun c:rs () (command "refset"))
+(defun c:rsa () (command "refset" "add"))
+(defun c:rsr () (command "refset" "remove"))
 (defun c:rf () (command "-refedit" "ok" "all" "no"))
 (defun c:sv () (command ".selectsimilar"))
 (defun c:pii () (command "pickstyle"))
