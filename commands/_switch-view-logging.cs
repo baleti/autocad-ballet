@@ -155,6 +155,72 @@ namespace AutoCADBallet
                     File.WriteAllText(logFilePath, string.Empty);
                     _lastKnownLayouts.Remove(projectName);
                 }
+
+                // Ensure the log file starts with the absolute document path and session info
+                if (!File.Exists(logFilePath) || clearExisting)
+                {
+                    Document activeDoc = AcadApp.DocumentManager.MdiActiveDocument;
+                    if (activeDoc != null)
+                    {
+                        string absolutePath = Path.GetFullPath(activeDoc.Name);
+                        int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+                        File.WriteAllText(logFilePath, $"DOCUMENT_PATH:{absolutePath}\nLAST_SESSION_PID:{processId}\n");
+                    }
+                }
+                else
+                {
+                    // Check if the header lines already exist
+                    var lines = File.ReadAllLines(logFilePath).ToList();
+                    bool needsUpdate = false;
+                    var headerLines = new List<string>();
+
+                    Document activeDoc = AcadApp.DocumentManager.MdiActiveDocument;
+                    if (activeDoc != null)
+                    {
+                        string absolutePath = Path.GetFullPath(activeDoc.Name);
+                        int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+
+                        // Check for document path
+                        if (lines.Count == 0 || !lines[0].StartsWith("DOCUMENT_PATH:"))
+                        {
+                            headerLines.Add($"DOCUMENT_PATH:{absolutePath}");
+                            needsUpdate = true;
+                        }
+                        else
+                        {
+                            headerLines.Add(lines[0]);
+                        }
+
+                        // Check for session PID (should be second line)
+                        if (lines.Count < 2 || !lines[1].StartsWith("LAST_SESSION_PID:"))
+                        {
+                            headerLines.Add($"LAST_SESSION_PID:{processId}");
+                            needsUpdate = true;
+
+                            // Add existing content after header
+                            if (lines.Count > 0 && lines[0].StartsWith("DOCUMENT_PATH:"))
+                            {
+                                headerLines.AddRange(lines.Skip(1)); // Skip the document path line, add the rest
+                            }
+                            else
+                            {
+                                headerLines.AddRange(lines); // Add all existing lines
+                            }
+                        }
+                        else
+                        {
+                            // Update the session PID to current process
+                            headerLines.Add($"LAST_SESSION_PID:{processId}");
+                            headerLines.AddRange(lines.Skip(2)); // Add content after the two header lines
+                            needsUpdate = true;
+                        }
+
+                        if (needsUpdate)
+                        {
+                            File.WriteAllLines(logFilePath, headerLines);
+                        }
+                    }
+                }
             }
             catch (System.Exception ex)
             {
