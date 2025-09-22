@@ -26,12 +26,13 @@ public static class FilterEntityDataHelper
         return $"{processId}_{sessionId}";
     }
 
-    public static List<Dictionary<string, object>> GetEntityData(Editor ed, bool selectedOnly = false, bool includeProperties = false)
+    public static List<Dictionary<string, object>> GetEntityData(Editor ed, out ObjectId[] originalSelection, bool selectedOnly = false, bool includeProperties = false)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var db = doc.Database;
         var entityData = new List<Dictionary<string, object>>();
         var currentScope = SelectionScopeManager.CurrentScope;
+        originalSelection = null;
 
         // Handle selection based on current scope
         if (currentScope == SelectionScopeManager.SelectionScope.view)
@@ -39,12 +40,24 @@ public static class FilterEntityDataHelper
             // Get pickfirst set (pre-selected objects)
             var selResult = ed.SelectImplied();
 
+            // Store original selection for potential restoration on cancel
+            if (selResult.Status == PromptStatus.OK && selResult.Value.Count > 0)
+            {
+                originalSelection = selResult.Value.GetObjectIds();
+            }
+
             // If there is no pickfirst set, request user to select objects
             if (selResult.Status == PromptStatus.Error)
             {
                 var selectionOpts = new PromptSelectionOptions();
                 selectionOpts.MessageForAdding = "\nSelect objects to filter: ";
                 selResult = ed.GetSelection(selectionOpts);
+
+                // Store the new selection for potential restoration
+                if (selResult.Status == PromptStatus.OK && selResult.Value.Count > 0)
+                {
+                    originalSelection = selResult.Value.GetObjectIds();
+                }
             }
             else if (selResult.Status == PromptStatus.OK)
             {
@@ -91,7 +104,7 @@ public static class FilterEntityDataHelper
             var storedSelection = SelectionStorage.LoadSelection();
             if (storedSelection == null || storedSelection.Count == 0)
             {
-                throw new InvalidOperationException("No stored selection found. Use commands like 'select-by-category' first.");
+                throw new InvalidOperationException("No stored selection found. Use commands like 'select-by-categories' first.");
             }
 
             // Filter to current session to avoid confusion with selections from different AutoCAD processes
@@ -130,7 +143,7 @@ public static class FilterEntityDataHelper
                 }
                 else
                 {
-                    throw new InvalidOperationException("No stored selection found after filtering. Use commands like 'select-by-category' first.");
+                    throw new InvalidOperationException("No stored selection found after filtering. Use commands like 'select-by-categories' first.");
                 }
             }
 
@@ -483,7 +496,7 @@ public static class FilterEntityDataHelper
 
     private static string GetEntityCategory(DBObject entity)
     {
-        // Use the same categorization logic as select-by-category.cs
+        // Use the same categorization logic as select-by-categories.cs
         string typeName = entity.GetType().Name;
 
         if (entity is BlockReference)
@@ -1148,7 +1161,7 @@ public static class FilterEntityDataHelper
 
 /// <summary>
 /// Base class for commands that display AutoCAD entities in a custom data grid for filtering and reselection.
-/// Works with the stored selection system used by commands like select-by-category.
+/// Works with the stored selection system used by commands like select-by-categories.
 /// </summary>
 public abstract class FilterElementsBase
 {
@@ -1160,14 +1173,20 @@ public abstract class FilterElementsBase
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
+        ObjectId[] originalSelection = null;
 
         try
         {
-            var entityData = FilterEntityDataHelper.GetEntityData(ed, UseSelectedElements, IncludeProperties);
+            var entityData = FilterEntityDataHelper.GetEntityData(ed, out originalSelection, UseSelectedElements, IncludeProperties);
 
             if (!entityData.Any())
             {
                 ed.WriteMessage("\nNo entities found.\n");
+                // Restore original selection if we had one in view scope
+                if (originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+                {
+                    ed.SetImpliedSelection(originalSelection);
+                }
                 return;
             }
 
@@ -1205,6 +1224,12 @@ public abstract class FilterElementsBase
             if (chosenRows.Count == 0)
             {
                 ed.WriteMessage("\nNo entities selected.\n");
+                // Restore original selection if user canceled and we're in view scope
+                if (originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+                {
+                    ed.SetImpliedSelection(originalSelection);
+                    ed.WriteMessage($"Restored original selection of {originalSelection.Length} entities.\n");
+                }
                 return;
             }
 
@@ -1289,6 +1314,12 @@ public abstract class FilterElementsBase
         catch (InvalidOperationException ex)
         {
             ed.WriteMessage($"\nError: {ex.Message}\n");
+            // Restore original selection if we had one in view scope
+            if (originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+            {
+                ed.SetImpliedSelection(originalSelection);
+                ed.WriteMessage($"Restored original selection of {originalSelection.Length} entities.\n");
+            }
         }
         catch (System.Exception ex)
         {
