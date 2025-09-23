@@ -438,8 +438,8 @@ public partial class CustomGUIs
             }
         }
 
-        // Show the advanced rename form
-        using (var advancedForm = new AdvancedRenameForm(currentValues, dataRows))
+        // Show the advanced edit dialog
+        using (var advancedForm = new AutoCADCommands.AdvancedEditDialog(currentValues, dataRows, "Advanced Cell Editor"))
         {
             if (advancedForm.ShowDialog() == WinForms.DialogResult.OK)
             {
@@ -454,8 +454,8 @@ public partial class CustomGUIs
                     string originalValue = i < currentValues.Count ? currentValues[i] : "";
                     var dataRow = i < dataRows.Count ? dataRows[i] : null;
 
-                    // Apply the transformation
-                    string newValue = DataRenamerHelper.TransformValue(originalValue, advancedForm, dataRow);
+                    // Apply the transformation using the dialog's built-in transformation
+                    string newValue = TransformValue(originalValue, advancedForm, dataRow);
 
                     if (newValue != originalValue)
                     {
@@ -493,6 +493,53 @@ public partial class CustomGUIs
         _selectedEditCells.Clear();
         _selectedEditCells.AddRange(originalSelectedCells);
     }
+
+    /// <summary>Bridge method to use AdvancedEditDialog with existing DataRenamerHelper logic</summary>
+    private static string TransformValue(string originalValue, AutoCADCommands.AdvancedEditDialog dialog, Dictionary<string, object> dataRow)
+    {
+        // Use the same transformation logic as DataRenamerHelper but with the new dialog
+        string value = originalValue;
+
+        // 1. Find / Replace
+        if (!string.IsNullOrEmpty(dialog.FindText))
+        {
+            value = value.Replace(dialog.FindText, dialog.ReplaceText ?? "");
+        }
+
+        // 2. Pattern (higher priority than Find/Replace)
+        if (!string.IsNullOrEmpty(dialog.PatternText))
+        {
+            value = dialog.PatternText;
+
+            // Replace {} with current value
+            value = value.Replace("{}", originalValue);
+
+            // Replace column references if dataRow is available
+            if (dataRow != null)
+            {
+                foreach (var kvp in dataRow)
+                {
+                    string columnValue = kvp.Value?.ToString() ?? "";
+                    // Replace both quoted and unquoted column references
+                    value = value.Replace($"$\"{kvp.Key}\"", columnValue);
+                    value = value.Replace($"${kvp.Key}", columnValue);
+                }
+            }
+        }
+
+        // 3. Math operation
+        if (!string.IsNullOrEmpty(dialog.MathOperationText))
+        {
+            if (double.TryParse(value, out double numericValue))
+            {
+                double result = DataRenamerHelper.ApplyMathOperation(numericValue, dialog.MathOperationText);
+                value = result.ToString();
+            }
+        }
+
+        return value;
+    }
+
 
     /// <summary>Apply a value to all selected cells in edit mode</summary>
     private static void ApplyValueToSelectedCells(DataGridView grid, string newValue)

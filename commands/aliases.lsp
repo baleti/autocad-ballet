@@ -17,6 +17,9 @@
 (defun c:ep () (command "filter-selection"))
 (defun c:ee () (command "filter-selection"))
 (defun c:ssl () (command "select-entities-on-same-layer"))
+(defun c:or () (command "open-documents-recent"))
+(defun c:orr () (command "open-documents-recent-read-only"))
+(defun c:et () (command "edit-selected-text"))
 
 ;; autocad
 (defun c:fs () (command "refclose" "save"))

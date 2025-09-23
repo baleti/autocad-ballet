@@ -37,6 +37,7 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 - C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "set-scope")
 - LISP files provide aliases and utility functions
 - Main command invocation through `InvokeAddinCommand.cs`
+- **IMPORTANT**: Do not add command aliases to `aliases.lsp` - leave alias creation to the project owner
 
 **DataGrid Display Conventions**:
 - Column headers are automatically formatted to lowercase with spaces between words
@@ -71,8 +72,19 @@ dotnet build installer/installer.csproj
 - `commands/set-selection-scope.cs` - Core selection management system
 - `commands/Shared.cs` - Utility classes for selection persistence
 - `commands/FilterSelected.cs` - Entity filtering and data grid functionality
+- `commands/_edit-dialog.cs` - Shared text editing dialog (internal utility)
 - `commands/aliases.lsp` - LISP command aliases
 - `installer/installer.csproj` - Installer project that embeds plugin DLLs
+
+## File Naming Conventions
+
+**Command Files**: Use kebab-case for AutoCAD command files (e.g., `edit-selected-text.cs`, `switch-view-last.cs`)
+
+**Internal/Utility Files**: Use underscore prefix with kebab-case for files that are not actual commands but provide internal functionality (e.g., `_edit-dialog.cs`, `_utilities.cs`)
+
+This convention helps distinguish between:
+- **Commands**: Files that define AutoCAD commands with `[CommandMethod]` attributes
+- **Internal utilities**: Shared classes, dialogs, and helper functionality used by commands
 
 ## Installation Structure
 
@@ -316,7 +328,7 @@ public void MyCommand()
         var storedSelection = SelectionStorage.LoadSelection();
         if (storedSelection == null || storedSelection.Count == 0)
         {
-            ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-category' first or switch to 'view' scope.\n");
+            ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories' first or switch to 'view' scope.\n");
             return;
         }
 
@@ -374,7 +386,7 @@ public void MyCommand()
 - **Document scope filtering**: Filter stored selection to current document only
 - **Cross-document limitations**: Many operations can only be performed on current document entities
 - **Update stored selection**: Use `ed.SetImpliedSelectionEx()` to update selection storage in non-view scopes
-- **Clear error messages**: Guide users to use `select-by-category` or switch scope when no stored selection exists
+- **Clear error messages**: Guide users to use `select-by-categories` or switch scope when no stored selection exists
 
 **Required Imports for Selection Scope Support**:
 ```csharp
