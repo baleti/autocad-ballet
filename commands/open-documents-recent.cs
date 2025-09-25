@@ -176,6 +176,8 @@ namespace AutoCADBallet
 
                 if (chosen != null && chosen.Count > 0)
                 {
+                    Document lastOpenedDoc = null;
+
                     foreach (var selectedDoc in chosen)
                     {
                         string docName = selectedDoc["DocumentName"].ToString();
@@ -202,6 +204,7 @@ namespace AutoCADBallet
                             if (openedDoc != null)
                             {
                                 ed.WriteMessage($"\nOpened document: {docName}\n");
+                                lastOpenedDoc = openedDoc;
                             }
                             else
                             {
@@ -212,6 +215,21 @@ namespace AutoCADBallet
                         {
                             ed.WriteMessage($"\nError opening document {docName}: {ex.Message}\n");
                         }
+                    }
+
+                    // Set the last successfully opened document as active using event-driven approach to minimize flicker
+                    if (lastOpenedDoc != null)
+                    {
+                        DocumentCollectionEventHandler handler = null;
+                        handler = (sender, e) => {
+                            if (e.Document == lastOpenedDoc)
+                            {
+                                docs.DocumentActivated -= handler;
+                                // Document is now properly activated
+                            }
+                        };
+                        docs.DocumentActivated += handler;
+                        docs.MdiActiveDocument = lastOpenedDoc;
                     }
                 }
             }
