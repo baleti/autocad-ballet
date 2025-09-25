@@ -14,12 +14,14 @@ namespace AutoCADBallet
         public void CloseAllWithoutSaving()
         {
             DocumentCollection docs = AcadApp.DocumentManager;
-            Document activeDoc = docs.MdiActiveDocument;
-            if (activeDoc == null) return;
 
-            var ed = activeDoc.Editor;
+            // Use application-level messaging instead of document-bound Editor
+            void WriteAppMessage(string message)
+            {
+                AcadApp.DocumentManager.MdiActiveDocument?.Editor?.WriteMessage(message);
+            }
 
-            // Collect all documents to close (need to do this first since collection will change)
+            // Collect all documents to close (snapshot since collection will change)
             var documentsToClose = new List<Document>();
             foreach (Document doc in docs)
             {
@@ -28,26 +30,22 @@ namespace AutoCADBallet
 
             if (documentsToClose.Count == 0)
             {
-                ed.WriteMessage("\nNo documents are currently open.\n");
+                WriteAppMessage("\nNo documents are currently open.\n");
                 return;
             }
 
-            ed.WriteMessage($"\nClosing {documentsToClose.Count} document(s) without saving...\n");
+            WriteAppMessage($"\nClosing {documentsToClose.Count} document(s) without saving...\n");
 
             int successCount = 0;
             int failureCount = 0;
 
-            // Sort documents: close non-active documents first, then the active one
-            var nonActiveDocuments = documentsToClose.Where(doc => doc != activeDoc).ToList();
-            var activeDocuments = documentsToClose.Where(doc => doc == activeDoc).ToList();
-
-            // Process non-active documents first
-            foreach (Document doc in nonActiveDocuments)
+            // Close all documents - no special handling needed since we're using application context
+            foreach (Document doc in documentsToClose)
             {
                 try
                 {
                     string docName = System.IO.Path.GetFileNameWithoutExtension(doc.Name);
-                    ed.WriteMessage($"Closing: {docName}\n");
+                    WriteAppMessage($"Closing: {docName}\n");
 
                     // Close and discard without prompting to save
                     doc.CloseAndDiscard();
@@ -55,76 +53,28 @@ namespace AutoCADBallet
                 }
                 catch (System.Exception ex)
                 {
-                    ed.WriteMessage($"Failed to close document: {ex.Message}\n");
+                    WriteAppMessage($"Failed to close {System.IO.Path.GetFileNameWithoutExtension(doc.Name)}: {ex.Message}\n");
                     failureCount++;
                 }
             }
 
-            // Process active document last, if any remain
-            foreach (Document doc in activeDocuments)
-            {
-                try
-                {
-                    string docName = System.IO.Path.GetFileNameWithoutExtension(doc.Name);
-                    ed.WriteMessage($"Closing active document: {docName}\n");
-
-                    // For the active document, we need to be more careful
-                    // Try to switch to another document first if possible, or just close it
-                    if (docs.Count > 1)
-                    {
-                        // Find another document to make active
-                        Document anotherDoc = null;
-                        foreach (Document otherDoc in docs)
-                        {
-                            if (otherDoc != doc)
-                            {
-                                anotherDoc = otherDoc;
-                                break;
-                            }
-                        }
-
-                        if (anotherDoc != null)
-                        {
-                            docs.MdiActiveDocument = anotherDoc;
-                            // Allow some time for the document switch
-                            System.Windows.Forms.Application.DoEvents();
-                        }
-
-                        // Now close the previously active document
-                        doc.CloseAndDiscard();
-                        successCount++;
-                    }
-                    else
-                    {
-                        // This is the last document - context becomes invalid during close
-                        ed.WriteMessage("This is the last document. Run the command again to close it.\n");
-                        failureCount++;
-                    }
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"Failed to close active document: {ex.Message}\n");
-                    failureCount++;
-                }
-            }
-
-            // Summary (only show if there's still an active document to write to)
+            // Final summary - only show if any documents remain
             try
             {
-                var currentActive = docs.MdiActiveDocument;
-                if (currentActive?.Editor != null)
+                var remainingActive = docs.MdiActiveDocument;
+                if (remainingActive?.Editor != null)
                 {
-                    currentActive.Editor.WriteMessage($"\n=== Close Summary ===\n");
-                    currentActive.Editor.WriteMessage($"Successfully closed: {successCount} document(s)\n");
+                    remainingActive.Editor.WriteMessage($"\n=== Close Summary ===\n");
+                    remainingActive.Editor.WriteMessage($"Successfully closed: {successCount} document(s)\n");
                     if (failureCount > 0)
                     {
-                        currentActive.Editor.WriteMessage($"Failed to close: {failureCount} document(s)\n");
+                        remainingActive.Editor.WriteMessage($"Failed to close: {failureCount} document(s)\n");
                     }
                 }
             }
             catch
             {
-                // If no documents remain, we can't write the summary - that's expected
+                // If no documents remain, we can't show summary - that's expected and OK
             }
         }
     }
