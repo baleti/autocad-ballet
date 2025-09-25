@@ -29,6 +29,7 @@ namespace AutoCADBallet
                 availableDocuments.Add(new Dictionary<string, object>
                 {
                     ["document"] = docName,
+                    ["ReadOnly"] = doc.IsReadOnly ? "read only" : "",
                     ["IsActive"] = doc == activeDoc,
                     ["Document"] = doc
                 });
@@ -42,7 +43,7 @@ namespace AutoCADBallet
             int selectedIndex = -1;
             selectedIndex = availableDocuments.FindIndex(d => (bool)d["IsActive"]);
 
-            var propertyNames = new List<string> { "document" };
+            var propertyNames = new List<string> { "document", "ReadOnly" };
             var initialSelectionIndices = selectedIndex >= 0
                                             ? new List<int> { selectedIndex }
                                             : new List<int>();
