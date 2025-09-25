@@ -234,7 +234,7 @@ namespace AutoCADCommands
                 {
                     DocumentPath = documentPath,
                     Handle = handle,
-                    Text = mtext.Contents,
+                    Text = mtext.Text,
                     EntityType = TextEntityType.MText
                 };
             }
@@ -283,7 +283,9 @@ namespace AutoCADCommands
                                 }
                                 else if (entity is MText mtext)
                                 {
-                                    mtext.Contents = newText;
+                                    // Preserve formatting by replacing only text content, not formatting codes
+                                    string formattedText = ReplaceTextPreservingFormatting(mtext.Contents, textEntity.Text, newText);
+                                    mtext.Contents = formattedText;
                                     modifiedCount++;
                                 }
                             }
@@ -338,6 +340,90 @@ namespace AutoCADCommands
             }
 
             return result;
+        }
+
+        private string ReplaceTextPreservingFormatting(string originalContents, string oldText, string newText)
+        {
+            // If the old text and new text are identical, no change needed
+            if (oldText == newText)
+            {
+                return originalContents;
+            }
+
+            // If no formatting codes present, simple replacement
+            if (!originalContents.Contains("\\"))
+            {
+                return originalContents.Replace(oldText, newText);
+            }
+
+            // SAFE APPROACH: Only attempt formatting preservation for same-length replacements
+            // For different lengths, fall back to simple replacement (may lose formatting but is safe)
+            if (oldText.Length != newText.Length)
+            {
+                return originalContents.Replace(oldText, newText);
+            }
+
+            // Same length replacement - try to preserve formatting with character-by-character replacement
+            // This handles most common formatting codes safely
+            string result = originalContents;
+            int oldTextIndex = 0;
+            int newTextIndex = 0;
+
+            // Find the start of the actual text content (skip initial formatting)
+            int contentStart = 0;
+            while (contentStart < result.Length)
+            {
+                if (result[contentStart] == '\\')
+                {
+                    // Skip formatting code - find the end (either ';' or space or end of non-alphabetic chars)
+                    contentStart++;
+                    while (contentStart < result.Length &&
+                           result[contentStart] != ';' &&
+                           result[contentStart] != ' ' &&
+                           result[contentStart] != '\\')
+                    {
+                        contentStart++;
+                    }
+                    if (contentStart < result.Length && result[contentStart] == ';')
+                    {
+                        contentStart++; // Skip the semicolon
+                    }
+                }
+                else
+                {
+                    break; // Found start of actual text
+                }
+            }
+
+            // Simple character replacement starting from content
+            var chars = result.ToCharArray();
+            bool inFormattingCode = false;
+            int textCharIndex = 0;
+
+            for (int i = contentStart; i < chars.Length; i++)
+            {
+                if (chars[i] == '\\' && !inFormattingCode)
+                {
+                    inFormattingCode = true;
+                }
+                else if (inFormattingCode && (chars[i] == ';' || chars[i] == ' '))
+                {
+                    inFormattingCode = false;
+                    if (chars[i] == ';') continue; // Skip semicolon
+                }
+
+                if (!inFormattingCode && textCharIndex < oldText.Length && chars[i] == oldText[textCharIndex])
+                {
+                    chars[i] = newText[textCharIndex];
+                    textCharIndex++;
+                }
+                else if (!inFormattingCode && textCharIndex > 0)
+                {
+                    textCharIndex = 0; // Reset if match breaks
+                }
+            }
+
+            return new string(chars);
         }
 
         // Helper classes
