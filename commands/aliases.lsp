@@ -49,4 +49,5 @@
 ;; needed until i find out why ctrl+double click no longer edits block attributes in-place
 (defun c:at () (command "attipedit"))
 (defun c:fr () (command "layfrz"))
-(defun c:tg () (setvar "PICKSTYLE" (- 1 (getvar "PICKSTYLE"))))
+(defun c:tg () (setvar "pickstyle" (- 1 (getvar "pickstyle"))))
+(defun c:tv () (command "-vports" "toggle"))
