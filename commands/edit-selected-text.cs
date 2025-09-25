@@ -366,8 +366,6 @@ namespace AutoCADCommands
             // Same length replacement - try to preserve formatting with character-by-character replacement
             // This handles most common formatting codes safely
             string result = originalContents;
-            int oldTextIndex = 0;
-            int newTextIndex = 0;
 
             // Find the start of the actual text content (skip initial formatting)
             int contentStart = 0;
