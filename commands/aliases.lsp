@@ -20,6 +20,7 @@
 (defun c:or () (command "open-documents-recent"))
 (defun c:orr () (command "open-documents-recent-read-only"))
 (defun c:et () (command "edit-selected-text"))
+(defun c:zs () (c:zoom-selected))
 
 ;; autocad
 (defun c:fs () (command "refclose" "save"))
