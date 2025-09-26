@@ -392,36 +392,94 @@ namespace AutoCADCommands
                 ed.WriteMessage($"\n    After Find/Replace ('{editForm.FindText}' -> '{editForm.ReplaceText ?? ""}'): '{beforeReplace}' -> '{result}'");
             }
 
-            // 3. Math transformation (takes precedence - applied to result of pattern + find/replace, if result is numeric)
+            // 3. Math transformation (takes precedence - applied to result of pattern + find/replace)
             if (!string.IsNullOrEmpty(editForm.MathOperationText))
             {
-                if (double.TryParse(result, out double numericValue))
-                {
-                    try
-                    {
-                        string mathExpression = editForm.MathOperationText.Replace("x", numericValue.ToString());
-                        var dataTable = new System.Data.DataTable();
-                        var computedValue = dataTable.Compute(mathExpression, null);
-                        if (computedValue != DBNull.Value)
-                        {
-                            string beforeMath = result;
-                            result = computedValue.ToString();
-                            ed.WriteMessage($"\n    After Math ('{editForm.MathOperationText}'): '{beforeMath}' -> '{result}'");
-                        }
-                    }
-                    catch (System.Exception ex)
-                    {
-                        ed.WriteMessage($"\n    Math evaluation failed: {ex.Message}");
-                    }
-                }
-                else
-                {
-                    ed.WriteMessage($"\n    Math skipped - '{result}' is not numeric");
-                }
+                string beforeMath = result;
+                result = ApplyMathToAlphanumeric(result, editForm.MathOperationText);
+                ed.WriteMessage($"\n    After Math ('{editForm.MathOperationText}'): '{beforeMath}' -> '{result}'");
             }
 
             ed.WriteMessage($"\n    ApplyTransformation - Final result: '{result}'");
             return result;
+        }
+
+        /// <summary>
+        /// Apply math operations to alphanumeric strings by extracting and modifying numeric parts.
+        /// Examples: "W1" + "x+3" → "W4", "Room12" + "x*2" → "Room24"
+        /// </summary>
+        private string ApplyMathToAlphanumeric(string input, string mathExpression)
+        {
+            var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
+            try
+            {
+                // First try pure numeric approach (existing behavior)
+                if (double.TryParse(input, out double numericValue))
+                {
+                    string expr = mathExpression.Replace("x", numericValue.ToString());
+                    var dataTable = new System.Data.DataTable();
+                    var computedValue = dataTable.Compute(expr, null);
+                    if (computedValue != DBNull.Value)
+                    {
+                        ed.WriteMessage($"\n      Math on pure number: {numericValue} -> {computedValue}");
+                        return computedValue.ToString();
+                    }
+                    return input;
+                }
+
+                // Handle alphanumeric strings - extract numeric parts
+                var matches = System.Text.RegularExpressions.Regex.Matches(input, @"\d+");
+                if (matches.Count == 0)
+                {
+                    ed.WriteMessage($"\n      Math skipped - no numbers found in '{input}'");
+                    return input;
+                }
+
+                ed.WriteMessage($"\n      Found {matches.Count} numeric parts in '{input}'");
+
+                // Apply math to each numeric part
+                string result = input;
+                for (int i = matches.Count - 1; i >= 0; i--) // Process in reverse to maintain positions
+                {
+                    var match = matches[i];
+                    if (double.TryParse(match.Value, out double numberValue))
+                    {
+                        string expr = mathExpression.Replace("x", numberValue.ToString());
+                        var dataTable = new System.Data.DataTable();
+                        var computedValue = dataTable.Compute(expr, null);
+                        if (computedValue != DBNull.Value)
+                        {
+                            // Format the result to remove unnecessary decimal places for integers
+                            string newNumberStr = FormatNumericResult(computedValue);
+                            ed.WriteMessage($"\n      Math on part '{match.Value}': {numberValue} -> {computedValue} -> '{newNumberStr}'");
+                            result = result.Substring(0, match.Index) + newNumberStr + result.Substring(match.Index + match.Length);
+                        }
+                    }
+                }
+                return result;
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\n      Math evaluation failed: {ex.Message}");
+                return input; // If anything fails, return original value
+            }
+        }
+
+        /// <summary>
+        /// Format numeric result to avoid unnecessary decimal places for whole numbers
+        /// </summary>
+        private string FormatNumericResult(object computedValue)
+        {
+            if (computedValue is double doubleVal)
+            {
+                // If it's a whole number, format as integer
+                if (doubleVal == Math.Floor(doubleVal))
+                {
+                    return ((long)doubleVal).ToString();
+                }
+                return doubleVal.ToString();
+            }
+            return computedValue.ToString();
         }
 
         private string ReplaceTextPreservingFormatting(string originalContents, string oldText, string newText)

@@ -253,31 +253,85 @@ namespace AutoCADCommands
                 result = result.Replace(_txtFind.Text, _txtReplace.Text ?? "");
             }
 
-            // 3. Math transformation (takes precedence - applied to result of pattern + find/replace, if result is numeric)
+            // 3. Math transformation (takes precedence - applied to result of pattern + find/replace)
             if (!string.IsNullOrEmpty(_txtMath.Text))
             {
-                if (double.TryParse(result, out double numericValue))
-                {
-                    try
-                    {
-                        string mathExpression = _txtMath.Text.Replace("x", numericValue.ToString());
-                        // Simple math evaluation - this is a basic implementation
-                        // For full functionality, you'd want to use a proper expression evaluator
-                        var dataTable = new System.Data.DataTable();
-                        var computedValue = dataTable.Compute(mathExpression, null);
-                        if (computedValue != DBNull.Value)
-                        {
-                            result = computedValue.ToString();
-                        }
-                    }
-                    catch
-                    {
-                        // If math evaluation fails, keep current result
-                    }
-                }
+                result = ApplyMathToAlphanumeric(result, _txtMath.Text);
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Apply math operations to alphanumeric strings by extracting and modifying numeric parts.
+        /// Examples: "W1" + "x+3" → "W4", "Room12" + "x*2" → "Room24"
+        /// </summary>
+        private string ApplyMathToAlphanumeric(string input, string mathExpression)
+        {
+            try
+            {
+                // First try pure numeric approach (existing behavior)
+                if (double.TryParse(input, out double numericValue))
+                {
+                    string expr = mathExpression.Replace("x", numericValue.ToString());
+                    var dataTable = new System.Data.DataTable();
+                    var computedValue = dataTable.Compute(expr, null);
+                    if (computedValue != DBNull.Value)
+                    {
+                        return computedValue.ToString();
+                    }
+                    return input;
+                }
+
+                // Handle alphanumeric strings - extract numeric parts
+                var matches = System.Text.RegularExpressions.Regex.Matches(input, @"\d+");
+                if (matches.Count == 0)
+                {
+                    // No numbers found, return original
+                    return input;
+                }
+
+                // Apply math to each numeric part
+                string result = input;
+                for (int i = matches.Count - 1; i >= 0; i--) // Process in reverse to maintain positions
+                {
+                    var match = matches[i];
+                    if (double.TryParse(match.Value, out double numberValue))
+                    {
+                        string expr = mathExpression.Replace("x", numberValue.ToString());
+                        var dataTable = new System.Data.DataTable();
+                        var computedValue = dataTable.Compute(expr, null);
+                        if (computedValue != DBNull.Value)
+                        {
+                            // Format the result to remove unnecessary decimal places for integers
+                            string newNumberStr = FormatNumericResult(computedValue);
+                            result = result.Substring(0, match.Index) + newNumberStr + result.Substring(match.Index + match.Length);
+                        }
+                    }
+                }
+                return result;
+            }
+            catch
+            {
+                return input; // If anything fails, return original value
+            }
+        }
+
+        /// <summary>
+        /// Format numeric result to avoid unnecessary decimal places for whole numbers
+        /// </summary>
+        private string FormatNumericResult(object computedValue)
+        {
+            if (computedValue is double doubleVal)
+            {
+                // If it's a whole number, format as integer
+                if (doubleVal == Math.Floor(doubleVal))
+                {
+                    return ((long)doubleVal).ToString();
+                }
+                return doubleVal.ToString();
+            }
+            return computedValue.ToString();
         }
     }
 }
