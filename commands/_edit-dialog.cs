@@ -217,19 +217,20 @@ namespace AutoCADCommands
 
         /// <summary>
         /// Transform a value using pattern/find/replace/math operations.
+        /// Find/Replace and Math operations take precedence and are applied to the pattern result.
         /// This is a simplified version of the DataRenamerHelper.TransformValue logic.
         /// </summary>
         private string TransformValue(string originalValue, Dictionary<string, object> dataRow)
         {
             string result = originalValue;
 
-            // 1. Pattern transformation (highest priority)
+            // 1. Pattern transformation (applied first as base)
             if (!string.IsNullOrEmpty(_txtPattern.Text))
             {
-                result = _txtPattern.Text;
+                string patternResult = _txtPattern.Text;
 
-                // Replace {} with current value
-                result = result.Replace("{}", originalValue);
+                // Replace {} with the original value
+                patternResult = patternResult.Replace("{}", originalValue);
 
                 // Replace column references if dataRow is available
                 if (dataRow != null)
@@ -238,18 +239,22 @@ namespace AutoCADCommands
                     {
                         string columnValue = kvp.Value?.ToString() ?? "";
                         // Replace both quoted and unquoted column references
-                        result = result.Replace($"$\"{kvp.Key}\"", columnValue);
-                        result = result.Replace($"${kvp.Key}", columnValue);
+                        patternResult = patternResult.Replace($"$\"{kvp.Key}\"", columnValue);
+                        patternResult = patternResult.Replace($"${kvp.Key}", columnValue);
                     }
                 }
+
+                result = patternResult;
             }
-            // 2. Find/Replace transformation
-            else if (!string.IsNullOrEmpty(_txtFind.Text))
+
+            // 2. Find/Replace transformation (takes precedence - applied to pattern result)
+            if (!string.IsNullOrEmpty(_txtFind.Text))
             {
                 result = result.Replace(_txtFind.Text, _txtReplace.Text ?? "");
             }
-            // 3. Math transformation (if result is numeric)
-            else if (!string.IsNullOrEmpty(_txtMath.Text))
+
+            // 3. Math transformation (takes precedence - applied to result of pattern + find/replace, if result is numeric)
+            if (!string.IsNullOrEmpty(_txtMath.Text))
             {
                 if (double.TryParse(result, out double numericValue))
                 {
@@ -267,7 +272,7 @@ namespace AutoCADCommands
                     }
                     catch
                     {
-                        // If math evaluation fails, keep original value
+                        // If math evaluation fails, keep current result
                     }
                 }
             }

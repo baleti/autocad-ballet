@@ -494,24 +494,19 @@ public partial class CustomGUIs
         _selectedEditCells.AddRange(originalSelectedCells);
     }
 
-    /// <summary>Bridge method to use AdvancedEditDialog with existing DataRenamerHelper logic</summary>
+    /// <summary>Bridge method to use AdvancedEditDialog with corrected precedence logic</summary>
     private static string TransformValue(string originalValue, AutoCADCommands.AdvancedEditDialog dialog, Dictionary<string, object> dataRow)
     {
-        // Use the same transformation logic as DataRenamerHelper but with the new dialog
+        // Use the same transformation logic as AdvancedEditDialog.TransformValue
+        // Find/Replace and Math operations take precedence over Pattern operations
         string value = originalValue;
 
-        // 1. Find / Replace
-        if (!string.IsNullOrEmpty(dialog.FindText))
-        {
-            value = value.Replace(dialog.FindText, dialog.ReplaceText ?? "");
-        }
-
-        // 2. Pattern (higher priority than Find/Replace)
+        // 1. Pattern transformation (applied first as base)
         if (!string.IsNullOrEmpty(dialog.PatternText))
         {
             value = dialog.PatternText;
 
-            // Replace {} with current value
+            // Replace {} with original value
             value = value.Replace("{}", originalValue);
 
             // Replace column references if dataRow is available
@@ -527,7 +522,13 @@ public partial class CustomGUIs
             }
         }
 
-        // 3. Math operation
+        // 2. Find/Replace transformation (takes precedence - applied to pattern result)
+        if (!string.IsNullOrEmpty(dialog.FindText))
+        {
+            value = value.Replace(dialog.FindText, dialog.ReplaceText ?? "");
+        }
+
+        // 3. Math operation (takes precedence - applied to result of pattern + find/replace, if result is numeric)
         if (!string.IsNullOrEmpty(dialog.MathOperationText))
         {
             if (double.TryParse(value, out double numericValue))

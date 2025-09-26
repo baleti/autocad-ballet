@@ -25,15 +25,20 @@ namespace AutoCADCommands
             var db = doc.Database;
             var currentScope = SelectionScopeManager.CurrentScope;
 
+            ed.WriteMessage($"\n=== DEBUG: Starting edit-selected-text command ===");
+            ed.WriteMessage($"\nCurrent scope: {currentScope}");
+
             List<TextEntity> textEntities = new List<TextEntity>();
 
             if (currentScope == SelectionScopeManager.SelectionScope.view)
             {
                 // Handle view scope: Use pickfirst set or prompt for selection
                 var selResult = ed.SelectImplied();
+                ed.WriteMessage($"\nDEBUG: SelectImplied status: {selResult.Status}");
 
                 if (selResult.Status == PromptStatus.Error)
                 {
+                    ed.WriteMessage($"\nDEBUG: No implied selection, prompting user...");
                     var selectionOpts = new PromptSelectionOptions();
                     selectionOpts.MessageForAdding = "\nSelect text/mtext entities: ";
                     var typeFilter = new TypedValue[]
@@ -45,9 +50,11 @@ namespace AutoCADCommands
                     };
                     var filter = new SelectionFilter(typeFilter);
                     selResult = ed.GetSelection(selectionOpts, filter);
+                    ed.WriteMessage($"\nDEBUG: GetSelection status: {selResult.Status}");
                 }
                 else if (selResult.Status == PromptStatus.OK)
                 {
+                    ed.WriteMessage($"\nDEBUG: Found implied selection with {selResult.Value.Count} entities");
                     ed.SetImpliedSelection(new ObjectId[0]);
                 }
 
@@ -57,17 +64,28 @@ namespace AutoCADCommands
                     return;
                 }
 
+                ed.WriteMessage($"\nDEBUG: Processing {selResult.Value.Count} selected entities");
+
                 // Process selection from current document
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
                     foreach (var objId in selResult.Value.GetObjectIds())
                     {
                         var entity = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                        ed.WriteMessage($"\nDEBUG: Entity type: {entity?.GetType().Name ?? "null"}");
                         if (IsTextEntity(entity))
                         {
+                            ed.WriteMessage($"\nDEBUG: Found text entity, creating TextEntity...");
                             var textEntity = CreateTextEntity(entity, doc.Name, objId.Handle.Value);
                             if (textEntity != null)
+                            {
+                                ed.WriteMessage($"\nDEBUG: Created TextEntity with text: '{textEntity.Text}'");
                                 textEntities.Add(textEntity);
+                            }
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\nDEBUG: Entity is not a text entity");
                         }
                     }
                     tr.Commit();
@@ -111,6 +129,8 @@ namespace AutoCADCommands
                 ProcessStoredSelection(storedSelection, textEntities, doc);
             }
 
+            ed.WriteMessage($"\nDEBUG: Found {textEntities.Count} text entities");
+
             if (textEntities.Count == 0)
             {
                 ed.WriteMessage("\nNo text/mtext entities found in selection.\n");
@@ -119,10 +139,17 @@ namespace AutoCADCommands
 
             // Show text editing dialog
             var originalTexts = textEntities.Select(t => t.Text).ToList();
+            ed.WriteMessage($"\nDEBUG: Original texts: [{string.Join(", ", originalTexts.Select(t => $"'{t}'"))}]");
+
             using (var editForm = new AdvancedEditDialog(originalTexts, null, "Edit Selected Text"))
             {
-                if (editForm.ShowDialog() == WinForms.DialogResult.OK)
+                ed.WriteMessage($"\nDEBUG: Showing dialog...");
+                var dialogResult = editForm.ShowDialog();
+                ed.WriteMessage($"\nDEBUG: Dialog result: {dialogResult}");
+
+                if (dialogResult == WinForms.DialogResult.OK)
                 {
+                    ed.WriteMessage($"\nDEBUG: Dialog OK - applying edits...");
                     ApplyTextEdits(textEntities, editForm, ed);
                 }
                 else
@@ -199,11 +226,26 @@ namespace AutoCADCommands
             {
                 try
                 {
-                    if (string.Equals(Path.GetFullPath(doc.Name), documentPath, StringComparison.OrdinalIgnoreCase))
+                    // Compare full paths if documentPath appears to be a full path
+                    if (Path.IsPathRooted(documentPath))
+                    {
+                        if (string.Equals(Path.GetFullPath(doc.Name), Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))
+                            return doc;
+                    }
+                    else
+                    {
+                        // Compare just the filename if documentPath is just a filename
+                        if (string.Equals(Path.GetFileName(doc.Name), documentPath, StringComparison.OrdinalIgnoreCase))
+                            return doc;
+                    }
+
+                    // Fallback: also try direct string comparison
+                    if (string.Equals(doc.Name, documentPath, StringComparison.OrdinalIgnoreCase))
                         return doc;
                 }
                 catch
                 {
+                    // If path operations fail, try direct string comparison
                     if (string.Equals(doc.Name, documentPath, StringComparison.OrdinalIgnoreCase))
                         return doc;
                 }
@@ -243,23 +285,36 @@ namespace AutoCADCommands
 
         private void ApplyTextEdits(List<TextEntity> textEntities, AdvancedEditDialog editForm, Editor ed)
         {
+            ed.WriteMessage($"\n=== DEBUG: ApplyTextEdits called with {textEntities.Count} entities ===");
+            ed.WriteMessage($"\nDialog values - Pattern: '{editForm.PatternText}', Find: '{editForm.FindText}', Replace: '{editForm.ReplaceText}', Math: '{editForm.MathOperationText}'");
+
             int modifiedCount = 0;
             var docs = AcadApp.DocumentManager;
 
             // Group by document for efficient processing
             var groupedEntities = textEntities.GroupBy(t => t.DocumentPath).ToList();
+            ed.WriteMessage($"\nDEBUG: Grouped into {groupedEntities.Count} document groups");
 
             foreach (var docGroup in groupedEntities)
             {
+                ed.WriteMessage($"\nDEBUG: Processing document group: '{docGroup.Key}' with {docGroup.Count()} entities");
                 var targetDoc = FindDocumentByPath(docGroup.Key);
-                if (targetDoc == null) continue;
+                if (targetDoc == null)
+                {
+                    ed.WriteMessage($"\nDEBUG: ERROR - Could not find document for path: '{docGroup.Key}'");
+                    continue;
+                }
+                ed.WriteMessage($"\nDEBUG: Found target document: '{targetDoc.Name}'");
 
                 // Apply transformations and collect results
                 var transformedTexts = new List<string>();
+                ed.WriteMessage($"\nDEBUG: Applying transformations to {docGroup.Count()} entities...");
                 foreach (var textEntity in docGroup)
                 {
+                    ed.WriteMessage($"\nDEBUG: Transforming text: '{textEntity.Text}'");
                     var transformedText = ApplyTransformation(textEntity.Text, editForm);
                     transformedTexts.Add(transformedText);
+                    ed.WriteMessage($"\nDEBUG: Result: '{transformedText}'");
                 }
 
                 // Apply changes to database with document lock
@@ -271,13 +326,19 @@ namespace AutoCADCommands
                         foreach (var textEntity in docGroup)
                         {
                             var newText = transformedTexts[index++];
+
+                            // Debug output
+                            ed.WriteMessage($"\nProcessing entity - Original: '{textEntity.Text}', New: '{newText}'");
+
                             if (newText != textEntity.Text)
                             {
+                                ed.WriteMessage($"\n  Text changed, applying update...");
                                 var objectId = targetDoc.Database.GetObjectId(false, new Handle(textEntity.Handle), 0);
                                 var entity = tr.GetObject(objectId, OpenMode.ForWrite) as Entity;
 
                                 if (entity is DBText dbText)
                                 {
+                                    ed.WriteMessage($"\n  Updating DBText from '{dbText.TextString}' to '{newText}'");
                                     dbText.TextString = newText;
                                     modifiedCount++;
                                 }
@@ -285,9 +346,14 @@ namespace AutoCADCommands
                                 {
                                     // Preserve formatting by replacing only text content, not formatting codes
                                     string formattedText = ReplaceTextPreservingFormatting(mtext.Contents, textEntity.Text, newText);
+                                    ed.WriteMessage($"\n  Updating MText from '{mtext.Contents}' to '{formattedText}'");
                                     mtext.Contents = formattedText;
                                     modifiedCount++;
                                 }
+                            }
+                            else
+                            {
+                                ed.WriteMessage($"\n  No change detected, skipping...");
                             }
                         }
                         tr.Commit();
@@ -300,25 +366,34 @@ namespace AutoCADCommands
 
         private string ApplyTransformation(string originalText, AdvancedEditDialog editForm)
         {
+            var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
+
             string result = originalText;
+            ed.WriteMessage($"\n    ApplyTransformation - Input: '{originalText}'");
+            ed.WriteMessage($"\n    Dialog values - Pattern: '{editForm.PatternText}', Find: '{editForm.FindText}', Replace: '{editForm.ReplaceText}', Math: '{editForm.MathOperationText}'");
 
-            // Use the built-in transformation logic from AdvancedEditDialog
-            // This ensures consistency with the DataGrid functionality
+            // Use the same transformation logic as AdvancedEditDialog.TransformValue
+            // Find/Replace and Math operations take precedence over Pattern operations
 
-            // 1. Pattern transformation (highest priority)
+            // 1. Pattern transformation (applied first as base)
             if (!string.IsNullOrEmpty(editForm.PatternText))
             {
                 result = editForm.PatternText;
-                // Replace {} with current value
+                // Replace {} with original value
                 result = result.Replace("{}", originalText);
+                ed.WriteMessage($"\n    After Pattern: '{result}'");
             }
-            // 2. Find/Replace transformation
-            else if (!string.IsNullOrEmpty(editForm.FindText))
+
+            // 2. Find/Replace transformation (takes precedence - applied to pattern result)
+            if (!string.IsNullOrEmpty(editForm.FindText))
             {
+                string beforeReplace = result;
                 result = result.Replace(editForm.FindText, editForm.ReplaceText ?? "");
+                ed.WriteMessage($"\n    After Find/Replace ('{editForm.FindText}' -> '{editForm.ReplaceText ?? ""}'): '{beforeReplace}' -> '{result}'");
             }
-            // 3. Math transformation (if result is numeric)
-            else if (!string.IsNullOrEmpty(editForm.MathOperationText))
+
+            // 3. Math transformation (takes precedence - applied to result of pattern + find/replace, if result is numeric)
+            if (!string.IsNullOrEmpty(editForm.MathOperationText))
             {
                 if (double.TryParse(result, out double numericValue))
                 {
@@ -329,16 +404,23 @@ namespace AutoCADCommands
                         var computedValue = dataTable.Compute(mathExpression, null);
                         if (computedValue != DBNull.Value)
                         {
+                            string beforeMath = result;
                             result = computedValue.ToString();
+                            ed.WriteMessage($"\n    After Math ('{editForm.MathOperationText}'): '{beforeMath}' -> '{result}'");
                         }
                     }
-                    catch
+                    catch (System.Exception ex)
                     {
-                        // If math evaluation fails, keep original value
+                        ed.WriteMessage($"\n    Math evaluation failed: {ex.Message}");
                     }
+                }
+                else
+                {
+                    ed.WriteMessage($"\n    Math skipped - '{result}' is not numeric");
                 }
             }
 
+            ed.WriteMessage($"\n    ApplyTransformation - Final result: '{result}'");
             return result;
         }
 
