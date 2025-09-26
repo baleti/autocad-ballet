@@ -165,7 +165,9 @@ namespace AutoCADCommands
             _rtbBefore.Clear();
             foreach (var value in _originalValues)
             {
-                _rtbBefore.AppendText(value + Environment.NewLine);
+                // Escape newlines for display
+                string displayValue = EscapeForDisplay(value);
+                _rtbBefore.AppendText(displayValue + Environment.NewLine);
             }
             RefreshPreview();
         }
@@ -177,7 +179,7 @@ namespace AutoCADCommands
             if (_originalValues.Count <= 1 || _originalValues.All(v => v == _originalValues[0]))
             {
                 // All values are the same, replace {} with the actual value
-                string actualValue = _originalValues.Count > 0 ? _originalValues[0] : "";
+                string actualValue = _originalValues.Count > 0 ? EscapeForDisplay(_originalValues[0]) : "";
                 _txtPattern.Text = _txtPattern.Text.Replace("{}", actualValue);
 
                 // Set focus to pattern field since it's first in the list
@@ -206,7 +208,9 @@ namespace AutoCADCommands
                     // Apply the transformation using the same logic as DataRenamerHelper
                     string transformedValue = TransformValue(originalValue, dataRow);
 
-                    _rtbAfter.AppendText(transformedValue + Environment.NewLine);
+                    // Escape newlines for display in preview
+                    string displayValue = EscapeForDisplay(transformedValue);
+                    _rtbAfter.AppendText(displayValue + Environment.NewLine);
                 }
             }
             catch (Exception ex)
@@ -227,7 +231,7 @@ namespace AutoCADCommands
             // 1. Pattern transformation (applied first as base)
             if (!string.IsNullOrEmpty(_txtPattern.Text))
             {
-                string patternResult = _txtPattern.Text;
+                string patternResult = UnescapeFromDisplay(_txtPattern.Text);
 
                 // Replace {} with the original value
                 patternResult = patternResult.Replace("{}", originalValue);
@@ -250,7 +254,9 @@ namespace AutoCADCommands
             // 2. Find/Replace transformation (takes precedence - applied to pattern result)
             if (!string.IsNullOrEmpty(_txtFind.Text))
             {
-                result = result.Replace(_txtFind.Text, _txtReplace.Text ?? "");
+                string findText = UnescapeFromDisplay(_txtFind.Text);
+                string replaceText = UnescapeFromDisplay(_txtReplace.Text ?? "");
+                result = result.Replace(findText, replaceText);
             }
 
             // 3. Math transformation (takes precedence - applied to result of pattern + find/replace)
@@ -332,6 +338,47 @@ namespace AutoCADCommands
                 return doubleVal.ToString();
             }
             return computedValue.ToString();
+        }
+
+        /// <summary>
+        /// Escape newlines and other special characters for display in text fields
+        /// Skip escaping if text contains AutoCAD MText formatting codes
+        /// </summary>
+        private static string EscapeForDisplay(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return text;
+
+            // If text contains AutoCAD MText formatting codes, don't escape - show as-is
+            if (text.Contains("\\P") || text.Contains("\\p"))
+                return text;
+
+            return text
+                .Replace("\\", "\\\\")
+                .Replace("\r\n", "\\n")  // Convert \r\n to \n first
+                .Replace("\n", "\\n")   // Then convert remaining \n
+                .Replace("\r", "\\n")   // Convert standalone \r to \n
+                .Replace("\t", "\\t");
+        }
+
+        /// <summary>
+        /// Unescape display characters back to actual characters
+        /// Skip unescaping if text contains AutoCAD MText formatting codes
+        /// </summary>
+        private static string UnescapeFromDisplay(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return text;
+
+            // If text contains AutoCAD MText formatting codes, don't unescape - use as-is
+            if (text.Contains("\\P") || text.Contains("\\p"))
+                return text;
+
+            // Process in specific order to handle escaped sequences properly
+            return text
+                .Replace("\\n", "\n")   // Convert \n back to actual newlines
+                .Replace("\\t", "\t")   // Convert \t back to actual tabs
+                .Replace("\\\\", "\\"); // Convert \\ back to single backslash (must be last)
         }
     }
 }

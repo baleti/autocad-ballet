@@ -272,11 +272,15 @@ namespace AutoCADCommands
             }
             else if (entity is MText mtext)
             {
+                // For multiline MText, show the raw Contents (with formatting codes) instead of plain Text
+                // This preserves all formatting and lets users edit the actual AutoCAD formatting
+                string textContent = mtext.Text.Contains("\n") ? mtext.Contents : mtext.Text;
+
                 return new TextEntity
                 {
                     DocumentPath = documentPath,
                     Handle = handle,
-                    Text = mtext.Text,
+                    Text = textContent,
                     EntityType = TextEntityType.MText
                 };
             }
@@ -344,10 +348,9 @@ namespace AutoCADCommands
                                 }
                                 else if (entity is MText mtext)
                                 {
-                                    // Preserve formatting by replacing only text content, not formatting codes
-                                    string formattedText = ReplaceTextPreservingFormatting(mtext.Contents, textEntity.Text, newText);
-                                    ed.WriteMessage($"\n  Updating MText from '{mtext.Contents}' to '{formattedText}'");
-                                    mtext.Contents = formattedText;
+                                    ed.WriteMessage($"\n  Updating MText from '{mtext.Contents}' to '{newText}'");
+                                    // Direct contents replacement - newText already contains proper formatting codes
+                                    mtext.Contents = newText;
                                     modifiedCount++;
                                 }
                             }
