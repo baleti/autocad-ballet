@@ -229,16 +229,17 @@ namespace AutocadBallet
                 // Invoke the chosen method
                 InvokeCommandMethod(selectedCmd, assembly, ed);
 
-                ed.WriteMessage($"\nCommand completed successfully.");
+                // Use safe messaging that handles document closure scenarios
+                SafeWriteMessage(ed, $"\nCommand completed successfully.");
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\n[InvokeAddin] Error: {ex.Message}");
+                SafeWriteMessage(ed, $"\n[InvokeAddin] Error: {ex.Message}");
                 if (ex.InnerException != null)
                 {
-                    ed.WriteMessage($"\n  Inner: {ex.InnerException.Message}");
+                    SafeWriteMessage(ed, $"\n  Inner: {ex.InnerException.Message}");
                 }
-                ed.WriteMessage($"\n  Stack: {ex.StackTrace}");
+                SafeWriteMessage(ed, $"\n  Stack: {ex.StackTrace}");
             }
             finally
             {
@@ -457,19 +458,30 @@ namespace AutocadBallet
         {
             try
             {
-                // Use AutoCAD's command line to properly invoke the command
-                // This preserves the complete command context including pickfirst set
-                string commandName = info.CommandName;
+                ed.WriteMessage($"\nExecuting command: {info.CommandName}");
 
-                ed.WriteMessage($"\nExecuting command: {commandName}");
+                // Find the type and method
+                Type targetType = assembly.GetType(info.FullTypeName);
+                if (targetType == null)
+                {
+                    throw new InvalidOperationException($"Type '{info.FullTypeName}' not found in assembly");
+                }
 
-                // Queue the command to be executed by AutoCAD's command processor
-                // This approach maintains the proper command context
-                var doc = AcAp.DocumentManager.MdiActiveDocument;
+                MethodInfo targetMethod = targetType.GetMethod(info.MethodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                if (targetMethod == null)
+                {
+                    throw new InvalidOperationException($"Method '{info.MethodName}' not found in type '{info.FullTypeName}'");
+                }
 
-                // Use synchronous execution to maintain the command flow
-                // The key is to let AutoCAD's command processor handle it
-                doc.SendStringToExecute($"{commandName} ", true, false, true);
+                // Create instance if method is not static
+                object instance = null;
+                if (!targetMethod.IsStatic)
+                {
+                    instance = Activator.CreateInstance(targetType);
+                }
+
+                // Invoke the method directly to preserve pickfirst selection
+                targetMethod.Invoke(instance, null);
             }
             catch (System.Exception ex)
             {
@@ -500,6 +512,42 @@ namespace AutocadBallet
                 // Don't let save failures break the command execution
                 var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;
                 ed?.WriteMessage($"\nWarning: Failed to save command history: {ex.Message}");
+            }
+        }
+
+        private static void SafeWriteMessage(Editor ed, string message)
+        {
+            try
+            {
+                // Try to use the original editor first
+                ed.WriteMessage(message);
+            }
+            catch (Autodesk.AutoCAD.Runtime.Exception)
+            {
+                // If original editor fails (document closed), try application-level messaging
+                try
+                {
+                    var activeDoc = AcAp.DocumentManager.MdiActiveDocument;
+                    activeDoc?.Editor?.WriteMessage(message);
+                }
+                catch
+                {
+                    // If all fails, silently ignore - command executed but can't report status
+                    System.Diagnostics.Debug.WriteLine($"[SafeWriteMessage] {message}");
+                }
+            }
+            catch (System.Exception)
+            {
+                // Handle any other exception type
+                try
+                {
+                    var activeDoc = AcAp.DocumentManager.MdiActiveDocument;
+                    activeDoc?.Editor?.WriteMessage(message);
+                }
+                catch
+                {
+                    System.Diagnostics.Debug.WriteLine($"[SafeWriteMessage] {message}");
+                }
             }
         }
     }
