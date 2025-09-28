@@ -1,6 +1,7 @@
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
+using Autodesk.AutoCAD.PlottingServices;
 using Autodesk.AutoCAD.Runtime;
 using System;
 using System.Collections;
@@ -160,25 +161,27 @@ namespace AutoCADBallet
 
                     int totalDuplicated = 0;
 
-                    // Separate same-document and cross-document operations
-                    var sameDocLayouts = layoutsByDocument.Where(g => g.Key == activeDoc).ToList();
-                    var crossDocLayouts = layoutsByDocument.Where(g => g.Key != activeDoc).ToList();
-
-                    // Process same-document layouts first (no document switching needed)
-                    foreach (var docGroup in sameDocLayouts)
+                    // Process all documents without switching
+                    foreach (var docGroup in layoutsByDocument)
                     {
                         Document targetDoc = docGroup.Key;
-                        totalDuplicated += ProcessLayoutsInDocument(docGroup, targetDoc, activeDoc, docs, ed);
+                        int duplicatedInDoc = ProcessLayoutsWithCloning(docGroup, targetDoc, ed);
+                        totalDuplicated += duplicatedInDoc;
+                        
+                        string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
+                        if (duplicatedInDoc > 0)
+                        {
+                            ed.WriteMessage($"\nSuccessfully duplicated {duplicatedInDoc} layout(s) in '{docName}'.");
+                        }
                     }
 
-                    // Process cross-document layouts (requires document switching with events)
-                    foreach (var docGroup in crossDocLayouts)
+                    ed.WriteMessage($"\n\nTotal: {totalDuplicated} layout(s) duplicated successfully.");
+                    
+                    // Request regen for the active document only if layouts were duplicated there
+                    if (layoutsByDocument.Any(g => g.Key == activeDoc))
                     {
-                        Document targetDoc = docGroup.Key;
-                        ProcessCrossDocumentLayouts(docGroup, targetDoc, activeDoc, docs, ed);
+                        activeDoc.SendStringToExecute("_.REGENALL ", true, false, false);
                     }
-
-                    ed.WriteMessage($"\nSuccessfully duplicated {totalDuplicated} layout(s).");
                 }
             }
             catch (System.Exception ex)
@@ -187,22 +190,20 @@ namespace AutoCADBallet
             }
         }
 
-        private int ProcessLayoutsInDocument(IGrouping<Document, Dictionary<string, object>> docGroup, Document targetDoc, Document activeDoc, DocumentCollection docs, Editor ed)
+        private int ProcessLayoutsWithCloning(IGrouping<Document, Dictionary<string, object>> docGroup, 
+            Document targetDoc, Editor ed)
         {
             int duplicatedCount = 0;
-            bool regenRequested = false;
-            Editor logEditor = null;
+            Database targetDb = targetDoc.Database;
 
             try
             {
-                logEditor = targetDoc?.Editor ?? ed;
-
                 using (DocumentLock docLock = targetDoc.LockDocument())
                 {
-                    using (Transaction tr = targetDoc.Database.TransactionManager.StartTransaction())
+                    using (Transaction tr = targetDb.TransactionManager.StartTransaction())
                     {
-                        DBDictionary layoutDict = tr.GetObject(targetDoc.Database.LayoutDictionaryId, OpenMode.ForWrite) as DBDictionary;
-                        LayoutManager layoutMgr = LayoutManager.Current;
+                        DBDictionary layoutDict = tr.GetObject(targetDb.LayoutDictionaryId, OpenMode.ForWrite) as DBDictionary;
+                        BlockTable bt = tr.GetObject(targetDb.BlockTableId, OpenMode.ForWrite) as BlockTable;
 
                         // Process selected layouts in reverse tab order to maintain proper positioning
                         var selectedLayouts = docGroup.OrderByDescending(l =>
@@ -217,380 +218,406 @@ namespace AutoCADBallet
                             try
                             {
                                 string originalName = selectedLayout["LayoutName"].ToString();
-                                string newName = originalName + " - Copy";
+                                ObjectId sourceLayoutId = (ObjectId)selectedLayout["ObjectId"];
+                                Document sourceDoc = selectedLayout["DocumentObject"] as Document;
 
-                                // Ensure unique name
-                                int counter = 1;
-                                string baseName = newName;
-                                while (layoutDict.Contains(newName))
+                                // Generate unique name
+                                string newName = GenerateUniqueName(originalName + " - Copy", layoutDict);
+
+                                if (sourceDoc == targetDoc)
                                 {
-                                    newName = baseName + $" ({counter})";
-                                    counter++;
-                                }
+                                    // Same document - clone within same transaction
+                                    ObjectId newLayoutId = CloneLayoutInSameDocument(
+                                        sourceLayoutId, newName, layoutDict, bt, tr);
 
-                                // Get the original layout's tab order
-                                int originalTabOrder = int.Parse(selectedLayout["TabOrder"].ToString());
-
-                                // Create new layout (only works on active document)
-                                ObjectId newLayoutId = layoutMgr.CreateLayout(newName);
-                                Layout newLayout = tr.GetObject(newLayoutId, OpenMode.ForWrite) as Layout;
-                                Layout originalLayout = tr.GetObject((ObjectId)selectedLayout["ObjectId"], OpenMode.ForRead) as Layout;
-
-                                if (newLayout != null && originalLayout != null)
-                                {
-                                    // Copy layout properties
-                                    newLayout.CopyFrom(originalLayout);
-
-                                    // Set the tab order to be directly after the original
-                                    int targetTabOrder = originalTabOrder + 1;
-
-                                    // Shift tab orders of all layouts that come after the original
-                                    foreach (DictionaryEntry entry in layoutDict)
+                                    if (newLayoutId != ObjectId.Null)
                                     {
-                                        Layout layout = tr.GetObject((ObjectId)entry.Value, OpenMode.ForWrite) as Layout;
-                                        if (layout != null && layout.TabOrder >= targetTabOrder && layout.ObjectId != newLayoutId)
-                                        {
-                                            layout.TabOrder = layout.TabOrder + 1;
-                                        }
+                                        duplicatedCount++;
+                                        ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}'");
                                     }
+                                }
+                                else
+                                {
+                                    // Cross-document - need to handle with separate transaction
+                                    ObjectId newLayoutId = CloneLayoutCrossDocument(
+                                        sourceDoc, sourceLayoutId, targetDoc, newName, tr);
 
-                                    // Set the new layout's tab order
-                                    newLayout.TabOrder = targetTabOrder;
-
-                                    // Copy all entities from original layout to new layout
-                                    CopyLayoutEntities(selectedLayout, newLayout, tr, targetDoc);
-
-                                    // Preserve layout-specific system variables
-                                    PreserveLayoutSystemVariables(selectedLayout, newName, targetDoc, layoutMgr);
-
-                                    regenRequested = true;
-                                    string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
-                                    logEditor?.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}' in document '{docName}'");
-                                    duplicatedCount++;
+                                    if (newLayoutId != ObjectId.Null)
+                                    {
+                                        duplicatedCount++;
+                                        ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}' from '{Path.GetFileNameWithoutExtension(sourceDoc.Name)}'");
+                                    }
                                 }
                             }
                             catch (System.Exception ex)
                             {
-                                string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
-                                logEditor?.WriteMessage($"\nError duplicating layout '{selectedLayout["LayoutName"]}' in document '{docName}': {ex.Message}");
+                                ed.WriteMessage($"\nError duplicating layout '{selectedLayout["LayoutName"]}': {ex.Message}");
                             }
                         }
 
                         tr.Commit();
                     }
                 }
-
-                if (regenRequested)
-                {
-                    RequestLayoutRegen(targetDoc, targetDoc == activeDoc);
-                }
             }
             catch (System.Exception ex)
             {
                 string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
-                (logEditor ?? ed)?.WriteMessage($"\nError processing document '{docName}': {ex.Message}");
+                ed.WriteMessage($"\nError processing document '{docName}': {ex.Message}");
             }
 
             return duplicatedCount;
         }
 
-        private void RequestLayoutRegen(Document targetDoc, bool activateDocument)
+        private ObjectId CloneLayoutInSameDocument(ObjectId sourceLayoutId, string newName, 
+            DBDictionary layoutDict, BlockTable bt, Transaction tr)
         {
-            if (targetDoc == null)
-            {
-                return;
-            }
-
             try
             {
-                // Queue REGENALL so the graphics refresh once the command completes
-                targetDoc.SendStringToExecute("_.REGENALL ", activateDocument, false, false);
+                Layout sourceLayout = tr.GetObject(sourceLayoutId, OpenMode.ForRead) as Layout;
+                if (sourceLayout == null) return ObjectId.Null;
+
+                BlockTableRecord sourceBtr = tr.GetObject(sourceLayout.BlockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
+
+                // Create new block table record for the new layout's paper space
+                BlockTableRecord newBtr = new BlockTableRecord();
+                newBtr.Name = "*Paper_Space" + GetNextPaperSpaceIndex(bt, tr);
+                
+                ObjectId newBtrId = bt.Add(newBtr);
+                tr.AddNewlyCreatedDBObject(newBtr, true);
+
+                // Clone all entities from source BTR to new BTR
+                ObjectIdCollection entityIds = new ObjectIdCollection();
+                foreach (ObjectId id in sourceBtr)
+                {
+                    entityIds.Add(id);
+                }
+
+                if (entityIds.Count > 0)
+                {
+                    IdMapping idMap = new IdMapping();
+                    sourceLayout.Database.DeepCloneObjects(entityIds, newBtrId, idMap, false);
+                }
+
+                // Create new layout
+                Layout newLayout = new Layout();
+                newLayout.LayoutName = newName;
+                newLayout.BlockTableRecordId = newBtrId;
+
+                // Copy properties from source layout using CopyFrom method
+                newLayout.CopyFrom(sourceLayout);
+                
+                // Ensure the layout name and BTR link survive CopyFrom
+                newLayout.LayoutName = newName;
+                newLayout.BlockTableRecordId = newBtrId;
+
+                // Add to layout dictionary
+                ObjectId newLayoutId = layoutDict.SetAt(newName, newLayout);
+                tr.AddNewlyCreatedDBObject(newLayout, true);
+
+                // Link the new block table record back to this layout
+                newBtr.UpgradeOpen();
+                newBtr.LayoutId = newLayoutId;
+
+                // Adjust tab orders
+                AdjustTabOrders(layoutDict, sourceLayout.TabOrder, newLayout, tr);
+
+                // Copy viewports separately (they need special handling)
+                CopyViewports(sourceBtr, newBtr, tr);
+
+                return newLayoutId;
+            }
+            catch (System.Exception ex)
+            {
+                throw new System.Exception($"Failed to clone layout: {ex.Message}", ex);
+            }
+        }
+
+        private ObjectId CloneLayoutCrossDocument(Document sourceDoc, ObjectId sourceLayoutId, 
+            Document targetDoc, string newName, Transaction targetTr)
+        {
+            try
+            {
+                Database sourceDb = sourceDoc.Database;
+                Database targetDb = targetDoc.Database;
+
+                using (DocumentLock sourceLock = sourceDoc.LockDocument())
+                {
+                    using (Transaction sourceTr = sourceDb.TransactionManager.StartTransaction())
+                    {
+                        Layout sourceLayout = sourceTr.GetObject(sourceLayoutId, OpenMode.ForRead) as Layout;
+                        if (sourceLayout == null) return ObjectId.Null;
+
+                        BlockTableRecord sourceBtr = sourceTr.GetObject(sourceLayout.BlockTableRecordId, 
+                            OpenMode.ForRead) as BlockTableRecord;
+
+                        // Get target database objects
+                        DBDictionary layoutDict = targetTr.GetObject(targetDb.LayoutDictionaryId, 
+                            OpenMode.ForWrite) as DBDictionary;
+                        BlockTable bt = targetTr.GetObject(targetDb.BlockTableId, OpenMode.ForWrite) as BlockTable;
+
+                        // Create new block table record for the new layout's paper space
+                        BlockTableRecord newBtr = new BlockTableRecord();
+                        newBtr.Name = "*Paper_Space" + GetNextPaperSpaceIndex(bt, targetTr);
+                        
+                        ObjectId newBtrId = bt.Add(newBtr);
+                        targetTr.AddNewlyCreatedDBObject(newBtr, true);
+
+                        // Clone all entities from source BTR to new BTR (cross-database)
+                        ObjectIdCollection entityIds = new ObjectIdCollection();
+                        foreach (ObjectId id in sourceBtr)
+                        {
+                            entityIds.Add(id);
+                        }
+
+                        if (entityIds.Count > 0)
+                        {
+                            IdMapping idMap = new IdMapping();
+                            sourceDb.WblockCloneObjects(entityIds, newBtrId, idMap, 
+                                DuplicateRecordCloning.Replace, false);
+                        }
+
+                        // Create new layout in target database
+                        Layout newLayout = new Layout();
+                        newLayout.LayoutName = newName;
+                        newLayout.BlockTableRecordId = newBtrId;
+
+                        // Copy plot settings using PlotSettingsValidator (cross-database safe)
+                        CopyPlotSettings(sourceLayout, newLayout, targetDb);
+
+                        // Add to layout dictionary
+                        ObjectId newLayoutId = layoutDict.SetAt(newName, newLayout);
+                        targetTr.AddNewlyCreatedDBObject(newLayout, true);
+
+                        // Link the new block table record back to this layout
+                        newBtr.UpgradeOpen();
+                        newBtr.LayoutId = newLayoutId;
+
+                        // Adjust tab orders
+                        AdjustTabOrders(layoutDict, sourceLayout.TabOrder, newLayout, targetTr);
+
+                        sourceTr.Commit();
+                        return newLayoutId;
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                throw new System.Exception($"Failed to clone layout cross-document: {ex.Message}", ex);
+            }
+        }
+
+        private void CopyPlotSettings(Layout source, Layout target, Database targetDb)
+        {
+            try
+            {
+                // Use PlotSettingsValidator to properly copy plot settings
+                using (PlotSettingsValidator psv = PlotSettingsValidator.Current)
+                {
+                    // Copy basic settings that can be directly assigned
+                    target.PlotSettingsName = source.PlotSettingsName;
+                    target.PrintLineweights = source.PrintLineweights;
+                    target.ShowPlotStyles = source.ShowPlotStyles;
+                    target.PlotTransparency = source.PlotTransparency;
+                    target.PlotPlotStyles = source.PlotPlotStyles;
+                    target.DrawViewportsFirst = source.DrawViewportsFirst;
+                    target.PlotHidden = source.PlotHidden;
+                    target.PlotViewportBorders = source.PlotViewportBorders;
+                    target.ScaleLineweights = source.ScaleLineweights;
+
+                    // Try to set the plot configuration name using PlotSettingsValidator
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(source.PlotConfigurationName))
+                        {
+                            psv.SetPlotConfigurationName(target, source.PlotConfigurationName, 
+                                source.CanonicalMediaName);
+                        }
+                    }
+                    catch { /* If device not available, skip */ }
+
+                    // Set plot type and related settings
+                    try
+                    {
+                        psv.SetPlotType(target, source.PlotType);
+                        
+                        if (source.PlotType == Autodesk.AutoCAD.DatabaseServices.PlotType.Window)
+                        {
+                            psv.SetPlotWindowArea(target, source.PlotWindowArea);
+                        }
+                    }
+                    catch { /* Use defaults if this fails */ }
+
+                    // Set rotation
+                    try
+                    {
+                        psv.SetPlotRotation(target, source.PlotRotation);
+                    }
+                    catch { /* Use default if this fails */ }
+
+                    // Set plot origin
+                    try
+                    {
+                        psv.SetPlotOrigin(target, source.PlotOrigin);
+                    }
+                    catch { /* Use default if this fails */ }
+
+                    // Set plot centering
+                    try
+                    {
+                        psv.SetPlotCentered(target, source.PlotCentered);
+                    }
+                    catch { /* Use default if this fails */ }
+
+                    // Set scale
+                    try
+                    {
+                        if (source.UseStandardScale)
+                        {
+                            psv.SetStdScaleType(target, source.StdScaleType);
+                        }
+                        else
+                        {
+                            psv.SetCustomPrintScale(target, source.CustomPrintScale);
+                        }
+                    }
+                    catch { /* Use defaults if this fails */ }
+
+                    // Set the current style sheet
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(source.CurrentStyleSheet))
+                        {
+                            psv.SetCurrentStyleSheet(target, source.CurrentStyleSheet);
+                        }
+                    }
+                    catch { /* Use default if this fails */ }
+                }
             }
             catch
             {
-                try
+                // If PlotSettingsValidator fails, at least the basic properties are copied
+            }
+        }
+
+        private void CopyViewports(BlockTableRecord sourceBtr, BlockTableRecord targetBtr, Transaction tr)
+        {
+            try
+            {
+                // Find viewports in source BTR
+                List<Viewport> sourceViewports = new List<Viewport>();
+                foreach (ObjectId id in sourceBtr)
                 {
-                    targetDoc.Editor.Regen();
+                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (ent is Viewport vp && vp.Number != 1) // Skip paper space viewport
+                    {
+                        sourceViewports.Add(vp);
+                    }
                 }
-                catch
+
+                // Find corresponding viewports in target BTR
+                List<Viewport> targetViewports = new List<Viewport>();
+                foreach (ObjectId id in targetBtr)
                 {
+                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                    if (ent is Viewport vp && vp.Number != 1)
+                    {
+                        targetViewports.Add(vp);
+                    }
+                }
+
+                // Match and copy viewport properties
+                for (int i = 0; i < Math.Min(sourceViewports.Count, targetViewports.Count); i++)
+                {
+                    Viewport sourceVp = sourceViewports[i];
+                    Viewport targetVp = targetViewports[i];
+                    
+                    targetVp.UpgradeOpen();
+                    
+                    // Copy viewport properties
+                    targetVp.ViewCenter = sourceVp.ViewCenter;
+                    targetVp.ViewHeight = sourceVp.ViewHeight;
+                    targetVp.ViewTarget = sourceVp.ViewTarget;
+                    targetVp.ViewDirection = sourceVp.ViewDirection;
+                    targetVp.TwistAngle = sourceVp.TwistAngle;
+                    targetVp.Locked = sourceVp.Locked;
+                    targetVp.On = sourceVp.On;
+                    
+                    if (!sourceVp.NonRectClipOn)
+                    {
+                        targetVp.Width = sourceVp.Width;
+                        targetVp.Height = sourceVp.Height;
+                        targetVp.CenterPoint = sourceVp.CenterPoint;
+                    }
+                    
+                    // Copy frozen layers in viewport
                     try
                     {
-                        targetDoc.Editor.UpdateScreen();
-                    }
-                    catch
-                    {
-                        // If all regeneration attempts fail, leave the layouts as-is
-                    }
-                }
-            }
-        }
-
-        private void ProcessCrossDocumentLayouts(IGrouping<Document, Dictionary<string, object>> docGroup, Document targetDoc, Document activeDoc, DocumentCollection docs, Editor ed)
-        {
-            // For cross-document operations, use the DocumentActivated event pattern from CLAUDE.md
-            var layoutsToProcess = docGroup.ToList();
-
-            if (layoutsToProcess.Count == 0) return;
-
-            // Set up event handler for when document activation completes
-            DocumentCollectionEventHandler handler = null;
-            handler = (sender, e) =>
-            {
-                if (e.Document == targetDoc)
-                {
-                    // Unsubscribe from event to avoid memory leaks
-                    docs.DocumentActivated -= handler;
-
-                    try
-                    {
-                        // Now we can safely perform layout operations on the activated document
-                        int duplicatedInDoc = ProcessLayoutsInDocument(
-                            layoutsToProcess.GroupBy(l => targetDoc).First(),
-                            targetDoc,
-                            activeDoc,
-                            docs,
-                            ed
-                        );
-
-                        // Switch back to original document before writing status to its command line
-                        docs.MdiActiveDocument = activeDoc;
-                        activeDoc?.Editor?.WriteMessage($"\nCross-document operation completed: {duplicatedInDoc} layout(s) duplicated in '{Path.GetFileNameWithoutExtension(targetDoc.Name)}'");
-                    }
-                    catch (System.Exception ex)
-                    {
-                        string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
-                        try { docs.MdiActiveDocument = activeDoc; } catch { }
-                        activeDoc?.Editor?.WriteMessage($"\nError in cross-document operation for '{docName}': {ex.Message}");
-                    }
-                }
-            };
-
-            docs.DocumentActivated += handler;
-            docs.MdiActiveDocument = targetDoc;
-        }
-
-        private void CopyLayoutEntities(Dictionary<string, object> selectedLayout, Layout newLayout, Transaction targetTr, Document targetDoc)
-        {
-            try
-            {
-                Document sourceDoc = selectedLayout["DocumentObject"] as Document;
-                ObjectId sourceLayoutId = (ObjectId)selectedLayout["ObjectId"];
-
-                if (sourceDoc == null)
-                    return;
-
-                Database sourceDb = sourceDoc.Database;
-                Database targetDb = targetDoc.Database;
-                bool sameDocument = (sourceDoc == targetDoc);
-
-                if (sameDocument)
-                {
-                    // Same document - use current transaction
-                    Layout originalLayout = targetTr.GetObject(sourceLayoutId, OpenMode.ForRead) as Layout;
-                    BlockTableRecord originalBtr = targetTr.GetObject(originalLayout.BlockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
-                    BlockTableRecord newBtr = targetTr.GetObject(newLayout.BlockTableRecordId, OpenMode.ForWrite) as BlockTableRecord;
-
-                    if (originalBtr == null || newBtr == null)
-                        return;
-
-                    // Collect all entity IDs from the original layout
-                    var entityIds = new ObjectIdCollection();
-                    foreach (ObjectId entityId in originalBtr)
-                    {
-                        Entity entity = targetTr.GetObject(entityId, OpenMode.ForRead) as Entity;
-                        if (entity != null)
+                        ObjectIdCollection frozenLayers = sourceVp.GetFrozenLayers();
+                        if (frozenLayers != null && frozenLayers.Count > 0)
                         {
-                            entityIds.Add(entityId);
+                            foreach (ObjectId layerId in frozenLayers)
+                            {
+                                targetVp.FreezeLayersInViewport(frozenLayers.Cast<ObjectId>().GetEnumerator());
+                                break; // Only need to do this once
+                            }
                         }
                     }
-
-                    // If there are entities to copy
-                    if (entityIds.Count > 0)
-                    {
-                        // Same database - use DeepClone
-                        IdMapping idMap = new IdMapping();
-                        targetDb.DeepCloneObjects(entityIds, newBtr.ObjectId, idMap, false);
-                    }
-                }
-                else
-                {
-                    // Cross-document copying - need separate transactions
-                    using (DocumentLock sourceLock = sourceDoc.LockDocument())
-                    {
-                        using (Transaction sourceTr = sourceDb.TransactionManager.StartTransaction())
-                        {
-                            Layout originalLayout = sourceTr.GetObject(sourceLayoutId, OpenMode.ForRead) as Layout;
-                            BlockTableRecord originalBtr = sourceTr.GetObject(originalLayout.BlockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
-                            BlockTableRecord newBtr = targetTr.GetObject(newLayout.BlockTableRecordId, OpenMode.ForWrite) as BlockTableRecord;
-
-                            if (originalBtr == null || newBtr == null)
-                                return;
-
-                            // Collect all entity IDs from the original layout
-                            var entityIds = new ObjectIdCollection();
-                            foreach (ObjectId entityId in originalBtr)
-                            {
-                                Entity entity = sourceTr.GetObject(entityId, OpenMode.ForRead) as Entity;
-                                if (entity != null)
-                                {
-                                    entityIds.Add(entityId);
-                                }
-                            }
-
-                            // If there are entities to copy
-                            if (entityIds.Count > 0)
-                            {
-                                // Cross-database - use WblockCloneObjects
-                                IdMapping idMap = new IdMapping();
-                                sourceDb.WblockCloneObjects(entityIds, newBtr.ObjectId, idMap, DuplicateRecordCloning.Replace, false);
-                            }
-
-                            sourceTr.Commit();
-                        }
-                    }
+                    catch { /* Skip layer freezing if it fails */ }
                 }
             }
             catch (System.Exception)
             {
-                // If entity copying fails, continue without entities
-                // The layout structure will still be duplicated
+                // If viewport copying fails, continue without them
             }
         }
 
-        private void PreserveLayoutSystemVariables(Dictionary<string, object> selectedLayout, string newLayoutName, Document targetDoc, LayoutManager layoutMgr)
+        private string GenerateUniqueName(string baseName, DBDictionary layoutDict)
         {
-            try
+            string newName = baseName;
+            int counter = 1;
+
+            while (layoutDict.Contains(newName))
             {
-                Document sourceDoc = selectedLayout["DocumentObject"] as Document;
-                string sourceLayoutName = selectedLayout["LayoutName"].ToString();
-
-                if (sourceDoc == null)
-                    return;
-
-                // Get current system variable values from source layout
-                Dictionary<string, object> sourceVariables = GetLayoutSystemVariables(sourceDoc, sourceLayoutName);
-
-                // Apply these values to the new layout
-                ApplyLayoutSystemVariables(targetDoc, newLayoutName, sourceVariables, layoutMgr);
+                newName = $"{baseName} ({counter})";
+                counter++;
             }
-            catch (System.Exception)
-            {
-                // If system variable preservation fails, continue without it
-                // The layout and entities will still be duplicated
-            }
+
+            return newName;
         }
 
-        private Dictionary<string, object> GetLayoutSystemVariables(Document sourceDoc, string layoutName)
+        private string GetNextPaperSpaceIndex(BlockTable bt, Transaction tr)
         {
-            var variables = new Dictionary<string, object>();
-
-            try
+            int index = 0;
+            string baseName = "*Paper_Space";
+            
+            // Find the next available index
+            while (bt.Has(baseName + index))
             {
-                // For cross-document system variables, we'll use default safe values
-                // Since PSLTSCALE and other variables can't be reliably read from non-active documents
-                // without switching, we'll preserve the most common settings
-
-                if (sourceDoc == AcadApp.DocumentManager.MdiActiveDocument)
-                {
-                    // Same document - can safely read current values
-                    using (DocumentLock docLock = sourceDoc.LockDocument())
-                    {
-                        // Temporarily switch to the source layout to get its system variables
-                        string currentLayout = LayoutManager.Current.CurrentLayout;
-                        bool needToSwitchBack = (currentLayout != layoutName);
-
-                        if (needToSwitchBack)
-                        {
-                            using (DocumentLock layoutLock = sourceDoc.LockDocument())
-                            {
-                                LayoutManager.Current.CurrentLayout = layoutName;
-                            }
-                        }
-
-                        // Capture layout-specific system variables
-                        variables["PSLTSCALE"] = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("PSLTSCALE");
-                        variables["MSLTSCALE"] = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("MSLTSCALE");
-                        variables["LTSCALE"] = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("LTSCALE");
-                        variables["LIMMIN"] = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("LIMMIN");
-                        variables["LIMMAX"] = Autodesk.AutoCAD.ApplicationServices.Application.GetSystemVariable("LIMMAX");
-
-                        // Switch back to original layout if we changed it
-                        if (needToSwitchBack)
-                        {
-                            using (DocumentLock layoutLock = sourceDoc.LockDocument())
-                            {
-                                LayoutManager.Current.CurrentLayout = currentLayout;
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    // Cross-document - use safe default values (most common settings)
-                    // These will be overridden by the event-driven approach for cross-document
-                    variables["PSLTSCALE"] = 0; // Most architectural drawings use 0
-                    variables["MSLTSCALE"] = 1; // Standard setting
-                    variables["LTSCALE"] = 1.0; // Standard scale
-                    variables["LIMMIN"] = new double[] { 0.0, 0.0 }; // Standard limits
-                    variables["LIMMAX"] = new double[] { 420.0, 297.0 }; // A3 metric default
-                }
+                index++;
             }
-            catch (System.Exception)
-            {
-                // If we can't get the variables, use safe defaults
-                variables["PSLTSCALE"] = 0;
-                variables["MSLTSCALE"] = 1;
-                variables["LTSCALE"] = 1.0;
-                variables["LIMMIN"] = new double[] { 0.0, 0.0 };
-                variables["LIMMAX"] = new double[] { 420.0, 297.0 };
-            }
-
-            return variables;
+            
+            return index.ToString();
         }
 
-        private void ApplyLayoutSystemVariables(Document targetDoc, string layoutName, Dictionary<string, object> variables, LayoutManager layoutMgr)
+        private void AdjustTabOrders(DBDictionary layoutDict, int originalTabOrder, 
+            Layout newLayout, Transaction tr)
         {
-            try
+            int targetTabOrder = originalTabOrder + 1;
+
+            // Shift existing tab orders
+            foreach (DBDictionaryEntry entry in layoutDict)
             {
-                if (variables.Count == 0)
-                    return;
-
-                using (DocumentLock docLock = targetDoc.LockDocument())
+                if (entry.Value != newLayout.ObjectId)
                 {
-                    // Temporarily switch to the new layout to set its system variables
-                    string currentLayout = LayoutManager.Current.CurrentLayout;
-                    bool needToSwitchBack = (currentLayout != layoutName);
-
-                    if (needToSwitchBack)
+                    Layout layout = tr.GetObject(entry.Value, OpenMode.ForWrite) as Layout;
+                    if (layout != null && layout.TabOrder >= targetTabOrder)
                     {
-                        LayoutManager.Current.CurrentLayout = layoutName;
-                    }
-
-                    // Apply the captured system variables
-                    foreach (var variable in variables)
-                    {
-                        try
-                        {
-                            Autodesk.AutoCAD.ApplicationServices.Application.SetSystemVariable(variable.Key, variable.Value);
-                        }
-                        catch (System.Exception)
-                        {
-                            // Skip individual variables that fail to set
-                        }
-                    }
-
-                    // Switch back to original layout if we changed it
-                    if (needToSwitchBack)
-                    {
-                        LayoutManager.Current.CurrentLayout = currentLayout;
+                        layout.TabOrder++;
                     }
                 }
             }
-            catch (System.Exception)
-            {
-                // If we can't apply the variables, continue without them
-            }
+
+            newLayout.TabOrder = targetTabOrder;
         }
     }
 }
