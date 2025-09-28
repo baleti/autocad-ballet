@@ -6,6 +6,7 @@ using Autodesk.AutoCAD.Runtime;
 using AutoCADBallet;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -1010,34 +1011,57 @@ public static class FilterEntityDataHelper
             var xData = entity.XData;
             if (xData != null)
             {
-                var xDataApps = new List<string>();
-                var xDataValues = new List<string>();
+                var valuesByApp = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                string currentApp = null;
 
                 foreach (TypedValue typedValue in xData)
                 {
                     if (typedValue.TypeCode == (int)DxfCode.ExtendedDataRegAppName)
                     {
-                        xDataApps.Add(typedValue.Value.ToString());
-                    }
-                    else if (typedValue.TypeCode == (int)DxfCode.ExtendedDataAsciiString ||
-                             typedValue.TypeCode == (int)DxfCode.ExtendedDataReal ||
-                             typedValue.TypeCode == (int)DxfCode.ExtendedDataInteger16 ||
-                             typedValue.TypeCode == (int)DxfCode.ExtendedDataInteger32)
-                    {
-                        if (typedValue.Value != null)
+                        currentApp = typedValue.Value?.ToString();
+
+                        if (string.IsNullOrWhiteSpace(currentApp))
                         {
-                            xDataValues.Add(typedValue.Value.ToString());
+                            currentApp = null;
+                            continue;
+                        }
+
+                        if (!valuesByApp.ContainsKey(currentApp))
+                        {
+                            valuesByApp[currentApp] = new List<string>();
+                        }
+                    }
+                    else if (currentApp != null)
+                    {
+                        var formatted = FormatXDataValue(typedValue);
+                        if (!string.IsNullOrEmpty(formatted))
+                        {
+                            valuesByApp[currentApp].Add(formatted);
                         }
                     }
                 }
 
-                if (xDataApps.Any())
+                var usedColumnNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var kvp in valuesByApp)
                 {
-                    data["xdata_apps"] = string.Join(", ", xDataApps);
-                }
-                if (xDataValues.Any())
-                {
-                    data["xdata_values"] = string.Join(", ", xDataValues.Take(3)); // Limit to first 3 values
+                    if (!kvp.Value.Any())
+                    {
+                        continue;
+                    }
+
+                    var baseColumnName = $"xdata_{SanitizeXDataAppName(kvp.Key)}";
+                    var columnName = baseColumnName;
+                    var counter = 2;
+
+                    while (usedColumnNames.Contains(columnName) || data.ContainsKey(columnName))
+                    {
+                        columnName = $"{baseColumnName}_{counter}";
+                        counter++;
+                    }
+
+                    usedColumnNames.Add(columnName);
+                    data[columnName] = string.Join("; ", kvp.Value);
                 }
             }
 
@@ -1105,6 +1129,57 @@ public static class FilterEntityDataHelper
         {
             // Skip if extension data can't be read
         }
+    }
+
+    private static string FormatXDataValue(TypedValue typedValue)
+    {
+        if (typedValue.Value == null)
+        {
+            return string.Empty;
+        }
+
+        switch (typedValue.Value)
+        {
+            case string text:
+                return text;
+            case double real:
+                return real.ToString("G", CultureInfo.InvariantCulture);
+            case float singleValue:
+                return singleValue.ToString("G", CultureInfo.InvariantCulture);
+            case short int16:
+                return int16.ToString(CultureInfo.InvariantCulture);
+            case int int32:
+                return int32.ToString(CultureInfo.InvariantCulture);
+            case long int64:
+                return int64.ToString(CultureInfo.InvariantCulture);
+            case Point3d point3d:
+                return string.Format(CultureInfo.InvariantCulture, "{0:G}, {1:G}, {2:G}", point3d.X, point3d.Y, point3d.Z);
+            case Point2d point2d:
+                return string.Format(CultureInfo.InvariantCulture, "{0:G}, {1:G}", point2d.X, point2d.Y);
+            case bool boolean:
+                return boolean ? "True" : "False";
+            case Autodesk.AutoCAD.DatabaseServices.Handle handle:
+                return handle.ToString();
+            case ObjectId objectId:
+                return objectId.Handle.ToString();
+            case byte[] bytes:
+                return BitConverter.ToString(bytes);
+            default:
+                return typedValue.Value.ToString();
+        }
+    }
+
+    private static string SanitizeXDataAppName(string regAppName)
+    {
+        if (string.IsNullOrWhiteSpace(regAppName))
+        {
+            return "unnamed";
+        }
+
+        var sanitized = new string(regAppName.Select(ch =>
+            char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : '_').ToArray()).Trim('_');
+
+        return string.IsNullOrEmpty(sanitized) ? "unnamed" : sanitized;
     }
 
     public static bool IsGeometryProperty(string propertyName)
@@ -1220,15 +1295,26 @@ public abstract class FilterElementsBase
                 .Concat(documentPathProp)
                 .ToList();
 
+            // Reset the edits flag at the start of each DataGrid session
+            CustomGUIs.ResetEditsAppliedFlag();
+
             var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
+
+            // Check if any edits were applied during DataGrid interaction
+            bool editsWereApplied = CustomGUIs.HasPendingEdits() || CustomGUIs.WereEditsApplied();
+
             if (chosenRows.Count == 0)
             {
                 ed.WriteMessage("\nNo entities selected.\n");
-                // Restore original selection if user canceled and we're in view scope
-                if (originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+                // Only restore original selection if user canceled and we're in view scope AND no edits were applied
+                if (!editsWereApplied && originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
                 {
                     ed.SetImpliedSelection(originalSelection);
                     ed.WriteMessage($"Restored original selection of {originalSelection.Length} entities.\n");
+                }
+                else if (editsWereApplied)
+                {
+                    ed.WriteMessage("Entity modifications were applied. Selection not changed.\n");
                 }
                 return;
             }
@@ -1246,24 +1332,60 @@ public abstract class FilterElementsBase
                 }
                 else if (row.TryGetValue("ObjectId", out var objIdObj) && objIdObj is ObjectId objectId)
                 {
-                    selectedIds.Add(objectId);
+                    // Validate ObjectId before adding to avoid eInvalidInput errors
+                    if (!objectId.IsNull && objectId.IsValid)
+                    {
+                        try
+                        {
+                            // Quick validation by checking if object exists in current database
+                            using (var tr = doc.Database.TransactionManager.StartTransaction())
+                            {
+                                var testObj = tr.GetObject(objectId, OpenMode.ForRead, false);
+                                if (testObj != null)
+                                {
+                                    selectedIds.Add(objectId);
+                                }
+                                tr.Commit();
+                            }
+                        }
+                        catch
+                        {
+                            // Skip invalid ObjectIds to prevent eInvalidInput errors
+                            ed.WriteMessage($"\nSkipping invalid ObjectId: {objectId}\n");
+                        }
+                    }
                 }
             }
 
-            // Set selection for current document entities
-            if (selectedIds.Count > 0)
+            // Set selection for current document entities (only if no edits were applied)
+            if (selectedIds.Count > 0 && !editsWereApplied)
             {
-                // For process scope, we need to actually set the AutoCAD selection (not just save to storage)
-                // to properly narrow down the selection as expected
-                if (SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.process)
+                try
                 {
-                    ed.SetImpliedSelection(selectedIds.ToArray());
+                    // For process scope, we need to actually set the AutoCAD selection (not just save to storage)
+                    // to properly narrow down the selection as expected
+                    if (SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.process)
+                    {
+                        ed.SetImpliedSelection(selectedIds.ToArray());
+                    }
+                    else
+                    {
+                        ed.SetImpliedSelectionEx(selectedIds.ToArray());
+                    }
+                    ed.WriteMessage($"\n{selectedIds.Count} entities selected in current document.\n");
                 }
-                else
+                catch (Autodesk.AutoCAD.Runtime.Exception acEx)
                 {
-                    ed.SetImpliedSelectionEx(selectedIds.ToArray());
+                    ed.WriteMessage($"\nError setting selection: {acEx.ErrorStatus} - {acEx.Message}\n");
+                    if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.InvalidInput)
+                    {
+                        ed.WriteMessage("\nSome ObjectIds are invalid. This can happen when entities are deleted or database changes occur.\n");
+                    }
                 }
-                ed.WriteMessage($"\n{selectedIds.Count} entities selected in current document.\n");
+            }
+            else if (selectedIds.Count > 0 && editsWereApplied)
+            {
+                ed.WriteMessage($"\nEntity modifications were applied. Selection not changed (would have selected {selectedIds.Count} entities).\n");
             }
 
             // Report external entities
