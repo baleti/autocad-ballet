@@ -520,7 +520,35 @@ public partial class CustomGUIs
             switch (columnName.ToLowerInvariant())
             {
                 case "papersize":
-                    ed.WriteMessage($"\n  >> Paper size editing requires device validation; use Page Setup Manager for full control.");
+                    try
+                    {
+                        var psv = PlotSettingsValidator.Current;
+                        string mediaName = newValue;
+
+                        // If empty, set to default
+                        if (string.IsNullOrEmpty(mediaName))
+                        {
+                            ed.WriteMessage($"\n  >> Paper size cannot be empty.");
+                            break;
+                        }
+
+                        // Get current plotter configuration to validate media
+                        string deviceName = plotSettings.PlotConfigurationName ?? "";
+                        if (string.IsNullOrEmpty(deviceName))
+                        {
+                            ed.WriteMessage($"\n  >> No plotter device configured for paper size change.");
+                            break;
+                        }
+
+                        // Try to set the canonical media name
+                        psv.SetCanonicalMediaName(plotSettings, mediaName);
+                        ed.WriteMessage($"\n  >> Paper size set to: {mediaName}");
+                    }
+                    catch (System.Exception ex)
+                    {
+                        ed.WriteMessage($"\n  >> Failed to set paper size to '{newValue}': {ex.Message}");
+                        ed.WriteMessage($"\n  >> Ensure the paper size name is valid for the current plotter device.");
+                    }
                     break;
                 case "plotstyletable":
                     try
