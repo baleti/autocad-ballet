@@ -178,7 +178,7 @@ public static class FilterEntityDataHelper
                     else
                     {
                         // Different document - retrieve properties from external document
-                        var data = GetExternalEntityData(item.DocumentPath, item.Handle);
+                        var data = GetExternalEntityData(item.DocumentPath, item.Handle, includeProperties);
                         entityData.Add(data);
                     }
                 }
@@ -220,7 +220,7 @@ public static class FilterEntityDataHelper
         return entityData;
     }
 
-    private static Dictionary<string, object> GetExternalEntityData(string documentPath, string handle)
+    private static Dictionary<string, object> GetExternalEntityData(string documentPath, string handle, bool includeProperties = false)
     {
         var data = new Dictionary<string, object>
         {
@@ -288,7 +288,7 @@ public static class FilterEntityDataHelper
                             if (entity != null)
                             {
                                 // Get the real entity data
-                                data = GetEntityDataDictionary(entity, documentPath, null, false);
+                                data = GetEntityDataDictionary(entity, documentPath, null, includeProperties);
                                 data["IsExternal"] = true;
                                 data["DisplayName"] = $"External: {data["Name"]}";
                             }
