@@ -580,7 +580,22 @@ public partial class CustomGUIs
 
     private static void ApplyGeometryPropertyEdit(Entity entity, string columnName, string newValue, Transaction tr)
     {
-        if (!double.TryParse(newValue, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double value)) return;
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+        ed.WriteMessage($"\n  >> ApplyGeometryPropertyEdit: Entity={entity.GetType().Name}, Column='{columnName}', NewValue='{newValue}'");
+
+        if (!double.TryParse(newValue, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double value))
+        {
+            ed.WriteMessage($"\n  >> ERROR: Failed to parse '{newValue}' as double. Length={newValue?.Length}, IsNull={newValue == null}");
+            if (newValue != null)
+            {
+                ed.WriteMessage($"\n  >> String bytes: {string.Join(",", System.Text.Encoding.UTF8.GetBytes(newValue))}");
+            }
+            return;
+        }
+
+        ed.WriteMessage($"\n  >> Successfully parsed '{newValue}' as {value}");
+
         switch (entity)
         {
             case Circle circle: ApplyCircleGeometryEdit(circle, columnName, value); break;
@@ -591,12 +606,13 @@ public partial class CustomGUIs
             case BlockReference br: ApplyBlockReferenceGeometryEdit(br, columnName, value); break;
             case DBText t: ApplyDBTextGeometryEdit(t, columnName, value); break;
             case MText mt: ApplyMTextGeometryEdit(mt, columnName, value); break;
+            case Viewport vp: ApplyViewportGeometryEdit(vp, columnName, value); break;
         }
     }
 
     private static void ApplyCircleGeometryEdit(Circle circle, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx": circle.Center = new Point3d(value, circle.Center.Y, circle.Center.Z); break;
             case "centery": circle.Center = new Point3d(circle.Center.X, value, circle.Center.Z); break;
@@ -607,7 +623,7 @@ public partial class CustomGUIs
 
     private static void ApplyArcGeometryEdit(Arc arc, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx": arc.Center = new Point3d(value, arc.Center.Y, arc.Center.Z); break;
             case "centery": arc.Center = new Point3d(arc.Center.X, value, arc.Center.Z); break;
@@ -618,7 +634,7 @@ public partial class CustomGUIs
 
     private static void ApplyLineGeometryEdit(Line line, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx":
                 var currentCenter = line.StartPoint + (line.EndPoint - line.StartPoint) * 0.5;
@@ -642,7 +658,7 @@ public partial class CustomGUIs
 
     private static void ApplyPolylineGeometryEdit(Polyline polyline, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx":
             case "centery":
@@ -660,7 +676,7 @@ public partial class CustomGUIs
 
     private static void ApplyEllipseGeometryEdit(Ellipse ellipse, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx": ellipse.Center = new Point3d(value, ellipse.Center.Y, ellipse.Center.Z); break;
             case "centery": ellipse.Center = new Point3d(ellipse.Center.X, value, ellipse.Center.Z); break;
@@ -670,21 +686,38 @@ public partial class CustomGUIs
 
     private static void ApplyBlockReferenceGeometryEdit(BlockReference blockRef, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
-            case "centerx": blockRef.Position = new Point3d(value, blockRef.Position.Y, blockRef.Position.Z); break;
-            case "centery": blockRef.Position = new Point3d(blockRef.Position.X, value, blockRef.Position.Z); break;
-            case "centerz": blockRef.Position = new Point3d(blockRef.Position.X, blockRef.Position.Y, value); break;
-            case "scalex": if (value > 0) blockRef.ScaleFactors = new Scale3d(value, blockRef.ScaleFactors.Y, blockRef.ScaleFactors.Z); break;
-            case "scaley": if (value > 0) blockRef.ScaleFactors = new Scale3d(blockRef.ScaleFactors.X, value, blockRef.ScaleFactors.Z); break;
-            case "scalez": if (value > 0) blockRef.ScaleFactors = new Scale3d(blockRef.ScaleFactors.X, blockRef.ScaleFactors.Y, value); break;
-            case "rotation": blockRef.Rotation = value * Math.PI / 180.0; break;
+            case "centerx":
+                var offsetX = new Vector3d(value - blockRef.Position.X, 0, 0);
+                blockRef.TransformBy(Matrix3d.Displacement(offsetX));
+                break;
+            case "centery":
+                var offsetY = new Vector3d(0, value - blockRef.Position.Y, 0);
+                blockRef.TransformBy(Matrix3d.Displacement(offsetY));
+                break;
+            case "centerz":
+                var offsetZ = new Vector3d(0, 0, value - blockRef.Position.Z);
+                blockRef.TransformBy(Matrix3d.Displacement(offsetZ));
+                break;
+            case "scalex":
+                if (value > 0) blockRef.ScaleFactors = new Scale3d(value, blockRef.ScaleFactors.Y, blockRef.ScaleFactors.Z);
+                break;
+            case "scaley":
+                if (value > 0) blockRef.ScaleFactors = new Scale3d(blockRef.ScaleFactors.X, value, blockRef.ScaleFactors.Z);
+                break;
+            case "scalez":
+                if (value > 0) blockRef.ScaleFactors = new Scale3d(blockRef.ScaleFactors.X, blockRef.ScaleFactors.Y, value);
+                break;
+            case "rotation":
+                blockRef.Rotation = value * Math.PI / 180.0;
+                break;
         }
     }
 
     private static void ApplyDBTextGeometryEdit(DBText dbText, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx": dbText.Position = new Point3d(value, dbText.Position.Y, dbText.Position.Z); break;
             case "centery": dbText.Position = new Point3d(dbText.Position.X, value, dbText.Position.Z); break;
@@ -697,7 +730,7 @@ public partial class CustomGUIs
 
     private static void ApplyMTextGeometryEdit(MText mText, string columnName, double value)
     {
-        switch (columnName)
+        switch (columnName.ToLowerInvariant())
         {
             case "centerx": mText.Location = new Point3d(value, mText.Location.Y, mText.Location.Z); break;
             case "centery": mText.Location = new Point3d(mText.Location.X, value, mText.Location.Z); break;
@@ -705,6 +738,44 @@ public partial class CustomGUIs
             case "textheight": if (value > 0) mText.TextHeight = value; break;
             case "width": if (value > 0) mText.Width = value; break;
             case "rotation": mText.Rotation = value * Math.PI / 180.0; break;
+        }
+    }
+
+    private static void ApplyViewportGeometryEdit(Viewport viewport, string columnName, double value)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+        ed.WriteMessage($"\n  >> ApplyViewportGeometryEdit: Column='{columnName}', Value={value}");
+        ed.WriteMessage($"\n  >> Current CenterPoint: {viewport.CenterPoint}");
+
+        try
+        {
+            switch (columnName.ToLowerInvariant())
+            {
+                case "centerx":
+                    var newPoint = new Point3d(value, viewport.CenterPoint.Y, viewport.CenterPoint.Z);
+                    ed.WriteMessage($"\n  >> Setting CenterPoint from {viewport.CenterPoint} to {newPoint}");
+                    viewport.CenterPoint = newPoint;
+                    ed.WriteMessage($"\n  >> New CenterPoint: {viewport.CenterPoint}");
+                    break;
+                case "centery":
+                    viewport.CenterPoint = new Point3d(viewport.CenterPoint.X, value, viewport.CenterPoint.Z);
+                    break;
+                case "centerz":
+                    viewport.CenterPoint = new Point3d(viewport.CenterPoint.X, viewport.CenterPoint.Y, value);
+                    break;
+                case "width":
+                    if (value > 0) viewport.Width = value;
+                    break;
+                case "height":
+                    if (value > 0) viewport.Height = value;
+                    break;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in ApplyViewportGeometryEdit: {ex.Message}");
+            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
         }
     }
 }
