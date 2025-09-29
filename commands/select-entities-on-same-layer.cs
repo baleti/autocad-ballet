@@ -9,134 +9,49 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(SelectEntitiesOnSameLayer))]
-
 public class SelectEntitiesOnSameLayer
 {
-    [CommandMethod("select-entities-on-same-layer", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void SelectEntitiesOnSameLayerCommand()
+    public static void ExecuteViewScope(Editor ed)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
-        var ed = doc.Editor;
         var db = doc.Database;
-        var currentScope = SelectionScopeManager.CurrentScope;
 
         try
         {
-            // Collect layers from currently selected entities based on scope
+            // Handle view scope: Use pickfirst set or prompt for selection
+            var selResult = ed.SelectImplied();
+
+            if (selResult.Status == PromptStatus.Error)
+            {
+                var selectionOpts = new PromptSelectionOptions();
+                selectionOpts.MessageForAdding = "\nSelect entities to get their layers: ";
+                selResult = ed.GetSelection(selectionOpts);
+            }
+            else if (selResult.Status == PromptStatus.OK)
+            {
+                ed.SetImpliedSelection(new ObjectId[0]);
+            }
+
+            if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
+            {
+                ed.WriteMessage("\nNo entities selected.\n");
+                return;
+            }
+
+            // Collect layers from currently selected entities
             var layersToSelect = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            if (currentScope == SelectionScopeManager.SelectionScope.view)
+            // Get layers from selected entities
+            using (var tr = db.TransactionManager.StartTransaction())
             {
-                // Handle view scope: Use pickfirst set or prompt for selection
-                var selResult = ed.SelectImplied();
-
-                if (selResult.Status == PromptStatus.Error)
-                {
-                    var selectionOpts = new PromptSelectionOptions();
-                    selectionOpts.MessageForAdding = "\nSelect entities to get their layers: ";
-                    selResult = ed.GetSelection(selectionOpts);
-                }
-                else if (selResult.Status == PromptStatus.OK)
-                {
-                    ed.SetImpliedSelection(new ObjectId[0]);
-                }
-
-                if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
-                {
-                    ed.WriteMessage("\nNo entities selected.\n");
-                    return;
-                }
-
-                // Get layers from selected entities
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    foreach (var objectId in selResult.Value.GetObjectIds())
-                    {
-                        try
-                        {
-                            var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
-                            if (entity != null && !string.IsNullOrEmpty(entity.Layer))
-                            {
-                                layersToSelect.Add(entity.Layer);
-                            }
-                        }
-                        catch
-                        {
-                            // Skip problematic entities
-                            continue;
-                        }
-                    }
-                    tr.Commit();
-                }
-            }
-            else
-            {
-                // Handle document, process, desktop, network scopes: Use stored selection
-                var storedSelection = SelectionStorage.LoadSelection();
-                if (storedSelection == null || storedSelection.Count == 0)
-                {
-                    ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories' first or switch to 'view' scope.\n");
-                    return;
-                }
-
-                // Filter to current document if in document scope
-                if (currentScope == SelectionScopeManager.SelectionScope.document)
-                {
-                    var currentDocPath = Path.GetFullPath(doc.Name);
-                    storedSelection = storedSelection.Where(item =>
-                    {
-                        try
-                        {
-                            var itemPath = Path.GetFullPath(item.DocumentPath);
-                            return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
-                        }
-                        catch
-                        {
-                            return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                        }
-                    }).ToList();
-                }
-
-                if (storedSelection.Count == 0)
-                {
-                    ed.WriteMessage($"\nNo stored selection found for current scope '{currentScope}'.\n");
-                    return;
-                }
-
-                // Get layers from stored selection items
-                foreach (var item in storedSelection)
+                foreach (var objectId in selResult.Value.GetObjectIds())
                 {
                     try
                     {
-                        // Check if this is from the current document
-                        if (string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase))
+                        var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
+                        if (entity != null && !string.IsNullOrEmpty(entity.Layer))
                         {
-                            // Current document - get entity directly
-                            var handle = Convert.ToInt64(item.Handle, 16);
-                            var objectId = db.GetObjectId(false, new Handle(handle), 0);
-
-                            if (objectId != ObjectId.Null)
-                            {
-                                using (var tr = db.TransactionManager.StartTransaction())
-                                {
-                                    var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
-                                    if (entity != null && !string.IsNullOrEmpty(entity.Layer))
-                                    {
-                                        layersToSelect.Add(entity.Layer);
-                                    }
-                                    tr.Commit();
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // Different document - try to get layer from external document
-                            var layerName = GetLayerFromExternalDocument(item.DocumentPath, item.Handle);
-                            if (!string.IsNullOrEmpty(layerName))
-                            {
-                                layersToSelect.Add(layerName);
-                            }
+                            layersToSelect.Add(entity.Layer);
                         }
                     }
                     catch
@@ -145,6 +60,7 @@ public class SelectEntitiesOnSameLayer
                         continue;
                     }
                 }
+                tr.Commit();
             }
 
             if (layersToSelect.Count == 0)
@@ -155,96 +71,38 @@ public class SelectEntitiesOnSameLayer
 
             ed.WriteMessage($"\nFound {layersToSelect.Count} unique layer(s): {string.Join(", ", layersToSelect)}\n");
 
-            // Now select all entities on these layers based on current scope
-            var selectedEntities = new List<SelectionItem>();
+            // View scope: Select from current space only
             var currentDocumentIds = new List<ObjectId>();
-
-            if (currentScope == SelectionScopeManager.SelectionScope.view)
+            using (var tr = db.TransactionManager.StartTransaction())
             {
-                // View scope: Select from current space only
-                using (var tr = db.TransactionManager.StartTransaction())
+                var currentSpace = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
+                foreach (ObjectId id in currentSpace)
                 {
-                    var currentSpace = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
-                    foreach (ObjectId id in currentSpace)
+                    try
                     {
-                        try
+                        var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                        if (entity != null && layersToSelect.Contains(entity.Layer))
                         {
-                            var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                            if (entity != null && layersToSelect.Contains(entity.Layer))
-                            {
-                                currentDocumentIds.Add(id);
-                            }
-                        }
-                        catch
-                        {
-                            continue;
+                            currentDocumentIds.Add(id);
                         }
                     }
-                    tr.Commit();
+                    catch
+                    {
+                        continue;
+                    }
                 }
-
-                // Set selection in AutoCAD
-                if (currentDocumentIds.Count > 0)
-                {
-                    ed.SetImpliedSelection(currentDocumentIds.ToArray());
-                    ed.WriteMessage($"\nSelected {currentDocumentIds.Count} entities on layer(s): {string.Join(", ", layersToSelect)}\n");
-                }
-                else
-                {
-                    ed.WriteMessage($"\nNo entities found on layer(s): {string.Join(", ", layersToSelect)}\n");
-                }
+                tr.Commit();
             }
-            else if (currentScope == SelectionScopeManager.SelectionScope.document)
+
+            // Set selection in AutoCAD
+            if (currentDocumentIds.Count > 0)
             {
-                // Document scope: Select from all layouts in current document
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
-                    foreach (DBDictionaryEntry entry in layoutDict)
-                    {
-                        var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
-                        var btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
-                        foreach (ObjectId id in btr)
-                        {
-                            try
-                            {
-                                var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                                if (entity != null && layersToSelect.Contains(entity.Layer))
-                                {
-                                    currentDocumentIds.Add(id);
-                                    selectedEntities.Add(new SelectionItem
-                                    {
-                                        DocumentPath = doc.Name,
-                                        Handle = id.Handle.ToString()
-                                    });
-                                }
-                            }
-                            catch
-                            {
-                                continue;
-                            }
-                        }
-                    }
-                    tr.Commit();
-                }
-
-                // Set selection using scope-aware method
-                if (currentDocumentIds.Count > 0)
-                {
-                    ed.SetImpliedSelectionEx(currentDocumentIds.ToArray());
-                    ed.WriteMessage($"\nSelected {currentDocumentIds.Count} entities on layer(s): {string.Join(", ", layersToSelect)} from current document\n");
-                }
-
-                // Save to selection storage
-                if (selectedEntities.Count > 0)
-                {
-                    SelectionStorage.SaveSelection(selectedEntities);
-                }
+                ed.SetImpliedSelection(currentDocumentIds.ToArray());
+                ed.WriteMessage($"\nSelected {currentDocumentIds.Count} entities on layer(s): {string.Join(", ", layersToSelect)}\n");
             }
             else
             {
-                // Process, desktop, network scopes: Select from all documents in scope
-                SelectEntitiesFromAllDocuments(layersToSelect, currentScope, ed);
+                ed.WriteMessage($"\nNo entities found on layer(s): {string.Join(", ", layersToSelect)}\n");
             }
         }
         catch (System.Exception ex)
@@ -253,7 +111,190 @@ public class SelectEntitiesOnSameLayer
         }
     }
 
-    private string GetLayerFromExternalDocument(string documentPath, string handle)
+    public static void ExecuteDocumentScope(Editor ed, Database db)
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+
+        try
+        {
+            var docName = Path.GetFileName(doc.Name);
+            var storedSelection = SelectionStorage.LoadSelection(docName);
+            if (storedSelection == null || storedSelection.Count == 0)
+            {
+                ed.WriteMessage($"\nNo stored selection found for current document '{docName}'. Use commands like 'select-by-categories-in-document' first.\n");
+                return;
+            }
+
+            // Collect layers from stored selection
+            var layersToSelect = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Get layers from stored selection items in current document
+            foreach (var item in storedSelection)
+            {
+                try
+                {
+                    var handle = Convert.ToInt64(item.Handle, 16);
+                    var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                    if (objectId != ObjectId.Null)
+                    {
+                        using (var tr = db.TransactionManager.StartTransaction())
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
+                            if (entity != null && !string.IsNullOrEmpty(entity.Layer))
+                            {
+                                layersToSelect.Add(entity.Layer);
+                            }
+                            tr.Commit();
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip problematic entities
+                    continue;
+                }
+            }
+
+            if (layersToSelect.Count == 0)
+            {
+                ed.WriteMessage("\nNo valid layers found in stored selection.\n");
+                return;
+            }
+
+            ed.WriteMessage($"\nFound {layersToSelect.Count} unique layer(s): {string.Join(", ", layersToSelect)}\n");
+
+            // Document scope: Select from all layouts in current document
+            var selectedEntities = new List<SelectionItem>();
+            var currentDocumentIds = new List<ObjectId>();
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                foreach (DBDictionaryEntry entry in layoutDict)
+                {
+                    var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                    var btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+                    foreach (ObjectId id in btr)
+                    {
+                        try
+                        {
+                            var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                            if (entity != null && layersToSelect.Contains(entity.Layer))
+                            {
+                                currentDocumentIds.Add(id);
+                                selectedEntities.Add(new SelectionItem
+                                {
+                                    DocumentPath = doc.Name,
+                                    Handle = id.Handle.ToString()
+                                });
+                            }
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+                    }
+                }
+                tr.Commit();
+            }
+
+            // Set selection
+            if (currentDocumentIds.Count > 0)
+            {
+                ed.SetImpliedSelection(currentDocumentIds.ToArray());
+                ed.WriteMessage($"\nSelected {currentDocumentIds.Count} entities on layer(s): {string.Join(", ", layersToSelect)} from current document\n");
+            }
+
+            // Save to selection storage
+            if (selectedEntities.Count > 0)
+            {
+                SelectionStorage.SaveSelection(selectedEntities, docName);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}\n");
+        }
+    }
+
+    public static void ExecuteApplicationScope(Editor ed)
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var db = doc.Database;
+
+        try
+        {
+            var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            if (storedSelection == null || storedSelection.Count == 0)
+            {
+                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-application' first.\n");
+                return;
+            }
+
+            // Collect layers from stored selection
+            var layersToSelect = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Get layers from stored selection items
+            foreach (var item in storedSelection)
+            {
+                try
+                {
+                    // Check if this is from the current document
+                    if (string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Current document - get entity directly
+                        var handle = Convert.ToInt64(item.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                        if (objectId != ObjectId.Null)
+                        {
+                            using (var tr = db.TransactionManager.StartTransaction())
+                            {
+                                var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
+                                if (entity != null && !string.IsNullOrEmpty(entity.Layer))
+                                {
+                                    layersToSelect.Add(entity.Layer);
+                                }
+                                tr.Commit();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Different document - try to get layer from external document
+                        var layerName = GetLayerFromExternalDocument(item.DocumentPath, item.Handle);
+                        if (!string.IsNullOrEmpty(layerName))
+                        {
+                            layersToSelect.Add(layerName);
+                        }
+                    }
+                }
+                catch
+                {
+                    // Skip problematic entities
+                    continue;
+                }
+            }
+
+            if (layersToSelect.Count == 0)
+            {
+                ed.WriteMessage("\nNo valid layers found in stored selection.\n");
+                return;
+            }
+
+            ed.WriteMessage($"\nFound {layersToSelect.Count} unique layer(s): {string.Join(", ", layersToSelect)}\n");
+
+            // Application scope: Select from all documents in scope
+            SelectEntitiesFromAllDocuments(layersToSelect, ed);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError: {ex.Message}\n");
+        }
+    }
+
+    private static string GetLayerFromExternalDocument(string documentPath, string handle)
     {
         try
         {
@@ -333,7 +374,7 @@ public class SelectEntitiesOnSameLayer
         return null;
     }
 
-    private void SelectEntitiesFromAllDocuments(HashSet<string> layersToSelect, SelectionScopeManager.SelectionScope scope, Editor ed)
+    private static void SelectEntitiesFromAllDocuments(HashSet<string> layersToSelect, Editor ed)
     {
         var docs = AcadApp.DocumentManager;
         var allSelectedEntities = new List<SelectionItem>();

@@ -6,131 +6,135 @@ using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using AutoCADBallet;
+using AutoCADCommands;
 using WinForms = System.Windows.Forms;
 using Drawing = System.Drawing;
 using System.IO;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(AutoCADCommands.EditSelectedTextCommand))]
-
 namespace AutoCADCommands
 {
-    public class EditSelectedTextCommand
+    public class EditSelectedText
     {
-        [CommandMethod("edit-selected-text", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-        public void EditSelectedText()
+        public static void ExecuteViewScope(Editor ed)
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
-            var ed = doc.Editor;
             var db = doc.Database;
-            var currentScope = SelectionScopeManager.CurrentScope;
-
-            ed.WriteMessage($"\n=== DEBUG: Starting edit-selected-text command ===");
-            ed.WriteMessage($"\nCurrent scope: {currentScope}");
 
             List<TextEntity> textEntities = new List<TextEntity>();
 
-            if (currentScope == SelectionScopeManager.SelectionScope.view)
+            // Handle view scope: Use pickfirst set or prompt for selection
+            var selResult = ed.SelectImplied();
+
+            if (selResult.Status == PromptStatus.Error)
             {
-                // Handle view scope: Use pickfirst set or prompt for selection
-                var selResult = ed.SelectImplied();
-                ed.WriteMessage($"\nDEBUG: SelectImplied status: {selResult.Status}");
-
-                if (selResult.Status == PromptStatus.Error)
+                var selectionOpts = new PromptSelectionOptions();
+                selectionOpts.MessageForAdding = "\nSelect text/mtext entities: ";
+                var typeFilter = new TypedValue[]
                 {
-                    ed.WriteMessage($"\nDEBUG: No implied selection, prompting user...");
-                    var selectionOpts = new PromptSelectionOptions();
-                    selectionOpts.MessageForAdding = "\nSelect text/mtext entities: ";
-                    var typeFilter = new TypedValue[]
+                    new TypedValue((int)DxfCode.Operator, "<OR"),
+                    new TypedValue((int)DxfCode.Start, "TEXT"),
+                    new TypedValue((int)DxfCode.Start, "MTEXT"),
+                    new TypedValue((int)DxfCode.Operator, "OR>")
+                };
+                var filter = new SelectionFilter(typeFilter);
+                selResult = ed.GetSelection(selectionOpts, filter);
+            }
+            else if (selResult.Status == PromptStatus.OK)
+            {
+                ed.SetImpliedSelection(new ObjectId[0]);
+            }
+
+            if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
+            {
+                ed.WriteMessage("\nNo text entities selected.\n");
+                return;
+            }
+
+            // Process selection from current document
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var objId in selResult.Value.GetObjectIds())
+                {
+                    var entity = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                    if (IsTextEntity(entity))
                     {
-                        new TypedValue((int)DxfCode.Operator, "<OR"),
-                        new TypedValue((int)DxfCode.Start, "TEXT"),
-                        new TypedValue((int)DxfCode.Start, "MTEXT"),
-                        new TypedValue((int)DxfCode.Operator, "OR>")
-                    };
-                    var filter = new SelectionFilter(typeFilter);
-                    selResult = ed.GetSelection(selectionOpts, filter);
-                    ed.WriteMessage($"\nDEBUG: GetSelection status: {selResult.Status}");
-                }
-                else if (selResult.Status == PromptStatus.OK)
-                {
-                    ed.WriteMessage($"\nDEBUG: Found implied selection with {selResult.Value.Count} entities");
-                    ed.SetImpliedSelection(new ObjectId[0]);
-                }
-
-                if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
-                {
-                    ed.WriteMessage("\nNo text entities selected.\n");
-                    return;
-                }
-
-                ed.WriteMessage($"\nDEBUG: Processing {selResult.Value.Count} selected entities");
-
-                // Process selection from current document
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    foreach (var objId in selResult.Value.GetObjectIds())
-                    {
-                        var entity = tr.GetObject(objId, OpenMode.ForRead) as Entity;
-                        ed.WriteMessage($"\nDEBUG: Entity type: {entity?.GetType().Name ?? "null"}");
-                        if (IsTextEntity(entity))
+                        var textEntity = CreateTextEntity(entity, doc.Name, objId.Handle.Value);
+                        if (textEntity != null)
                         {
-                            ed.WriteMessage($"\nDEBUG: Found text entity, creating TextEntity...");
-                            var textEntity = CreateTextEntity(entity, doc.Name, objId.Handle.Value);
-                            if (textEntity != null)
-                            {
-                                ed.WriteMessage($"\nDEBUG: Created TextEntity with text: '{textEntity.Text}'");
-                                textEntities.Add(textEntity);
-                            }
-                        }
-                        else
-                        {
-                            ed.WriteMessage($"\nDEBUG: Entity is not a text entity");
+                            textEntities.Add(textEntity);
                         }
                     }
-                    tr.Commit();
                 }
+                tr.Commit();
             }
-            else
+
+            ShowTextEditingDialog(textEntities, ed);
+        }
+
+        public static void ExecuteDocumentScope(Editor ed, Database db)
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var docName = Path.GetFileName(doc.Name);
+            var storedSelection = SelectionStorage.LoadSelection(docName);
+            if (storedSelection == null || storedSelection.Count == 0)
             {
-                // Handle document, process, desktop, network scopes: Use stored selection
-                var storedSelection = SelectionStorage.LoadSelection();
-                if (storedSelection == null || storedSelection.Count == 0)
-                {
-                    ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories' first or switch to 'view' scope.\n");
-                    return;
-                }
-
-                // Filter to current document if in document scope
-                if (currentScope == SelectionScopeManager.SelectionScope.document)
-                {
-                    var currentDocPath = Path.GetFullPath(doc.Name);
-                    storedSelection = storedSelection.Where(item =>
-                    {
-                        try
-                        {
-                            var itemPath = Path.GetFullPath(item.DocumentPath);
-                            return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
-                        }
-                        catch
-                        {
-                            return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                        }
-                    }).ToList();
-                }
-
-                if (storedSelection.Count == 0)
-                {
-                    ed.WriteMessage($"\nNo stored selection found for current scope '{currentScope}'.\n");
-                    return;
-                }
-
-                // Process stored selection items
-                ProcessStoredSelection(storedSelection, textEntities, doc);
+                ed.WriteMessage($"\nNo stored selection found for current document '{docName}'. Use commands like 'select-by-categories-in-document' first.\n");
+                return;
             }
 
-            ed.WriteMessage($"\nDEBUG: Found {textEntities.Count} text entities");
+            List<TextEntity> textEntities = new List<TextEntity>();
 
+            // Process stored selection items from current document only
+            foreach (var item in storedSelection)
+            {
+                try
+                {
+                    var handle = Convert.ToInt64(item.Handle, 16);
+                    var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                    using (var tr = db.TransactionManager.StartTransaction())
+                    {
+                        var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
+                        if (IsTextEntity(entity))
+                        {
+                            var textEntity = CreateTextEntity(entity, doc.Name, objectId.Handle.Value);
+                            if (textEntity != null)
+                                textEntities.Add(textEntity);
+                        }
+                        tr.Commit();
+                    }
+                }
+                catch (System.Exception)
+                {
+                    // Skip invalid handles/documents
+                    continue;
+                }
+            }
+
+            ShowTextEditingDialog(textEntities, ed);
+        }
+
+        public static void ExecuteApplicationScope(Editor ed)
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            if (storedSelection == null || storedSelection.Count == 0)
+            {
+                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-application' first.\n");
+                return;
+            }
+
+            List<TextEntity> textEntities = new List<TextEntity>();
+
+            // Process stored selection items
+            ProcessStoredSelection(storedSelection, textEntities, doc);
+
+            ShowTextEditingDialog(textEntities, ed);
+        }
+
+        private static void ShowTextEditingDialog(List<TextEntity> textEntities, Editor ed)
+        {
             if (textEntities.Count == 0)
             {
                 ed.WriteMessage("\nNo text/mtext entities found in selection.\n");
@@ -139,17 +143,13 @@ namespace AutoCADCommands
 
             // Show text editing dialog
             var originalTexts = textEntities.Select(t => t.Text).ToList();
-            ed.WriteMessage($"\nDEBUG: Original texts: [{string.Join(", ", originalTexts.Select(t => $"'{t}'"))}]");
 
             using (var editForm = new AdvancedEditDialog(originalTexts, null, "Edit Selected Text"))
             {
-                ed.WriteMessage($"\nDEBUG: Showing dialog...");
                 var dialogResult = editForm.ShowDialog();
-                ed.WriteMessage($"\nDEBUG: Dialog result: {dialogResult}");
 
                 if (dialogResult == WinForms.DialogResult.OK)
                 {
-                    ed.WriteMessage($"\nDEBUG: Dialog OK - applying edits...");
                     ApplyTextEdits(textEntities, editForm, ed);
                 }
                 else
@@ -159,7 +159,7 @@ namespace AutoCADCommands
             }
         }
 
-        private void ProcessStoredSelection(List<SelectionItem> storedSelection, List<TextEntity> textEntities, Document currentDoc)
+        private static void ProcessStoredSelection(List<SelectionItem> storedSelection, List<TextEntity> textEntities, Document currentDoc)
         {
             var docs = AcadApp.DocumentManager;
             var currentDocPath = Path.GetFullPath(currentDoc.Name);
@@ -219,7 +219,7 @@ namespace AutoCADCommands
             }
         }
 
-        private Document FindDocumentByPath(string documentPath)
+        private static Document FindDocumentByPath(string documentPath)
         {
             var docs = AcadApp.DocumentManager;
             foreach (Document doc in docs)
@@ -253,12 +253,12 @@ namespace AutoCADCommands
             return null;
         }
 
-        private bool IsTextEntity(Entity entity)
+        private static bool IsTextEntity(Entity entity)
         {
             return entity is DBText || entity is MText;
         }
 
-        private TextEntity CreateTextEntity(Entity entity, string documentPath, long handle)
+        private static TextEntity CreateTextEntity(Entity entity, string documentPath, long handle)
         {
             if (entity is DBText dbText)
             {
@@ -287,7 +287,7 @@ namespace AutoCADCommands
             return null;
         }
 
-        private void ApplyTextEdits(List<TextEntity> textEntities, AdvancedEditDialog editForm, Editor ed)
+        private static void ApplyTextEdits(List<TextEntity> textEntities, AdvancedEditDialog editForm, Editor ed)
         {
             ed.WriteMessage($"\n=== DEBUG: ApplyTextEdits called with {textEntities.Count} entities ===");
             ed.WriteMessage($"\nDialog values - Pattern: '{editForm.PatternText}', Find: '{editForm.FindText}', Replace: '{editForm.ReplaceText}', Math: '{editForm.MathOperationText}'");
@@ -367,7 +367,7 @@ namespace AutoCADCommands
             ed.WriteMessage($"\nText editing complete. Modified {modifiedCount} entities.\n");
         }
 
-        private string ApplyTransformation(string originalText, AdvancedEditDialog editForm)
+        private static string ApplyTransformation(string originalText, AdvancedEditDialog editForm)
         {
             var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
 
@@ -411,7 +411,7 @@ namespace AutoCADCommands
         /// Apply math operations to alphanumeric strings by extracting and modifying numeric parts.
         /// Examples: "W1" + "x+3" → "W4", "Room12" + "x*2" → "Room24"
         /// </summary>
-        private string ApplyMathToAlphanumeric(string input, string mathExpression)
+        private static string ApplyMathToAlphanumeric(string input, string mathExpression)
         {
             var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
             try
@@ -471,7 +471,7 @@ namespace AutoCADCommands
         /// <summary>
         /// Format numeric result to avoid unnecessary decimal places for whole numbers
         /// </summary>
-        private string FormatNumericResult(object computedValue)
+        private static string FormatNumericResult(object computedValue)
         {
             if (computedValue is double doubleVal)
             {
@@ -485,7 +485,7 @@ namespace AutoCADCommands
             return computedValue.ToString();
         }
 
-        private string ReplaceTextPreservingFormatting(string originalContents, string oldText, string newText)
+        private static string ReplaceTextPreservingFormatting(string originalContents, string oldText, string newText)
         {
             // If the old text and new text are identical, no change needed
             if (oldText == newText)

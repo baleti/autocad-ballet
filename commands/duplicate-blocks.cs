@@ -9,321 +9,69 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(DuplicateBlocks))]
-
 /// <summary>
 /// Command to duplicate selected blocks by creating new block definitions with " 2" appended to their names
 /// </summary>
 public class DuplicateBlocks
 {
-    [CommandMethod("duplicate-blocks", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void DuplicateBlocksCommand()
+    public static void ExecuteViewScope(Editor ed)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
-        var ed = doc.Editor;
         var db = doc.Database;
 
         try
         {
-            var currentScope = SelectionScopeManager.CurrentScope;
             var selectedBlockRefs = new List<BlockReference>();
             var blockDefsToProcess = new HashSet<string>();
 
-            // Handle selection based on current scope
-            if (currentScope == SelectionScopeManager.SelectionScope.view)
+            // Get pickfirst set (pre-selected objects)
+            var selResult = ed.SelectImplied();
+
+            // If there is no pickfirst set, request user to select objects
+            if (selResult.Status == PromptStatus.Error)
             {
-                // Get pickfirst set (pre-selected objects)
-                var selResult = ed.SelectImplied();
+                var selectionOpts = new PromptSelectionOptions();
+                selectionOpts.MessageForAdding = "\nSelect block references to duplicate: ";
 
-                // If there is no pickfirst set, request user to select objects
-                if (selResult.Status == PromptStatus.Error)
-                {
-                    var selectionOpts = new PromptSelectionOptions();
-                    selectionOpts.MessageForAdding = "\nSelect block references to duplicate: ";
+                // Filter to only allow block references
+                var filter = new SelectionFilter(new TypedValue[] {
+                    new TypedValue((int)DxfCode.Start, "INSERT")
+                });
 
-                    // Filter to only allow block references
-                    var filter = new SelectionFilter(new TypedValue[] {
-                        new TypedValue((int)DxfCode.Start, "INSERT")
-                    });
-
-                    selResult = ed.GetSelection(selectionOpts, filter);
-                }
-                else if (selResult.Status == PromptStatus.OK)
-                {
-                    // Clear the pickfirst set since we're consuming it
-                    ed.SetImpliedSelection(new ObjectId[0]);
-                }
-
-                if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
-                {
-                    ed.WriteMessage("\nNo block references selected.\n");
-                    return;
-                }
-
-                // Process selected block references
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    foreach (ObjectId objId in selResult.Value.GetObjectIds())
-                    {
-                        var blockRef = tr.GetObject(objId, OpenMode.ForRead) as BlockReference;
-                        if (blockRef != null)
-                        {
-                            var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                            if (btr != null && !btr.IsFromExternalReference && !btr.IsAnonymous)
-                            {
-                                selectedBlockRefs.Add(blockRef);
-                                blockDefsToProcess.Add(btr.Name);
-                            }
-                        }
-                    }
-                    tr.Commit();
-                }
+                selResult = ed.GetSelection(selectionOpts, filter);
             }
-            else
+            else if (selResult.Status == PromptStatus.OK)
             {
-                // For document, process, desktop, network scopes - use stored selection
-                var storedSelection = SelectionStorage.LoadSelection();
-                if (storedSelection == null || storedSelection.Count == 0)
-                {
-                    ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-category' first or switch to 'view' scope.\n");
-                    return;
-                }
-
-                // Filter to current document if in document scope
-                if (currentScope == SelectionScopeManager.SelectionScope.document)
-                {
-                    var currentDocPath = Path.GetFullPath(doc.Name);
-                    storedSelection = storedSelection.Where(item =>
-                    {
-                        try
-                        {
-                            var itemPath = Path.GetFullPath(item.DocumentPath);
-                            return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
-                        }
-                        catch
-                        {
-                            return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                        }
-                    }).ToList();
-                }
-
-                if (storedSelection.Count == 0)
-                {
-                    ed.WriteMessage($"\nNo stored selection found for current scope '{currentScope}'. Use commands like 'select-by-category' first.\n");
-                    return;
-                }
-
-                // Process stored selections - only handle current document blocks
-                var currentDocSelections = storedSelection.Where(item =>
-                {
-                    try
-                    {
-                        return string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase);
-                    }
-                    catch
-                    {
-                        return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                    }
-                }).ToList();
-
-                if (currentDocSelections.Count == 0)
-                {
-                    ed.WriteMessage("\nNo block references found in current document from stored selection. Only blocks in the current document can be duplicated.\n");
-                    return;
-                }
-
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    foreach (var item in currentDocSelections)
-                    {
-                        try
-                        {
-                            var handle = Convert.ToInt64(item.Handle, 16);
-                            var objectId = db.GetObjectId(false, new Handle(handle), 0);
-
-                            if (objectId != ObjectId.Null)
-                            {
-                                var entity = tr.GetObject(objectId, OpenMode.ForRead);
-                                if (entity is BlockReference blockRef)
-                                {
-                                    var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                                    if (btr != null && !btr.IsFromExternalReference && !btr.IsAnonymous)
-                                    {
-                                        selectedBlockRefs.Add(blockRef);
-                                        blockDefsToProcess.Add(btr.Name);
-                                    }
-                                }
-                            }
-                        }
-                        catch
-                        {
-                            // Skip problematic entities
-                            continue;
-                        }
-                    }
-                    tr.Commit();
-                }
-
-                // Report external entities (from other documents) that can't be duplicated
-                var externalSelections = storedSelection.Where(item =>
-                {
-                    try
-                    {
-                        return !string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase);
-                    }
-                    catch
-                    {
-                        return !string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                    }
-                }).ToList();
-
-                if (externalSelections.Count > 0)
-                {
-                    ed.WriteMessage($"\nNote: {externalSelections.Count} external entities found but cannot be duplicated (blocks can only be duplicated within their source document).\n");
-                }
+                // Clear the pickfirst set since we're consuming it
+                ed.SetImpliedSelection(new ObjectId[0]);
             }
 
-            if (selectedBlockRefs.Count == 0)
+            if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
             {
-                ed.WriteMessage("\nNo valid block references found. Only regular (non-xref, non-anonymous) blocks can be duplicated.\n");
+                ed.WriteMessage("\nNo block references selected.\n");
                 return;
             }
 
-            // Dictionary to map original block names to new duplicated block names
-            var blockNameMapping = new Dictionary<string, string>();
-            var duplicatedCount = 0;
-
-            // Second pass: duplicate each unique block definition
-            using (var docLock = doc.LockDocument())
+            // Process selected block references
+            using (var tr = db.TransactionManager.StartTransaction())
             {
-                using (var tr = db.TransactionManager.StartTransaction())
+                foreach (ObjectId objId in selResult.Value.GetObjectIds())
                 {
-                    var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-
-                    foreach (var originalBlockName in blockDefsToProcess)
+                    var blockRef = tr.GetObject(objId, OpenMode.ForRead) as BlockReference;
+                    if (blockRef != null)
                     {
-                        var newBlockName = GenerateUniqueBlockName(blockTable, originalBlockName);
-
-                        if (DuplicateBlockDefinition(tr, blockTable, originalBlockName, newBlockName))
+                        var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                        if (btr != null && !btr.IsFromExternalReference && !btr.IsAnonymous)
                         {
-                            blockNameMapping[originalBlockName] = newBlockName;
-                            duplicatedCount++;
+                            selectedBlockRefs.Add(blockRef);
+                            blockDefsToProcess.Add(btr.Name);
                         }
                     }
-
-                    tr.Commit();
                 }
+                tr.Commit();
             }
 
-            if (duplicatedCount == 0)
-            {
-                ed.WriteMessage("\nNo block definitions could be duplicated.\n");
-                return;
-            }
-
-            // Third pass: replace the selected block references with references to the new block definitions
-            var replacedCount = 0;
-            using (var docLock = doc.LockDocument())
-            {
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-
-                    foreach (var blockRef in selectedBlockRefs)
-                    {
-                        var currentBlockRef = tr.GetObject(blockRef.ObjectId, OpenMode.ForRead) as BlockReference;
-                        if (currentBlockRef != null)
-                        {
-                            var originalBtr = tr.GetObject(currentBlockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                            if (originalBtr != null && blockNameMapping.ContainsKey(originalBtr.Name))
-                            {
-                                var newBlockName = blockNameMapping[originalBtr.Name];
-                                var newBtrId = blockTable[newBlockName];
-
-                                // Create a new block reference with the same properties
-                                var newBlockRef = new BlockReference(currentBlockRef.Position, newBtrId)
-                                {
-                                    Rotation = currentBlockRef.Rotation,
-                                    ScaleFactors = currentBlockRef.ScaleFactors,
-                                    Layer = currentBlockRef.Layer,
-                                    Color = currentBlockRef.Color,
-                                    Linetype = currentBlockRef.Linetype,
-                                    LinetypeScale = currentBlockRef.LinetypeScale,
-                                    LineWeight = currentBlockRef.LineWeight,
-                                    Transparency = currentBlockRef.Transparency,
-                                    Visible = currentBlockRef.Visible
-                                };
-
-                                // Copy attributes if they exist
-                                CopyBlockAttributes(tr, currentBlockRef, newBlockRef);
-
-                                // Add the new block reference to the same container
-                                var container = tr.GetObject(currentBlockRef.BlockId, OpenMode.ForWrite) as BlockTableRecord;
-                                container.AppendEntity(newBlockRef);
-                                tr.AddNewlyCreatedDBObject(newBlockRef, true);
-
-                                // Remove the original block reference
-                                currentBlockRef.UpgradeOpen();
-                                currentBlockRef.Erase();
-
-                                replacedCount++;
-                            }
-                        }
-                    }
-
-                    tr.Commit();
-                }
-            }
-
-            ed.WriteMessage($"\nDuplicated {duplicatedCount} block definition(s) and replaced {replacedCount} block reference(s).\n");
-
-            // List the new block names created
-            if (blockNameMapping.Count > 0)
-            {
-                ed.WriteMessage("New block definitions created:\n");
-                foreach (var mapping in blockNameMapping)
-                {
-                    ed.WriteMessage($"  {mapping.Key} -> {mapping.Value}\n");
-                }
-            }
-
-            // Update stored selection if not in view scope
-            if (currentScope != SelectionScopeManager.SelectionScope.view && replacedCount > 0)
-            {
-                // Collect the new block references for selection storage
-                var newSelectionItems = new List<SelectionItem>();
-                using (var docLock = doc.LockDocument())
-                {
-                    using (var tr = db.TransactionManager.StartTransaction())
-                    {
-                        var container = tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
-                        foreach (ObjectId id in container)
-                        {
-                            var entity = tr.GetObject(id, OpenMode.ForRead);
-                            if (entity is BlockReference blockRef)
-                            {
-                                var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                                if (btr != null && blockNameMapping.ContainsValue(btr.Name))
-                                {
-                                    newSelectionItems.Add(new SelectionItem
-                                    {
-                                        DocumentPath = doc.Name,
-                                        Handle = entity.Handle.ToString(),
-                                        SessionId = null // Will be auto-generated
-                                    });
-                                }
-                            }
-                        }
-                        tr.Commit();
-                    }
-                }
-
-                if (newSelectionItems.Count > 0)
-                {
-                    SelectionStorage.SaveSelection(newSelectionItems);
-                    ed.WriteMessage("Updated stored selection with new block references.\n");
-                }
-            }
+            DuplicateAndReplaceBlocks(doc, selectedBlockRefs, blockDefsToProcess, ed, null);
         }
         catch (System.Exception ex)
         {
@@ -331,7 +79,306 @@ public class DuplicateBlocks
         }
     }
 
-    private string GenerateUniqueBlockName(BlockTable blockTable, string originalName)
+    public static void ExecuteDocumentScope(Editor ed, Database db)
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+
+        try
+        {
+            var docName = Path.GetFileName(doc.Name);
+            var storedSelection = SelectionStorage.LoadSelection(docName);
+            if (storedSelection == null || storedSelection.Count == 0)
+            {
+                ed.WriteMessage($"\nNo stored selection found for current document '{docName}'. Use commands like 'select-by-categories-in-document' first.\n");
+                return;
+            }
+
+            var selectedBlockRefs = new List<BlockReference>();
+            var blockDefsToProcess = new HashSet<string>();
+
+            // Process stored selections - only handle current document blocks
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var item in storedSelection)
+                {
+                    try
+                    {
+                        var handle = Convert.ToInt64(item.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                        if (objectId != ObjectId.Null)
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                            if (entity is BlockReference blockRef)
+                            {
+                                var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                                if (btr != null && !btr.IsFromExternalReference && !btr.IsAnonymous)
+                                {
+                                    selectedBlockRefs.Add(blockRef);
+                                    blockDefsToProcess.Add(btr.Name);
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip problematic entities
+                        continue;
+                    }
+                }
+                tr.Commit();
+            }
+
+            DuplicateAndReplaceBlocks(doc, selectedBlockRefs, blockDefsToProcess, ed, docName);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError duplicating blocks: {ex.Message}\n");
+        }
+    }
+
+    public static void ExecuteApplicationScope(Editor ed)
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var db = doc.Database;
+
+        try
+        {
+            var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            if (storedSelection == null || storedSelection.Count == 0)
+            {
+                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-application' first.\n");
+                return;
+            }
+
+            var selectedBlockRefs = new List<BlockReference>();
+            var blockDefsToProcess = new HashSet<string>();
+
+            // Process stored selections - only handle current document blocks
+            var currentDocSelections = storedSelection.Where(item =>
+            {
+                try
+                {
+                    return string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase);
+                }
+                catch
+                {
+                    return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
+                }
+            }).ToList();
+
+            if (currentDocSelections.Count == 0)
+            {
+                ed.WriteMessage("\nNo block references found in current document from stored selection. Only blocks in the current document can be duplicated.\n");
+                return;
+            }
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var item in currentDocSelections)
+                {
+                    try
+                    {
+                        var handle = Convert.ToInt64(item.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                        if (objectId != ObjectId.Null)
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                            if (entity is BlockReference blockRef)
+                            {
+                                var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                                if (btr != null && !btr.IsFromExternalReference && !btr.IsAnonymous)
+                                {
+                                    selectedBlockRefs.Add(blockRef);
+                                    blockDefsToProcess.Add(btr.Name);
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip problematic entities
+                        continue;
+                    }
+                }
+                tr.Commit();
+            }
+
+            // Report external entities (from other documents) that can't be duplicated
+            var externalSelections = storedSelection.Where(item =>
+            {
+                try
+                {
+                    return !string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase);
+                }
+                catch
+                {
+                    return !string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
+                }
+            }).ToList();
+
+            if (externalSelections.Count > 0)
+            {
+                ed.WriteMessage($"\nNote: {externalSelections.Count} external entities found but cannot be duplicated (blocks can only be duplicated within their source document).\n");
+            }
+
+            DuplicateAndReplaceBlocks(doc, selectedBlockRefs, blockDefsToProcess, ed, null);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError duplicating blocks: {ex.Message}\n");
+        }
+    }
+
+    private static void DuplicateAndReplaceBlocks(Document doc, List<BlockReference> selectedBlockRefs, HashSet<string> blockDefsToProcess, Editor ed, string docNameForStorage)
+    {
+        var db = doc.Database;
+
+        if (selectedBlockRefs.Count == 0)
+        {
+            ed.WriteMessage("\nNo valid block references found. Only regular (non-xref, non-anonymous) blocks can be duplicated.\n");
+            return;
+        }
+
+        // Dictionary to map original block names to new duplicated block names
+        var blockNameMapping = new Dictionary<string, string>();
+        var duplicatedCount = 0;
+
+        // Second pass: duplicate each unique block definition
+        using (var docLock = doc.LockDocument())
+        {
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+
+                foreach (var originalBlockName in blockDefsToProcess)
+                {
+                    var newBlockName = GenerateUniqueBlockName(blockTable, originalBlockName);
+
+                    if (DuplicateBlockDefinition(tr, blockTable, originalBlockName, newBlockName))
+                    {
+                        blockNameMapping[originalBlockName] = newBlockName;
+                        duplicatedCount++;
+                    }
+                }
+
+                tr.Commit();
+            }
+        }
+
+        if (duplicatedCount == 0)
+        {
+            ed.WriteMessage("\nNo block definitions could be duplicated.\n");
+            return;
+        }
+
+        // Third pass: replace the selected block references with references to the new block definitions
+        var replacedCount = 0;
+        using (var docLock = doc.LockDocument())
+        {
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+
+                foreach (var blockRef in selectedBlockRefs)
+                {
+                    var currentBlockRef = tr.GetObject(blockRef.ObjectId, OpenMode.ForRead) as BlockReference;
+                    if (currentBlockRef != null)
+                    {
+                        var originalBtr = tr.GetObject(currentBlockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                        if (originalBtr != null && blockNameMapping.ContainsKey(originalBtr.Name))
+                        {
+                            var newBlockName = blockNameMapping[originalBtr.Name];
+                            var newBtrId = blockTable[newBlockName];
+
+                            // Create a new block reference with the same properties
+                            var newBlockRef = new BlockReference(currentBlockRef.Position, newBtrId)
+                            {
+                                Rotation = currentBlockRef.Rotation,
+                                ScaleFactors = currentBlockRef.ScaleFactors,
+                                Layer = currentBlockRef.Layer,
+                                Color = currentBlockRef.Color,
+                                Linetype = currentBlockRef.Linetype,
+                                LinetypeScale = currentBlockRef.LinetypeScale,
+                                LineWeight = currentBlockRef.LineWeight,
+                                Transparency = currentBlockRef.Transparency,
+                                Visible = currentBlockRef.Visible
+                            };
+
+                            // Copy attributes if they exist
+                            CopyBlockAttributes(tr, currentBlockRef, newBlockRef);
+
+                            // Add the new block reference to the same container
+                            var container = tr.GetObject(currentBlockRef.BlockId, OpenMode.ForWrite) as BlockTableRecord;
+                            container.AppendEntity(newBlockRef);
+                            tr.AddNewlyCreatedDBObject(newBlockRef, true);
+
+                            // Remove the original block reference
+                            currentBlockRef.UpgradeOpen();
+                            currentBlockRef.Erase();
+
+                            replacedCount++;
+                        }
+                    }
+                }
+
+                tr.Commit();
+            }
+        }
+
+        ed.WriteMessage($"\nDuplicated {duplicatedCount} block definition(s) and replaced {replacedCount} block reference(s).\n");
+
+        // List the new block names created
+        if (blockNameMapping.Count > 0)
+        {
+            ed.WriteMessage("New block definitions created:\n");
+            foreach (var mapping in blockNameMapping)
+            {
+                ed.WriteMessage($"  {mapping.Key} -> {mapping.Value}\n");
+            }
+        }
+
+        // Update stored selection if docNameForStorage is provided
+        if (docNameForStorage != null && replacedCount > 0)
+        {
+            // Collect the new block references for selection storage
+            var newSelectionItems = new List<SelectionItem>();
+            using (var docLock = doc.LockDocument())
+            {
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var container = tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
+                    foreach (ObjectId id in container)
+                    {
+                        var entity = tr.GetObject(id, OpenMode.ForRead);
+                        if (entity is BlockReference blockRef)
+                        {
+                            var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                            if (btr != null && blockNameMapping.ContainsValue(btr.Name))
+                            {
+                                newSelectionItems.Add(new SelectionItem
+                                {
+                                    DocumentPath = doc.Name,
+                                    Handle = entity.Handle.ToString(),
+                                    SessionId = null // Will be auto-generated
+                                });
+                            }
+                        }
+                    }
+                    tr.Commit();
+                }
+            }
+
+            if (newSelectionItems.Count > 0)
+            {
+                SelectionStorage.SaveSelection(newSelectionItems, docNameForStorage);
+                ed.WriteMessage("Updated stored selection with new block references.\n");
+            }
+        }
+    }
+
+    private static string GenerateUniqueBlockName(BlockTable blockTable, string originalName)
     {
         var baseName = originalName + " 2";
         var uniqueName = baseName;
@@ -347,7 +394,7 @@ public class DuplicateBlocks
         return uniqueName;
     }
 
-    private bool DuplicateBlockDefinition(Transaction tr, BlockTable blockTable, string originalName, string newName)
+    private static bool DuplicateBlockDefinition(Transaction tr, BlockTable blockTable, string originalName, string newName)
     {
         try
         {
@@ -397,7 +444,7 @@ public class DuplicateBlocks
         }
     }
 
-    private void CopyBlockAttributes(Transaction tr, BlockReference sourceBlock, BlockReference targetBlock)
+    private static void CopyBlockAttributes(Transaction tr, BlockReference sourceBlock, BlockReference targetBlock)
     {
         try
         {

@@ -25,159 +25,47 @@ public class ReplaceBlocksInDocument
 
         try
         {
-            var currentScope = SelectionScopeManager.CurrentScope;
             var selectedBlockRefs = new List<BlockReference>();
 
-            // Handle selection based on current scope
-            if (currentScope == SelectionScopeManager.SelectionScope.view)
+            // This command always uses document scope - load stored selection from current document
+            var docName = Path.GetFileName(doc.Name);
+            var storedSelection = SelectionStorage.LoadSelection(docName);
+            if (storedSelection == null || storedSelection.Count == 0)
             {
-                // Get pickfirst set (pre-selected objects)
-                var selResult = ed.SelectImplied();
-
-                // If there is no pickfirst set, request user to select objects
-                if (selResult.Status == PromptStatus.Error)
-                {
-                    var selectionOpts = new PromptSelectionOptions();
-                    selectionOpts.MessageForAdding = "\nSelect block references to replace: ";
-
-                    // Filter to only allow block references
-                    var filter = new SelectionFilter(new TypedValue[] {
-                        new TypedValue((int)DxfCode.Start, "INSERT")
-                    });
-
-                    selResult = ed.GetSelection(selectionOpts, filter);
-                }
-                else if (selResult.Status == PromptStatus.OK)
-                {
-                    // Clear the pickfirst set since we're consuming it
-                    ed.SetImpliedSelection(new ObjectId[0]);
-                }
-
-                if (selResult.Status != PromptStatus.OK || selResult.Value.Count == 0)
-                {
-                    ed.WriteMessage("\nNo block references selected.\n");
-                    return;
-                }
-
-                // Process selected block references
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    foreach (ObjectId objId in selResult.Value.GetObjectIds())
-                    {
-                        var blockRef = tr.GetObject(objId, OpenMode.ForRead) as BlockReference;
-                        if (blockRef != null)
-                        {
-                            var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                            if (btr != null && !btr.IsFromExternalReference)
-                            {
-                                selectedBlockRefs.Add(blockRef);
-                            }
-                        }
-                    }
-                    tr.Commit();
-                }
+                ed.WriteMessage($"\nNo stored selection found for current document '{docName}'. Use commands like 'select-by-categories-in-document' first.\n");
+                return;
             }
-            else
+
+            // Process stored selections - only handle current document blocks
+            using (var tr = db.TransactionManager.StartTransaction())
             {
-                // For document, process, desktop, network scopes - use stored selection
-                var storedSelection = SelectionStorage.LoadSelection();
-                if (storedSelection == null || storedSelection.Count == 0)
-                {
-                    ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-category' first or switch to 'view' scope.\n");
-                    return;
-                }
-
-                // Filter to current document if in document scope
-                if (currentScope == SelectionScopeManager.SelectionScope.document)
-                {
-                    var currentDocPath = Path.GetFullPath(doc.Name);
-                    storedSelection = storedSelection.Where(item =>
-                    {
-                        try
-                        {
-                            var itemPath = Path.GetFullPath(item.DocumentPath);
-                            return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
-                        }
-                        catch
-                        {
-                            return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                        }
-                    }).ToList();
-                }
-
-                if (storedSelection.Count == 0)
-                {
-                    ed.WriteMessage($"\nNo stored selection found for current scope '{currentScope}'. Use commands like 'select-by-category' first.\n");
-                    return;
-                }
-
-                // Process stored selections - only handle current document blocks
-                var currentDocSelections = storedSelection.Where(item =>
+                foreach (var item in storedSelection)
                 {
                     try
                     {
-                        return string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase);
-                    }
-                    catch
-                    {
-                        return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                    }
-                }).ToList();
+                        var handle = Convert.ToInt64(item.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
 
-                if (currentDocSelections.Count == 0)
-                {
-                    ed.WriteMessage("\nNo block references found in current document from stored selection. Only blocks in the current document can be replaced.\n");
-                    return;
-                }
-
-                using (var tr = db.TransactionManager.StartTransaction())
-                {
-                    foreach (var item in currentDocSelections)
-                    {
-                        try
+                        if (objectId != ObjectId.Null)
                         {
-                            var handle = Convert.ToInt64(item.Handle, 16);
-                            var objectId = db.GetObjectId(false, new Handle(handle), 0);
-
-                            if (objectId != ObjectId.Null)
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                            if (entity is BlockReference blockRef)
                             {
-                                var entity = tr.GetObject(objectId, OpenMode.ForRead);
-                                if (entity is BlockReference blockRef)
+                                var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                                if (btr != null && !btr.IsFromExternalReference)
                                 {
-                                    var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-                                    if (btr != null && !btr.IsFromExternalReference)
-                                    {
-                                        selectedBlockRefs.Add(blockRef);
-                                    }
+                                    selectedBlockRefs.Add(blockRef);
                                 }
                             }
                         }
-                        catch
-                        {
-                            // Skip problematic entities
-                            continue;
-                        }
-                    }
-                    tr.Commit();
-                }
-
-                // Report external entities (from other documents) that can't be replaced
-                var externalSelections = storedSelection.Where(item =>
-                {
-                    try
-                    {
-                        return !string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase);
                     }
                     catch
                     {
-                        return !string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
+                        // Skip problematic entities
+                        continue;
                     }
-                }).ToList();
-
-                if (externalSelections.Count > 0)
-                {
-                    ed.WriteMessage($"\nNote: {externalSelections.Count} external entities found but cannot be replaced (blocks can only be replaced within their source document).\n");
                 }
+                tr.Commit();
             }
 
             if (selectedBlockRefs.Count == 0)
@@ -289,8 +177,8 @@ public class ReplaceBlocksInDocument
 
             ed.WriteMessage($"\nReplaced {replacedCount} block reference(s) with '{targetBlockName}'.\n");
 
-            // Update stored selection if not in view scope
-            if (currentScope != SelectionScopeManager.SelectionScope.view && replacedCount > 0)
+            // Update stored selection for document scope
+            if (replacedCount > 0)
             {
                 // Collect the new block references for selection storage
                 var newSelectionItems = new List<SelectionItem>();
@@ -328,7 +216,7 @@ public class ReplaceBlocksInDocument
 
                 if (newSelectionItems.Count > 0)
                 {
-                    SelectionStorage.SaveSelection(newSelectionItems);
+                    SelectionStorage.SaveSelection(newSelectionItems, docName);
                     ed.WriteMessage("Updated stored selection with replaced block references.\n");
                 }
             }

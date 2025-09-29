@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Autodesk.AutoCAD.EditorInput;
+using Autodesk.AutoCAD.DatabaseServices;
 
 namespace AutoCADBallet
 {
@@ -22,43 +24,138 @@ namespace AutoCADBallet
             return $"{processId}_{sessionId}";
         }
 
-        private static string GetSelectionFilePath()
+        private static string GetSelectionFilePath(string documentName = null)
         {
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var dir = Path.Combine(appDataPath, "autocad-ballet", "runtime");
-            if (!Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-            return Path.Combine(dir, "selection");
-        }
+            var runtimeDir = Path.Combine(appDataPath, "autocad-ballet", "runtime");
 
-        public static void SaveSelection(List<SelectionItem> items)
-        {
-            var filePath = GetSelectionFilePath();
-            var lines = new List<string>();
-
-            // Group items by document path and session
-            var groupedItems = items.GroupBy(item => new { item.DocumentPath, item.SessionId });
-
-            foreach (var group in groupedItems)
+            if (!string.IsNullOrEmpty(documentName))
             {
-                var sessionId = group.Key.SessionId ?? GetSessionId();
-                // Format: "DocumentPath",SessionId (quote document path to handle special characters)
-                var quotedPath = group.Key.DocumentPath.Contains(",") || group.Key.DocumentPath.Contains("\"")
-                    ? $"\"{group.Key.DocumentPath.Replace("\"", "\"\"")}\""
-                    : group.Key.DocumentPath;
-                lines.Add($"{quotedPath},{sessionId}");
+                // Create per-document selection file in subdirectory
+                var selectionDir = Path.Combine(runtimeDir, "selection");
+                if (!Directory.Exists(selectionDir))
+                    Directory.CreateDirectory(selectionDir);
 
-                // Format: comma-separated handles
-                var handles = group.Select(item => item.Handle);
-                lines.Add(string.Join(",", handles));
+                var fileName = Path.GetFileNameWithoutExtension(documentName);
+                // Sanitize filename to avoid invalid characters
+                fileName = string.Join("_", fileName.Split(Path.GetInvalidFileNameChars()));
+                return Path.Combine(selectionDir, fileName);
             }
 
-            File.WriteAllLines(filePath, lines);
+            // Legacy path - EXACT same path as original for backward compatibility
+            if (!Directory.Exists(runtimeDir))
+                Directory.CreateDirectory(runtimeDir);
+            return Path.Combine(runtimeDir, "selection");
         }
 
-        public static List<SelectionItem> LoadSelection()
+        public static void SaveSelection(List<SelectionItem> items, string documentName = null)
         {
-            var filePath = GetSelectionFilePath();
+            if (items == null || items.Count == 0)
+            {
+                // For empty selections, we may want to clear the selection file
+                if (!string.IsNullOrEmpty(documentName))
+                {
+                    var emptyFilePath = GetSelectionFilePath(documentName);
+                    if (File.Exists(emptyFilePath))
+                    {
+                        File.Delete(emptyFilePath);
+                    }
+                }
+                else
+                {
+                    // Legacy behavior for global selection
+                    var filePath = GetSelectionFilePath();
+                    File.WriteAllLines(filePath, new string[0]);
+                }
+                return;
+            }
+
+            // Group items by document path to create separate files
+            var groupedByDocument = items.GroupBy(item => item.DocumentPath);
+
+            foreach (var docGroup in groupedByDocument)
+            {
+                var docPath = docGroup.Key;
+                var docName = !string.IsNullOrEmpty(documentName) ? documentName : Path.GetFileName(docPath);
+                var filePath = GetSelectionFilePath(docName);
+                var lines = new List<string>();
+
+                // Group items by session within the document
+                var groupedItems = docGroup.GroupBy(item => item.SessionId);
+
+                foreach (var group in groupedItems)
+                {
+                    var sessionId = group.Key ?? GetSessionId();
+                    // Format: "DocumentPath",SessionId (quote document path to handle special characters)
+                    var quotedPath = docPath.Contains(",") || docPath.Contains("\"")
+                        ? $"\"{docPath.Replace("\"", "\"\"")}\""
+                        : docPath;
+                    lines.Add($"{quotedPath},{sessionId}");
+
+                    // Format: comma-separated handles
+                    var handles = group.Select(item => item.Handle);
+                    lines.Add(string.Join(",", handles));
+                }
+
+                File.WriteAllLines(filePath, lines);
+            }
+        }
+
+        public static List<SelectionItem> LoadSelection(string documentName = null)
+        {
+            var items = new List<SelectionItem>();
+
+            if (!string.IsNullOrEmpty(documentName))
+            {
+                // Load selection for specific document
+                var filePath = GetSelectionFilePath(documentName);
+                if (File.Exists(filePath))
+                {
+                    items.AddRange(LoadSelectionFromFile(filePath));
+                }
+            }
+            else
+            {
+                // Backward compatibility: Load from legacy global file only
+                // This preserves the exact old behavior for existing commands
+                var legacyFilePath = GetSelectionFilePath();
+                if (File.Exists(legacyFilePath))
+                {
+                    items.AddRange(LoadSelectionFromFile(legacyFilePath));
+                }
+            }
+
+            return items;
+        }
+
+        // New method for explicitly loading from all documents (application scope)
+        public static List<SelectionItem> LoadSelectionFromAllDocuments()
+        {
+            var items = new List<SelectionItem>();
+
+            // Load from all per-document selection files
+            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var selectionDir = Path.Combine(appDataPath, "autocad-ballet", "runtime", "selection");
+            if (Directory.Exists(selectionDir))
+            {
+                foreach (var file in Directory.GetFiles(selectionDir))
+                {
+                    items.AddRange(LoadSelectionFromFile(file));
+                }
+            }
+
+            // Also check legacy global file for backward compatibility
+            var legacyFilePath = GetSelectionFilePath();
+            if (File.Exists(legacyFilePath))
+            {
+                items.AddRange(LoadSelectionFromFile(legacyFilePath));
+            }
+
+            return items;
+        }
+
+        private static List<SelectionItem> LoadSelectionFromFile(string filePath)
+        {
             var items = new List<SelectionItem>();
 
             if (!File.Exists(filePath))
@@ -156,4 +253,13 @@ namespace AutoCADBallet
         }
     }
 
+    // Extension method for Editor to support legacy SetImpliedSelectionEx calls
+    public static class EditorExtensions
+    {
+        public static void SetImpliedSelectionEx(this Editor ed, ObjectId[] objectIds)
+        {
+            // Simply delegate to the standard SetImpliedSelection
+            ed.SetImpliedSelection(objectIds);
+        }
+    }
 }

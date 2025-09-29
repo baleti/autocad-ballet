@@ -12,7 +12,7 @@ using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 // Register the command class
-[assembly: CommandClass(typeof(FilterSelectionElements))]
+// Command registration removed - using scope-specific commands
 
 /// <summary>
 /// Helper class to extract entity data for filtering and display
@@ -27,16 +27,15 @@ public static class FilterEntityDataHelper
         return $"{processId}_{sessionId}";
     }
 
-    public static List<Dictionary<string, object>> GetEntityData(Editor ed, out ObjectId[] originalSelection, bool selectedOnly = false, bool includeProperties = false)
+    public static List<Dictionary<string, object>> GetEntityData(Editor ed, SelectionScope scope, out ObjectId[] originalSelection, bool selectedOnly = false, bool includeProperties = false)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var db = doc.Database;
         var entityData = new List<Dictionary<string, object>>();
-        var currentScope = SelectionScopeManager.CurrentScope;
         originalSelection = null;
 
         // Handle selection based on current scope
-        if (currentScope == SelectionScopeManager.SelectionScope.view)
+        if (scope == SelectionScope.view)
         {
             // Get pickfirst set (pre-selected objects)
             var selResult = ed.SelectImplied();
@@ -101,11 +100,36 @@ public static class FilterEntityDataHelper
 
         if (selectedOnly)
         {
-            // Get entities from stored selection
-            var storedSelection = SelectionStorage.LoadSelection();
+            // Get entities from stored selection based on scope
+            List<SelectionItem> storedSelection;
+
+            if (scope == SelectionScope.document)
+            {
+                // Document scope - load selection for current document only
+                var docName = Path.GetFileNameWithoutExtension(doc.Name);
+                storedSelection = SelectionStorage.LoadSelection(docName);
+            }
+            else if (scope == SelectionScope.application)
+            {
+                // Application scope - load from all open documents
+                storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            }
+            else
+            {
+                // View scope - load from global file
+                storedSelection = SelectionStorage.LoadSelection();
+            }
+
             if (storedSelection == null || storedSelection.Count == 0)
             {
-                throw new InvalidOperationException("No stored selection found. Use commands like 'select-by-categories' first.");
+                if (scope == SelectionScope.document)
+                {
+                    throw new InvalidOperationException($"No stored selection found for current document '{Path.GetFileNameWithoutExtension(doc.Name)}'. Use commands like 'select-by-categories-in-document' first.");
+                }
+                else
+                {
+                    throw new InvalidOperationException("No stored selection found. Use commands like 'select-by-categories' first.");
+                }
             }
 
             // Filter to current session to avoid confusion with selections from different AutoCAD processes
@@ -113,32 +137,10 @@ public static class FilterEntityDataHelper
             storedSelection = storedSelection.Where(item =>
                 string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
 
-            // If in document scope, filter to current document only
-            if (currentScope == SelectionScopeManager.SelectionScope.document)
-            {
-                var currentDocPath = Path.GetFullPath(doc.Name);
-                var originalCount = storedSelection.Count;
-
-                storedSelection = storedSelection.Where(item =>
-                {
-                    try
-                    {
-                        var itemPath = Path.GetFullPath(item.DocumentPath);
-                        return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
-                    }
-                    catch
-                    {
-                        // If path resolution fails, fall back to direct comparison
-                        return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                    }
-                }).ToList();
-
-            }
-
             // Check if filtering resulted in empty selection
             if (storedSelection.Count == 0)
             {
-                if (currentScope == SelectionScopeManager.SelectionScope.document)
+                if (scope == SelectionScope.document)
                 {
                     throw new InvalidOperationException($"No stored selection found for current document '{Path.GetFileName(doc.Name)}'. The stored selection may be from other documents in process scope.");
                 }
@@ -192,7 +194,7 @@ public static class FilterEntityDataHelper
         else
         {
             // Get all entities from current scope (fallback - should not be used by filter-selection)
-            var entities = GatherEntitiesFromScope(db, currentScope);
+            var entities = GatherEntitiesFromScope(db, scope);
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -220,7 +222,7 @@ public static class FilterEntityDataHelper
         return entityData;
     }
 
-    private static Dictionary<string, object> GetExternalEntityData(string documentPath, string handle, bool includeProperties = false)
+    public static Dictionary<string, object> GetExternalEntityData(string documentPath, string handle, bool includeProperties = false)
     {
         var data = new Dictionary<string, object>
         {
@@ -322,7 +324,7 @@ public static class FilterEntityDataHelper
         return data;
     }
 
-    private static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties)
+    public static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties)
     {
         string entityName = "";
         string layer = "";
@@ -433,7 +435,7 @@ public static class FilterEntityDataHelper
         return data;
     }
 
-    private static List<ObjectId> GatherEntitiesFromScope(Database db, SelectionScopeManager.SelectionScope scope)
+    private static List<ObjectId> GatherEntitiesFromScope(Database db, SelectionScope scope)
     {
         var entities = new List<ObjectId>();
 
@@ -441,7 +443,7 @@ public static class FilterEntityDataHelper
         {
             switch (scope)
             {
-                case SelectionScopeManager.SelectionScope.view:
+                case SelectionScope.view:
                     var currentSpace = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
                     foreach (ObjectId id in currentSpace)
                     {
@@ -449,7 +451,7 @@ public static class FilterEntityDataHelper
                     }
                     break;
 
-                case SelectionScopeManager.SelectionScope.document:
+                case SelectionScope.document:
                     var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
                     foreach (DBDictionaryEntry entry in layoutDict)
                     {
@@ -463,8 +465,8 @@ public static class FilterEntityDataHelper
                     break;
 
                 default:
-                    // For Process, Desktop, Network - fall back to Document scope for now
-                    goto case SelectionScopeManager.SelectionScope.document;
+                    // For application scope - fall back to Document scope for now
+                    goto case SelectionScope.document;
             }
 
             tr.Commit();
@@ -1235,6 +1237,16 @@ public static class FilterEntityDataHelper
 }
 
 /// <summary>
+/// Selection scope enum for filter commands
+/// </summary>
+public enum SelectionScope
+{
+    view,           // Current active space/layout only
+    document,       // Entire current document (all layouts)
+    application     // All opened documents in current AutoCAD process (was "process")
+}
+
+/// <summary>
 /// Base class for commands that display AutoCAD entities in a custom data grid for filtering and reselection.
 /// Works with the stored selection system used by commands like select-by-categories.
 /// </summary>
@@ -1243,8 +1255,9 @@ public abstract class FilterElementsBase
     public abstract bool SpanAllScreens { get; }
     public abstract bool UseSelectedElements { get; }
     public abstract bool IncludeProperties { get; }
+    public abstract SelectionScope Scope { get; }
 
-    public void Execute()
+    public virtual void Execute()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
@@ -1252,13 +1265,13 @@ public abstract class FilterElementsBase
 
         try
         {
-            var entityData = FilterEntityDataHelper.GetEntityData(ed, out originalSelection, UseSelectedElements, IncludeProperties);
+            var entityData = FilterEntityDataHelper.GetEntityData(ed, Scope, out originalSelection, UseSelectedElements, IncludeProperties);
 
             if (!entityData.Any())
             {
                 ed.WriteMessage("\nNo entities found.\n");
                 // Restore original selection if we had one in view scope
-                if (originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+                if (originalSelection != null && originalSelection.Length > 0 && Scope == SelectionScope.view)
                 {
                     ed.SetImpliedSelection(originalSelection);
                 }
@@ -1307,7 +1320,7 @@ public abstract class FilterElementsBase
             {
                 ed.WriteMessage("\nNo entities selected.\n");
                 // Only restore original selection if user canceled and we're in view scope AND no edits were applied
-                if (!editsWereApplied && originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+                if (!editsWereApplied && originalSelection != null && originalSelection.Length > 0 && Scope == SelectionScope.view)
                 {
                     ed.SetImpliedSelection(originalSelection);
                     ed.WriteMessage($"Restored original selection of {originalSelection.Length} entities.\n");
@@ -1362,9 +1375,9 @@ public abstract class FilterElementsBase
             {
                 try
                 {
-                    // For process scope, we need to actually set the AutoCAD selection (not just save to storage)
+                    // For application scope, we need to actually set the AutoCAD selection (not just save to storage)
                     // to properly narrow down the selection as expected
-                    if (SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.process)
+                    if (Scope == SelectionScope.application)
                     {
                         ed.SetImpliedSelection(selectedIds.ToArray());
                     }
@@ -1403,7 +1416,7 @@ public abstract class FilterElementsBase
             }
 
             // Save the selected entities to selection storage for other commands (except in view mode)
-            if ((selectedIds.Count > 0 || externalEntities.Count > 0) && SelectionScopeManager.CurrentScope != SelectionScopeManager.SelectionScope.view)
+            if ((selectedIds.Count > 0 || externalEntities.Count > 0) && Scope != SelectionScope.view)
             {
                 var selectionItems = new List<SelectionItem>();
 
@@ -1437,7 +1450,7 @@ public abstract class FilterElementsBase
         {
             ed.WriteMessage($"\nError: {ex.Message}\n");
             // Restore original selection if we had one in view scope
-            if (originalSelection != null && originalSelection.Length > 0 && SelectionScopeManager.CurrentScope == SelectionScopeManager.SelectionScope.view)
+            if (originalSelection != null && originalSelection.Length > 0 && Scope == SelectionScope.view)
             {
                 ed.SetImpliedSelection(originalSelection);
                 ed.WriteMessage($"Restored original selection of {originalSelection.Length} entities.\n");
@@ -1450,22 +1463,9 @@ public abstract class FilterElementsBase
     }
 }
 
-/// <summary>
-/// Concrete command class
-/// </summary>
-public class FilterSelectionElements
-{
-    [CommandMethod("filter-selection", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void FilterSelectionCommand()
-    {
-        var command = new FilterSelectionImpl();
-        command.Execute();
-    }
-}
 
-public class FilterSelectionImpl : FilterElementsBase
-{
-    public override bool SpanAllScreens => false;
-    public override bool UseSelectedElements => SelectionScopeManager.CurrentScope != SelectionScopeManager.SelectionScope.view;
-    public override bool IncludeProperties => true;
-}
+// FilterSelectionElements and FilterSelectionImpl classes removed
+// Use scope-specific commands instead:
+// - filter-selection-in-view
+// - filter-selection-in-document
+// - filter-selection-in-application
