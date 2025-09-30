@@ -16,7 +16,7 @@ namespace AutoCADBallet
 {
     public class DuplicateLayoutsCommand
     {
-        [CommandMethod("duplicate-layouts", CommandFlags.Modal)]
+        [CommandMethod("duplicate-layouts", CommandFlags.Session)]
         public void DuplicateLayouts()
         {
             DocumentCollection docs = AcadApp.DocumentManager;

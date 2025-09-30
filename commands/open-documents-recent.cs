@@ -13,7 +13,7 @@ namespace AutoCADBallet
 {
     public class OpenDocumentsRecentCommand
     {
-        [CommandMethod("open-documents-recent")]
+        [CommandMethod("open-documents-recent", CommandFlags.Session)]
         public void OpenDocumentsRecent()
         {
             DocumentCollection docs = AcadApp.DocumentManager;

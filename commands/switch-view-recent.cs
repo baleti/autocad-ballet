@@ -15,7 +15,7 @@ namespace AutoCADBallet
 {
     public class SwitchViewRecentCommand
     {
-        [CommandMethod("switch-view-recent")]
+        [CommandMethod("switch-view-recent", CommandFlags.Session)]
         public void SwitchViewRecent()
         {
             DocumentCollection docs = AcadApp.DocumentManager;

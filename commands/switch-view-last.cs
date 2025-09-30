@@ -14,7 +14,7 @@ namespace AutoCADBallet
 {
     public class SwitchViewLastCommand
     {
-        [CommandMethod("switch-view-last")]
+        [CommandMethod("switch-view-last", CommandFlags.Session)]
         public void SwitchViewLast()
         {
             DocumentCollection docs = AcadApp.DocumentManager;

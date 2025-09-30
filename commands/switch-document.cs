@@ -13,7 +13,7 @@ namespace AutoCADBallet
 {
     public class SwitchDocumentCommand
     {
-        [CommandMethod("switch-document")]
+        [CommandMethod("switch-document", CommandFlags.Session)]
         public void SwitchDocument()
         {
             DocumentCollection docs = AcadApp.DocumentManager;

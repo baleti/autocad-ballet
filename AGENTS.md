@@ -21,6 +21,13 @@
 - AutoLISP: filenames kebab-case (e.g., `select-current-layer.lsp`); define commands as `c:command-name`; maintain shortcuts in `aliases.lsp`.
 - Keep logic small and composable; avoid UI in core command classes.
 
+## CommandFlags.Session and LISP Integration
+- **Use `CommandFlags.Session`** for commands that open/close/switch documents or modify DocumentCollection.
+- **CRITICAL**: LISP wrappers for Session commands MUST end with `(princ)` to prevent command context leaks.
+  - Pattern: `(defun c:alias () (command "command-name") (princ))`
+  - Without `(princ)`, commands remain stuck on documents causing "Drawing is busy" errors.
+- Examples: `open-documents-recent`, `close-all-without-saving`, `switch-view`, `switch-view-last`.
+
 ## Testing Guidelines
 - No formal test suite yet. Validate by:
   - Running commands on sample drawings and checking behavior.

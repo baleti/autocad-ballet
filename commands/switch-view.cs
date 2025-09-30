@@ -16,7 +16,7 @@ namespace AutoCADBallet
     public class SwitchViewCommand
     {
 
-        [CommandMethod("switch-view")]
+        [CommandMethod("switch-view", CommandFlags.Session)]
         public void SwitchView()
         {
             DocumentCollection docs = AcadApp.DocumentManager;

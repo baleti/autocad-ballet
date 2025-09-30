@@ -13,7 +13,7 @@ namespace AutoCADBallet
 {
     public class OpenDocumentsRecentReadOnlyCommand
     {
-        [CommandMethod("open-documents-recent-read-only")]
+        [CommandMethod("open-documents-recent-read-only", CommandFlags.Session)]
         public void OpenDocumentsRecentReadOnly()
         {
             DocumentCollection docs = AcadApp.DocumentManager;
@@ -177,6 +177,8 @@ namespace AutoCADBallet
                 if (chosen != null && chosen.Count > 0)
                 {
                     Document lastOpenedDoc = null;
+                    int successCount = 0;
+                    int failCount = 0;
 
                     foreach (var selectedDoc in chosen)
                     {
@@ -187,49 +189,64 @@ namespace AutoCADBallet
                         {
                             if (string.IsNullOrEmpty(docPath))
                             {
-                                ed.WriteMessage($"\nCould not open document {docName}: No file path available\n");
+                                AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nCould not open document {docName}: No file path available\n");
+                                failCount++;
                                 continue;
                             }
 
                             // Verify the file exists before attempting to open it
                             if (!File.Exists(docPath))
                             {
-                                ed.WriteMessage($"\nCould not open document {docName}: File not found at {docPath}\n");
+                                AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nCould not open document {docName}: File not found at {docPath}\n");
+                                failCount++;
                                 continue;
                             }
 
                             // Try to open the document in read-only mode
+                            // docs.Open is synchronous and blocks until document is loaded
                             Document openedDoc = docs.Open(docPath, true); // true = read-only
 
                             if (openedDoc != null)
                             {
-                                ed.WriteMessage($"\nOpened document in read-only mode: {docName}\n");
+                                // Get fresh editor reference from the current active document
+                                AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nOpened document in read-only mode: {docName}\n");
                                 lastOpenedDoc = openedDoc;
+                                successCount++;
                             }
                             else
                             {
-                                ed.WriteMessage($"\nFailed to open document: {docName}\n");
+                                AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nFailed to open document: {docName}\n");
+                                failCount++;
                             }
                         }
                         catch (System.Exception ex)
                         {
-                            ed.WriteMessage($"\nError opening document {docName}: {ex.Message}\n");
+                            AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nError opening document {docName}: {ex.Message}\n");
+                            failCount++;
                         }
                     }
 
-                    // Set the last successfully opened document as active using event-driven approach to minimize flicker
+                    // Set the last successfully opened document as active
                     if (lastOpenedDoc != null)
                     {
-                        DocumentCollectionEventHandler handler = null;
-                        handler = (sender, e) => {
-                            if (e.Document == lastOpenedDoc)
+                        try
+                        {
+                            docs.MdiActiveDocument = lastOpenedDoc;
+                            AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\n{successCount} document(s) opened successfully");
+                            if (failCount > 0)
                             {
-                                docs.DocumentActivated -= handler;
-                                // Document is now properly activated
+                                AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($", {failCount} failed");
                             }
-                        };
-                        docs.DocumentActivated += handler;
-                        docs.MdiActiveDocument = lastOpenedDoc;
+                            AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($".\n");
+                        }
+                        catch (System.Exception ex)
+                        {
+                            AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nWarning: Could not activate last document: {ex.Message}\n");
+                        }
+                    }
+                    else if (failCount > 0)
+                    {
+                        AcadApp.DocumentManager.MdiActiveDocument?.Editor.WriteMessage($"\nFailed to open {failCount} document(s).\n");
                     }
                 }
             }

@@ -39,6 +39,24 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 - Main command invocation through `InvokeAddinCommand.cs`
 - **IMPORTANT**: Do not add command aliases to `aliases.lsp` - leave alias creation to the project owner
 
+**CommandFlags.Session Usage**:
+- **ALWAYS use `CommandFlags.Session`** for commands that:
+  - Open, close, or switch between documents
+  - Modify the DocumentCollection (opening/closing documents)
+  - Need to work when NO document is active (application-level context)
+  - Switch between views/layouts across documents
+- Commands with `CommandFlags.Session` run at **application level**, not document level
+- **CRITICAL**: LISP wrappers for Session commands MUST include `(princ)` to prevent command context leaks
+- Without `CommandFlags.Session`, cross-document operations will fail or leave commands stuck
+- Examples requiring Session flag: `open-documents-recent`, `close-all-without-saving`, `switch-view`, `switch-view-last`
+
+**LISP Command Wrappers**:
+- All LISP command wrappers in `aliases.lsp` MUST end with `(princ)` to prevent command context leaks
+- Pattern: `(defun c:alias () (command "command-name") (princ))`
+- Without `(princ)`, Session-level commands will leave LISP command contexts stuck on documents
+- This causes "Drawing is busy" errors and prevents documents from closing
+- Example: `(defun c:ww () (command "switch-view") (princ))`
+
 **DataGrid Display Conventions**:
 - Column headers are automatically formatted to lowercase with spaces between words
 - Example: "DocumentName" becomes "document name", "LayoutType" becomes "layout type"
