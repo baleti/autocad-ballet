@@ -121,6 +121,9 @@ namespace AutoCADBallet
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
                     string layerName = layer.Name;
 
+                    // Skip xref layers (they contain pipe character)
+                    if (layerName.Contains("|")) continue;
+
                     if (layerName.Length > 7 && layerName.EndsWith(" - hide"))
                     {
                         // Thaw the layer to access entities

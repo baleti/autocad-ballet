@@ -108,6 +108,9 @@ namespace AutoCADBallet
                 foreach (ObjectId layerId in layerTable)
                 {
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForWrite);
+                    // Skip xref layers (they contain pipe character)
+                    if (layer.Name.Contains("|")) continue;
+
                     if (!processedLayers.Contains(layer.Name))
                     {
                         layer.IsFrozen = true;
@@ -147,6 +150,9 @@ namespace AutoCADBallet
                 {
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
                     string layerName = layer.Name;
+
+                    // Skip xref layers (they contain pipe character)
+                    if (layerName.Contains("|")) continue;
 
                     if (layerName.Length > 15 && layerName.EndsWith(" - isolate hide"))
                     {
@@ -215,12 +221,12 @@ namespace AutoCADBallet
                     }
                 }
 
-                // Thaw all layers (skip erased layers and current layer)
+                // Thaw all layers (skip erased layers, current layer, and xref layers)
                 foreach (ObjectId layerId in layerTable)
                 {
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForWrite);
-                    // Skip if layer is erased or is the current layer
-                    if (!layer.IsErased && db.Clayer != layerId)
+                    // Skip if layer is erased, is the current layer, or is an xref layer
+                    if (!layer.IsErased && db.Clayer != layerId && !layer.Name.Contains("|"))
                     {
                         layer.IsFrozen = false;
                     }

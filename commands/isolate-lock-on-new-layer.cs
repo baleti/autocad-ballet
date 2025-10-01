@@ -94,6 +94,9 @@ namespace AutoCADBallet
                 foreach (ObjectId layerId in layerTable)
                 {
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForWrite);
+                    // Skip xref layers (they contain pipe character)
+                    if (layer.Name.Contains("|")) continue;
+
                     if (!processedLayers.Contains(layer.Name))
                     {
                         layer.IsLocked = true;
@@ -129,6 +132,9 @@ namespace AutoCADBallet
                 foreach (ObjectId layerId in layerTable)
                 {
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForWrite);
+                    // Skip xref layers (they contain pipe character)
+                    if (layer.Name.Contains("|")) continue;
+
                     layer.IsLocked = false;
                 }
 
@@ -137,6 +143,9 @@ namespace AutoCADBallet
                 {
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
                     string layerName = layer.Name;
+
+                    // Skip xref layers (they contain pipe character)
+                    if (layerName.Contains("|")) continue;
 
                     if (layerName.Length > 15 && layerName.EndsWith(" - isolate lock"))
                     {

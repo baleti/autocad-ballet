@@ -120,6 +120,9 @@ namespace AutoCADBallet
                     var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
                     string layerName = layer.Name;
 
+                    // Skip xref layers (they contain pipe character)
+                    if (layerName.Contains("|")) continue;
+
                     if (layerName.Length > 7 && layerName.EndsWith(" - lock"))
                     {
                         lockLayers.Add(layerName);
@@ -210,6 +213,9 @@ namespace AutoCADBallet
                 // Re-lock any lock layers that still have entities, or delete empty ones
                 foreach (string lockLayerName in lockLayers)
                 {
+                    // Skip xref layers (they contain pipe character)
+                    if (lockLayerName.Contains("|")) continue;
+
                     if (!layerTable.Has(lockLayerName)) continue;
 
                     // Check if any entities exist on this layer
