@@ -187,6 +187,10 @@ namespace AutoCADBallet
                         // Check if original layer exists
                         if (layerTable.Has(originalLayerName))
                         {
+                            // Unlock the original layer if it's locked
+                            var originalLayer = (LayerTableRecord)tr.GetObject(layerTable[originalLayerName], OpenMode.ForWrite);
+                            originalLayer.IsLocked = false;
+
                             // Move entity back to original layer
                             entity.UpgradeOpen();
                             entity.Layer = originalLayerName;

@@ -133,6 +133,10 @@ namespace AutoCADBallet
                         // Check if original layer exists
                         if (layerTable.Has(originalLayerName))
                         {
+                            // Unfreeze the original layer if it's frozen
+                            var originalLayer = (LayerTableRecord)tr.GetObject(layerTable[originalLayerName], OpenMode.ForWrite);
+                            originalLayer.IsFrozen = false;
+
                             // Move all entities back to original layer
                             var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                             foreach (ObjectId btrId in blockTable)
