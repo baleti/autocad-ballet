@@ -98,10 +98,14 @@ dotnet build installer/installer.csproj
 
 **Command Files**: Use kebab-case for AutoCAD command files (e.g., `edit-selected-text.cs`, `switch-view-last.cs`)
 
+**One Command Per File**: Each AutoCAD command should be in its own file named after the command. The file should contain either:
+- The complete implementation of the command
+- A stub that delegates to shared implementation code in a related file
+
 **Internal/Utility Files**: Use underscore prefix with kebab-case for files that are not actual commands but provide internal functionality (e.g., `_edit-dialog.cs`, `_utilities.cs`)
 
 This convention helps distinguish between:
-- **Commands**: Files that define AutoCAD commands with `[CommandMethod]` attributes
+- **Commands**: Files that define AutoCAD commands with `[CommandMethod]` attributes (one command per file)
 - **Internal utilities**: Shared classes, dialogs, and helper functionality used by commands
 
 ## Installation Structure

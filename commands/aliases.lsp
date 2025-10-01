@@ -21,11 +21,13 @@
 (defun c:ssl () (command "select-entities-on-same-layer") (princ))
 (defun c:or () (command "open-documents-recent") (princ))
 (defun c:orr () (command "open-documents-recent-read-only") (princ))
+(defun c:et () (command "edit-selected-text-in-view") (princ))
 (defun c:etv () (command "edit-selected-text-in-view") (princ))
 (defun c:eta () (command "edit-selected-text-in-application") (princ))
 (defun c:zs () (c:zoom-selected))
 (defun c:saf () (c:save-all-force))
-(defun c:caw () (command "close-all-without-saving") (princ))
+(defun c:wc () (command "close" "y") (princ))
+(defun c:wcc () (c:close-all-without-saving))
 
 ;; regular autocad
 (defun c:fs () (command "refclose" "save") (princ))
