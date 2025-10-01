@@ -18,7 +18,7 @@
 (defun c:fv () (command "filter-selection-in-view") (princ))
 (defun c:fd () (command "filter-selection-in-document") (princ))
 (defun c:fa () (command "filter-selection-in-application") (princ))
-(defun c:ssl () (command "select-entities-on-same-layer") (princ))
+(defun c:slv () (command "select-similar-by-layer-in-view") (princ))
 (defun c:or () (command "open-documents-recent") (princ))
 (defun c:orr () (command "open-documents-recent-read-only") (princ))
 (defun c:et () (command "edit-selected-text-in-view") (princ))
