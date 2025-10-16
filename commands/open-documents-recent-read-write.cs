@@ -7,14 +7,14 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(AutoCADBallet.OpenDocumentsRecentCommand))]
+[assembly: CommandClass(typeof(AutoCADBallet.OpenDocumentsRecentReadWriteCommand))]
 
 namespace AutoCADBallet
 {
-    public class OpenDocumentsRecentCommand
+    public class OpenDocumentsRecentReadWriteCommand
     {
-        [CommandMethod("open-documents-recent", CommandFlags.Session)]
-        public void OpenDocumentsRecent()
+        [CommandMethod("open-documents-recent-read-write", CommandFlags.Session)]
+        public void OpenDocumentsRecentReadWrite()
         {
             DocumentCollection docs = AcadApp.DocumentManager;
             Document activeDoc = docs.MdiActiveDocument;
@@ -172,7 +172,38 @@ namespace AutoCADBallet
 
             try
             {
-                List<Dictionary<string, object>> chosen = CustomGUIs.DataGrid(availableDocuments, propertyNames, false, initialSelectionIndices);
+                List<Dictionary<string, object>> chosen = CustomGUIs.DataGrid(
+                    availableDocuments,
+                    propertyNames,
+                    false,
+                    initialSelectionIndices,
+                    onDeleteEntries: (entriesToDelete) =>
+                    {
+                        // Delete log files from runtime folder
+                        foreach (var entry in entriesToDelete)
+                        {
+                            if (entry.ContainsKey("DocumentName"))
+                            {
+                                string docName = entry["DocumentName"]?.ToString();
+                                if (!string.IsNullOrEmpty(docName))
+                                {
+                                    string logFilePath = Path.Combine(logDirPath, docName);
+                                    if (File.Exists(logFilePath))
+                                    {
+                                        try
+                                        {
+                                            File.Delete(logFilePath);
+                                        }
+                                        catch (System.Exception)
+                                        {
+                                            // Silently continue if file deletion fails
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return true; // Always return true to remove from grid
+                    });
 
                 if (chosen != null && chosen.Count > 0)
                 {

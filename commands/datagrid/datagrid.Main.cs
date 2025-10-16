@@ -30,7 +30,8 @@ public partial class CustomGUIs
         List<Dictionary<string, object>> entries,
         List<string> propertyNames,
         bool spanAllScreens,
-        List<int> initialSelectionIndices = null)
+        List<int> initialSelectionIndices = null,
+        Func<List<Dictionary<string, object>>, bool> onDeleteEntries = null)
     {
         if (entries == null || entries.Count == 0 || propertyNames == null || propertyNames.Count == 0)
             return new List<Dictionary<string, object>>();
@@ -476,6 +477,54 @@ public partial class CustomGUIs
                     catch (Exception ex)
                     {
                         MessageBox.Show("Error exporting: " + ex.Message);
+                    }
+                }
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Delete && !_isEditMode && sender == grid && onDeleteEntries != null)
+            {
+                // Delete key: Invoke callback if provided
+                if (grid.SelectedRows.Count > 0)
+                {
+                    // Show confirmation dialog
+                    var result = MessageBox.Show(
+                        $"Delete {grid.SelectedRows.Count} selected entry(ies)?",
+                        "Confirm Deletion",
+                        MessageBoxButtons.OKCancel,
+                        MessageBoxIcon.Question,
+                        MessageBoxDefaultButton.Button2); // Default to Cancel for safety
+
+                    if (result == DialogResult.OK)
+                    {
+                        // Collect entries to delete
+                        var entriesToDelete = new List<Dictionary<string, object>>();
+
+                        foreach (DataGridViewRow row in grid.SelectedRows)
+                        {
+                            if (row.Index < _cachedFilteredData.Count)
+                            {
+                                entriesToDelete.Add(_cachedFilteredData[row.Index]);
+                            }
+                        }
+
+                        // Invoke callback to handle deletion
+                        bool success = onDeleteEntries(entriesToDelete);
+
+                        if (success)
+                        {
+                            // Remove entries from cached data
+                            foreach (var entry in entriesToDelete)
+                            {
+                                _cachedOriginalData.Remove(entry);
+                                _cachedFilteredData.Remove(entry);
+                            }
+
+                            // Rebuild search index after deletion
+                            BuildSearchIndex(_cachedOriginalData, propertyNames);
+
+                            // Update grid
+                            UpdateFilteredGrid();
+                        }
                     }
                 }
                 e.Handled = true;
