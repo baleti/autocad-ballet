@@ -131,6 +131,7 @@ namespace AutoCADBallet
                     ["document name"] = docName,
                     ["last opened"] = lastAccess.ToString("yyyy-MM-dd HH:mm:ss"),
                     ["session"] = sessionPid,
+                    ["absolute path"] = documentPath ?? "Unknown",
                     ["DocumentName"] = docName,
                     ["DocumentPath"] = documentPath,
                     ["LastAccessed"] = lastAccess,
@@ -148,7 +149,7 @@ namespace AutoCADBallet
             availableDocuments = availableDocuments.OrderByDescending(doc => doc["LastAccessed"])
                 .ToList();
 
-            var propertyNames = new List<string> { "document name", "last opened", "session" };
+            var propertyNames = new List<string> { "document name", "last opened", "session", "absolute path" };
             var initialSelectionIndices = new List<int>(); // No initial selection
 
             try
