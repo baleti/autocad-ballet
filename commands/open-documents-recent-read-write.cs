@@ -126,31 +126,14 @@ namespace AutoCADBallet
                 string documentPath = documentPaths.ContainsKey(docName) ? documentPaths[docName] : null;
                 string sessionPid = documentSessionPids.ContainsKey(docName) ? documentSessionPids[docName] : "Unknown";
 
-                // Get last saved time from file modification time
-                DateTime lastSaved = DateTime.MinValue;
-                if (!string.IsNullOrEmpty(documentPath) && File.Exists(documentPath))
-                {
-                    try
-                    {
-                        lastSaved = File.GetLastWriteTime(documentPath);
-                    }
-                    catch
-                    {
-                        lastSaved = DateTime.MinValue;
-                    }
-                }
-
                 availableDocuments.Add(new Dictionary<string, object>
                 {
                     ["document name"] = docName,
                     ["last opened"] = lastAccess.ToString("yyyy-MM-dd HH:mm:ss"),
-                    ["last saved"] = lastSaved == DateTime.MinValue ? "Unknown" : lastSaved.ToString("yyyy-MM-dd HH:mm:ss"),
                     ["session"] = sessionPid,
-                    ["absolute path"] = documentPath ?? "Unknown",
                     ["DocumentName"] = docName,
                     ["DocumentPath"] = documentPath,
                     ["LastAccessed"] = lastAccess,
-                    ["LastSaved"] = lastSaved,
                     ["SessionPid"] = sessionPid
                 });
             }
@@ -161,13 +144,11 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Sort by last saved time descending, then by last opened time descending
-            availableDocuments = availableDocuments.OrderByDescending(doc =>
-                doc["LastSaved"] is DateTime savedTime && savedTime != DateTime.MinValue ? savedTime : DateTime.MinValue)
-                .ThenByDescending(doc => doc["LastAccessed"])
+            // Sort by last opened time descending
+            availableDocuments = availableDocuments.OrderByDescending(doc => doc["LastAccessed"])
                 .ToList();
 
-            var propertyNames = new List<string> { "document name", "last opened", "last saved", "session", "absolute path" };
+            var propertyNames = new List<string> { "document name", "last opened", "session" };
             var initialSelectionIndices = new List<int>(); // No initial selection
 
             try
