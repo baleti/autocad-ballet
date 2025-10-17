@@ -68,6 +68,12 @@ namespace AutoCADBallet
                             startIndex = 2; // Skip both header lines when processing timestamps
                         }
 
+                        // Third line might contain the document opened time
+                        if (lines.Count > 2 && lines[2].StartsWith("DOCUMENT_OPENED:"))
+                        {
+                            startIndex = 3; // Skip all three header lines when processing timestamps
+                        }
+
                         DateTime lastAccess = DateTime.MinValue;
                         for (int i = startIndex; i < lines.Count; i++)
                         {

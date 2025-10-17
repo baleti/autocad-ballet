@@ -1,5 +1,6 @@
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using System;
 using System.Collections.Generic;
@@ -16,6 +17,8 @@ namespace AutoCADBallet
     {
         private static string _sessionId;
         private static Dictionary<string, string> _lastKnownLayouts = new Dictionary<string, string>();
+        private static Dictionary<Document, System.EventHandler> _documentHandlers =
+            new Dictionary<Document, System.EventHandler>();
 
         public void Initialize()
         {
@@ -33,6 +36,13 @@ namespace AutoCADBallet
                 AcadApp.DocumentManager.DocumentActivated += OnDocumentActivated;
                 AcadApp.DocumentManager.DocumentCreated += OnDocumentCreated;
                 AcadApp.DocumentManager.DocumentBecameCurrent += OnDocumentBecameCurrent;
+                AcadApp.DocumentManager.DocumentToBeDestroyed += OnDocumentToBeDestroyed;
+
+                // Hook up selection logging for existing documents
+                foreach (Document doc in AcadApp.DocumentManager)
+                {
+                    RegisterDocumentSelectionEvents(doc);
+                }
             }
             catch (System.Exception ex)
             {
@@ -50,6 +60,14 @@ namespace AutoCADBallet
                 AcadApp.DocumentManager.DocumentActivated -= OnDocumentActivated;
                 AcadApp.DocumentManager.DocumentCreated -= OnDocumentCreated;
                 AcadApp.DocumentManager.DocumentBecameCurrent -= OnDocumentBecameCurrent;
+                AcadApp.DocumentManager.DocumentToBeDestroyed -= OnDocumentToBeDestroyed;
+
+                // Unregister document-specific selection events
+                foreach (var kvp in _documentHandlers.ToList())
+                {
+                    UnregisterDocumentSelectionEvents(kvp.Key);
+                }
+                _documentHandlers.Clear();
             }
             catch (System.Exception ex)
             {
@@ -108,11 +126,27 @@ namespace AutoCADBallet
                 {
                     string projectName = Path.GetFileNameWithoutExtension(e.Document.Name) ?? "UnknownProject";
                     InitializeLogFileIfNeeded(projectName, clearExisting: false);
+                    RegisterDocumentSelectionEvents(e.Document);
                 }
             }
             catch (System.Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.OnDocumentCreated error: {ex.Message}");
+            }
+        }
+
+        private static void OnDocumentToBeDestroyed(object sender, DocumentCollectionEventArgs e)
+        {
+            try
+            {
+                if (e.Document != null)
+                {
+                    UnregisterDocumentSelectionEvents(e.Document);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.OnDocumentToBeDestroyed error: {ex.Message}");
             }
         }
 
@@ -164,7 +198,8 @@ namespace AutoCADBallet
                     {
                         string absolutePath = Path.GetFullPath(activeDoc.Name);
                         int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
-                        File.WriteAllText(logFilePath, $"DOCUMENT_PATH:{absolutePath}\nLAST_SESSION_PID:{processId}\n");
+                        string openTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                        File.WriteAllText(logFilePath, $"DOCUMENT_PATH:{absolutePath}\nLAST_SESSION_PID:{processId}\nDOCUMENT_OPENED:{openTime}\n");
                     }
                 }
                 else
@@ -173,14 +208,16 @@ namespace AutoCADBallet
                     var lines = File.ReadAllLines(logFilePath).ToList();
                     bool needsUpdate = false;
                     var headerLines = new List<string>();
+                    int headerCount = 0;
 
                     Document activeDoc = AcadApp.DocumentManager.MdiActiveDocument;
                     if (activeDoc != null)
                     {
                         string absolutePath = Path.GetFullPath(activeDoc.Name);
                         int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+                        string openTime = null;
 
-                        // Check for document path
+                        // Check for document path (first header)
                         if (lines.Count == 0 || !lines[0].StartsWith("DOCUMENT_PATH:"))
                         {
                             headerLines.Add($"DOCUMENT_PATH:{absolutePath}");
@@ -189,31 +226,42 @@ namespace AutoCADBallet
                         else
                         {
                             headerLines.Add(lines[0]);
+                            headerCount = 1;
                         }
 
-                        // Check for session PID (should be second line)
+                        // Check for session PID (second header)
                         if (lines.Count < 2 || !lines[1].StartsWith("LAST_SESSION_PID:"))
                         {
                             headerLines.Add($"LAST_SESSION_PID:{processId}");
                             needsUpdate = true;
-
-                            // Add existing content after header
-                            if (lines.Count > 0 && lines[0].StartsWith("DOCUMENT_PATH:"))
-                            {
-                                headerLines.AddRange(lines.Skip(1)); // Skip the document path line, add the rest
-                            }
-                            else
-                            {
-                                headerLines.AddRange(lines); // Add all existing lines
-                            }
                         }
                         else
                         {
-                            // Update the session PID to current process
                             headerLines.Add($"LAST_SESSION_PID:{processId}");
-                            headerLines.AddRange(lines.Skip(2)); // Add content after the two header lines
+                            headerCount = 2;
+                            needsUpdate = true; // Always update PID
+                        }
+
+                        // Check for document opened time (third header)
+                        if (lines.Count < 3 || !lines[2].StartsWith("DOCUMENT_OPENED:"))
+                        {
+                            // Try to extract open time from old document-open-times.txt if available
+                            openTime = TryGetDocumentOpenTimeFromOldLog(absolutePath);
+                            if (openTime == null)
+                            {
+                                openTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                            }
+                            headerLines.Add($"DOCUMENT_OPENED:{openTime}");
                             needsUpdate = true;
                         }
+                        else
+                        {
+                            headerLines.Add(lines[2]); // Keep existing open time
+                            headerCount = 3;
+                        }
+
+                        // Add remaining content after headers
+                        headerLines.AddRange(lines.Skip(headerCount));
 
                         if (needsUpdate)
                         {
@@ -226,6 +274,41 @@ namespace AutoCADBallet
             {
                 System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.InitializeLogFileIfNeeded error: {ex.Message}");
             }
+        }
+
+        private static string TryGetDocumentOpenTimeFromOldLog(string documentPath)
+        {
+            try
+            {
+                string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string oldLogFile = Path.Combine(appDataPath, "autocad-ballet", "runtime", "document-open-times.txt");
+
+                if (!File.Exists(oldLogFile))
+                    return null;
+
+                var lines = File.ReadAllLines(oldLogFile);
+                foreach (string line in lines)
+                {
+                    var parts = line.Split('\t');
+                    if (parts.Length == 2)
+                    {
+                        string logPath = parts[0];
+                        string timestamp = parts[1];
+
+                        // Compare paths (handle both absolute and relative)
+                        if (string.Equals(Path.GetFullPath(logPath), Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))
+                        {
+                            return timestamp;
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.TryGetDocumentOpenTimeFromOldLog error: {ex.Message}");
+            }
+
+            return null;
         }
 
         public static void LogLayoutChange(string projectName, string layoutName)
@@ -289,6 +372,113 @@ namespace AutoCADBallet
             {
                 // Silently ignore logging errors to not interfere with layout switching
                 System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.LogLayoutChange error: {ex.Message}");
+            }
+        }
+
+        // Selection logging methods
+
+        private static void RegisterDocumentSelectionEvents(Document doc)
+        {
+            try
+            {
+                // Only register if not already registered
+                if (_documentHandlers.ContainsKey(doc))
+                    return;
+
+                // Create event handler for this document
+                System.EventHandler handler = (sender, e) =>
+                {
+                    OnSelectionChanged(doc, sender, e);
+                };
+
+                // Register the handler
+                doc.ImpliedSelectionChanged += handler;
+                _documentHandlers[doc] = handler;
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.RegisterDocumentSelectionEvents error: {ex.Message}");
+            }
+        }
+
+        private static void UnregisterDocumentSelectionEvents(Document doc)
+        {
+            try
+            {
+                if (_documentHandlers.ContainsKey(doc))
+                {
+                    doc.ImpliedSelectionChanged -= _documentHandlers[doc];
+                    _documentHandlers.Remove(doc);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.UnregisterDocumentSelectionEvents error: {ex.Message}");
+            }
+        }
+
+        private static void OnSelectionChanged(Document doc, object sender, System.EventArgs e)
+        {
+            try
+            {
+                if (doc == null)
+                    return;
+
+                // Get the current implied selection
+                var ed = doc.Editor;
+                var selResult = ed.SelectImplied();
+
+                if (selResult.Status != PromptStatus.OK || selResult.Value == null || selResult.Value.Count == 0)
+                    return;
+
+                // Get document name for log file
+                string projectName = Path.GetFileNameWithoutExtension(doc.Name) ?? "UnknownProject";
+                string documentPath = Path.GetFullPath(doc.Name);
+
+                // Get the selection handles
+                var handles = new List<string>();
+                foreach (SelectedObject selObj in selResult.Value)
+                {
+                    if (selObj != null && !selObj.ObjectId.IsNull && selObj.ObjectId.IsValid)
+                    {
+                        handles.Add(selObj.ObjectId.Handle.ToString());
+                    }
+                }
+
+                if (handles.Count > 0)
+                {
+                    LogSelection(projectName, documentPath, handles);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.OnSelectionChanged error: {ex.Message}");
+            }
+        }
+
+        private static void LogSelection(string projectName, string documentPath, List<string> handles)
+        {
+            try
+            {
+                string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "selection-logs");
+
+                if (!Directory.Exists(logDirPath))
+                    Directory.CreateDirectory(logDirPath);
+
+                string logFilePath = Path.Combine(logDirPath, projectName);
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH:mm:ss.fff");
+
+                // Format: timestamp|documentPath|handle1,handle2,handle3,...
+                string logEntry = $"{timestamp}|{documentPath}|{string.Join(",", handles)}";
+
+                // Append to log file
+                File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
+            }
+            catch (System.Exception ex)
+            {
+                // Silently ignore logging errors to not interfere with selection operations
+                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.LogSelection error: {ex.Message}");
             }
         }
     }

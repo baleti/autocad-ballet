@@ -75,21 +75,57 @@ namespace AutoCADBallet
             try
             {
                 string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string runtimeDir = Path.Combine(appDataPath, "autocad-ballet", "runtime");
-                string openTimesFile = Path.Combine(runtimeDir, "document-open-times.txt");
+                string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "switch-view-logs");
 
-                if (File.Exists(openTimesFile))
+                if (!Directory.Exists(logDirPath))
+                    return;
+
+                lock (_lockObject)
                 {
-                    var lines = File.ReadAllLines(openTimesFile);
-                    lock (_lockObject)
+                    // Read all log files from switch-view-logs directory
+                    foreach (string logFile in Directory.GetFiles(logDirPath))
                     {
-                        foreach (string line in lines)
+                        try
                         {
-                            var parts = line.Split('\t');
-                            if (parts.Length == 2 && DateTime.TryParse(parts[1], out DateTime openTime))
+                            var lines = File.ReadAllLines(logFile);
+                            if (lines.Length < 3)
+                                continue;
+
+                            string documentPath = null;
+                            DateTime openTime = DateTime.MinValue;
+
+                            // Parse headers
+                            foreach (string line in lines)
                             {
-                                _documentOpenTimes[parts[0]] = openTime;
+                                if (line.StartsWith("DOCUMENT_PATH:"))
+                                {
+                                    documentPath = line.Substring("DOCUMENT_PATH:".Length);
+                                }
+                                else if (line.StartsWith("DOCUMENT_OPENED:"))
+                                {
+                                    string timeStr = line.Substring("DOCUMENT_OPENED:".Length);
+                                    DateTime.TryParse(timeStr, out openTime);
+                                }
+                                else if (line.StartsWith("LAST_SESSION_PID:"))
+                                {
+                                    // Skip this header
+                                    continue;
+                                }
+                                else
+                                {
+                                    // Reached layout entries, stop parsing headers
+                                    break;
+                                }
                             }
+
+                            if (!string.IsNullOrEmpty(documentPath) && openTime != DateTime.MinValue)
+                            {
+                                _documentOpenTimes[documentPath] = openTime;
+                            }
+                        }
+                        catch (System.Exception)
+                        {
+                            // Skip files that can't be read
                         }
                     }
                 }
@@ -105,20 +141,80 @@ namespace AutoCADBallet
             try
             {
                 string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string runtimeDir = Path.Combine(appDataPath, "autocad-ballet", "runtime");
-                Directory.CreateDirectory(runtimeDir);
-                string openTimesFile = Path.Combine(runtimeDir, "document-open-times.txt");
+                string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "switch-view-logs");
+                Directory.CreateDirectory(logDirPath);
 
-                var lines = new List<string>();
                 lock (_lockObject)
                 {
                     foreach (var kvp in _documentOpenTimes)
                     {
-                        lines.Add($"{kvp.Key}\t{kvp.Value:yyyy-MM-dd HH:mm:ss}");
+                        string documentPath = kvp.Key;
+                        DateTime openTime = kvp.Value;
+                        string projectName = Path.GetFileNameWithoutExtension(documentPath);
+                        string logFilePath = Path.Combine(logDirPath, projectName);
+
+                        try
+                        {
+                            // Read existing log file if it exists
+                            var lines = File.Exists(logFilePath) ? File.ReadAllLines(logFilePath).ToList() : new List<string>();
+                            bool foundOpenedHeader = false;
+                            int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+
+                            // Update or add DOCUMENT_OPENED header
+                            for (int i = 0; i < lines.Count; i++)
+                            {
+                                if (lines[i].StartsWith("DOCUMENT_OPENED:"))
+                                {
+                                    lines[i] = $"DOCUMENT_OPENED:{openTime:yyyy-MM-dd HH:mm:ss}";
+                                    foundOpenedHeader = true;
+                                    break;
+                                }
+                            }
+
+                            if (!foundOpenedHeader)
+                            {
+                                // Need to add the header - find the right position
+                                var headerLines = new List<string>();
+                                int insertIndex = 0;
+
+                                // Ensure DOCUMENT_PATH exists
+                                if (lines.Count == 0 || !lines[0].StartsWith("DOCUMENT_PATH:"))
+                                {
+                                    headerLines.Add($"DOCUMENT_PATH:{Path.GetFullPath(documentPath)}");
+                                }
+                                else
+                                {
+                                    headerLines.Add(lines[0]);
+                                    insertIndex = 1;
+                                }
+
+                                // Ensure LAST_SESSION_PID exists
+                                if (lines.Count < 2 || !lines[1].StartsWith("LAST_SESSION_PID:"))
+                                {
+                                    headerLines.Add($"LAST_SESSION_PID:{processId}");
+                                }
+                                else
+                                {
+                                    headerLines.Add($"LAST_SESSION_PID:{processId}");
+                                    insertIndex = 2;
+                                }
+
+                                // Add DOCUMENT_OPENED
+                                headerLines.Add($"DOCUMENT_OPENED:{openTime:yyyy-MM-dd HH:mm:ss}");
+
+                                // Add remaining lines
+                                headerLines.AddRange(lines.Skip(insertIndex));
+                                lines = headerLines;
+                            }
+
+                            File.WriteAllLines(logFilePath, lines);
+                        }
+                        catch (System.Exception)
+                        {
+                            // Skip files that can't be written
+                        }
                     }
                 }
-
-                File.WriteAllLines(openTimesFile, lines);
             }
             catch (System.Exception)
             {
