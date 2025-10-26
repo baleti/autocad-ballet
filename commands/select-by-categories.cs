@@ -176,7 +176,7 @@ namespace AutoCADBallet
                 return;
             }
 
-            var selectedCategories = chosenRows.Select(row => row["Category"].ToString()).ToHashSet();
+            var selectedCategories = new HashSet<string>(chosenRows.Select(row => row["Category"].ToString()));
             var selectedIds = new List<ObjectId>();
 
             foreach (var cat in selectedCategories)
@@ -226,7 +226,7 @@ namespace AutoCADBallet
                 return;
             }
 
-            var selectedCategoryNames = chosenRows.Select(row => row["Category"].ToString()).ToHashSet();
+            var selectedCategoryNames = new HashSet<string>(chosenRows.Select(row => row["Category"].ToString()));
             var selectedEntities = new List<CategoryEntityReference>();
 
             foreach (var categoryName in selectedCategoryNames)
@@ -291,7 +291,7 @@ namespace AutoCADBallet
                 return;
             }
 
-            var selectedCategoryNames = chosenRows.Select(row => row["Category"].ToString()).ToHashSet();
+            var selectedCategoryNames = new HashSet<string>(chosenRows.Select(row => row["Category"].ToString()));
             var selectedEntities = new List<CategoryEntityReference>();
 
             foreach (var categoryName in selectedCategoryNames)

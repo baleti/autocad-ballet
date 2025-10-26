@@ -23,20 +23,18 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 
 ### Core Components
 
-**Selection Management System** (`set-selection-scope.cs`):
-- Provides cross-document selection capabilities  
-- Five selection scopes: SpaceLayout, Drawing, Process, Desktop, Network
-- Persistent selection storage using handles in `%APPDATA%/autocad-ballet/`
-- Extension methods for Editor to support enhanced selection operations
-
-**Shared Utilities** (`Shared.cs`):
+**Selection Management System** (`_selection.cs`):
+- Provides cross-document selection capabilities
 - SelectionStorage class for persisting selections across sessions
-- Uses `%APPDATA%/autocad-ballet/selection` file format: `DocumentPath|Handle`
+- SelectionItem class with DocumentPath, Handle, and SessionId properties
+- Persistent selection storage using handles in `%APPDATA%/autocad-ballet/runtime/selection/`
+- Per-document selection files with format: `DocumentPath,SessionId` followed by comma-separated handles
+- Extension methods for Editor to support legacy `SetImpliedSelectionEx()` calls
 
 **Command Structure**:
-- C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "set-scope")
+- C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "delete-selected")
 - LISP files provide aliases and utility functions
-- Main command invocation through `InvokeAddinCommand.cs`
+- Main command invocation through `invoke-addin-command.cs` with history tracking via `invoke-last-addin-command.cs`
 - **IMPORTANT**: Do not add command aliases to `aliases.lsp` - leave alias creation to the project owner
 
 **CommandFlags.Session Usage**:
@@ -48,7 +46,7 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 - Commands with `CommandFlags.Session` run at **application level**, not document level
 - **CRITICAL**: LISP wrappers for Session commands MUST include `(princ)` to prevent command context leaks
 - Without `CommandFlags.Session`, cross-document operations will fail or leave commands stuck
-- Examples requiring Session flag: `open-documents-recent`, `close-all-without-saving`, `switch-view`, `switch-view-last`
+- Examples requiring Session flag: `open-documents-recent-read-write`, `open-documents-recent-read-only`, `close-all-without-saving`, `switch-view`, `switch-view-last`, `switch-view-recent`
 
 **LISP Command Wrappers**:
 - All LISP command wrappers in `aliases.lsp` MUST end with `(princ)` to prevent command context leaks
@@ -60,8 +58,9 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 **DataGrid Display Conventions**:
 - Column headers are automatically formatted to lowercase with spaces between words
 - Example: "DocumentName" becomes "document name", "LayoutType" becomes "layout type"
-- This is handled by the `FormatColumnHeader` method in `DataGrid2_Main.cs`
+- This is handled by the `FormatColumnHeader` method in `datagrid/datagrid.Main.cs`
 - Actual property names remain unchanged (e.g., "DocumentName"), only display headers are formatted
+- DataGrid implementation is modular with separate files for filtering, sorting, virtualization, edit mode, and cache indexing
 
 ## Building
 
@@ -81,16 +80,29 @@ dotnet build commands/autocad-ballet.csproj -p:AutoCADYear=2024
 # Build Windows Forms installer
 dotnet build installer/installer.csproj
 
-# Output: installer/bin/installer.exe
+# Output: installer/bin/Release/installer.exe (or Debug/installer.exe for debug builds)
 ```
 
 ## Key Files
 
 - `commands/autocad-ballet.csproj` - Main plugin project with multi-version support
-- `commands/set-selection-scope.cs` - Core selection management system
-- `commands/Shared.cs` - Utility classes for selection persistence
-- `commands/FilterSelected.cs` - Entity filtering and data grid functionality
+- `commands/_selection.cs` - Core selection storage system with SelectionItem and SelectionStorage classes
 - `commands/_edit-dialog.cs` - Shared text editing dialog (internal utility)
+- `commands/_reopen-documents.cs` - Shared implementation for document reopening functionality
+- `commands/_switch-view-logging.cs` - Layout/view switching history logging utilities
+- `commands/filter-selection.cs` - Entity filtering with data grid UI (main implementation)
+- `commands/datagrid/` - Modular data grid implementation with separate files for:
+  - `datagrid.Main.cs` - Core data grid functionality
+  - `datagrid.Filtering.cs` - Column filtering logic
+  - `datagrid.Sorting.cs` - Column sorting functionality
+  - `datagrid.EditMode.cs` - In-place editing support
+  - `datagrid.EditApply.cs` - Apply edits to entities
+  - `datagrid.Virtualization.cs` - Virtual scrolling for large datasets
+  - `datagrid.CacheIndex.cs` - Entity cache indexing
+  - `datagrid.Types.cs` - Shared type definitions
+  - `datagrid.Utils.cs` - Utility functions
+- `commands/invoke-addin-command.cs` - Command invocation with grid selection
+- `commands/invoke-last-addin-command.cs` - Re-invoke last command with history tracking
 - `commands/aliases.lsp` - LISP command aliases
 - `installer/installer.csproj` - Installer project that embeds plugin DLLs
 
@@ -112,11 +124,12 @@ This convention helps distinguish between:
 
 The plugin installs to `%APPDATA%/autocad-ballet/` with:
 - Plugin DLLs for each AutoCAD version
-- LISP files for command aliases
-- Selection persistence files
-- Mode configuration files
+- LISP files for command aliases and utilities
 
-Runtime data is stored in `%APPDATA%/autocad-ballet/runtime` for selection scope management.
+Runtime data is stored in `%APPDATA%/autocad-ballet/runtime/`:
+- `selection/` - Per-document selection storage files
+- `switch-view-logs/` - Layout switching history by project name
+- `selection-logs/` - Selection change history by project name
 
 ## Command Porting
 
@@ -126,16 +139,20 @@ Many commands in AutoCAD Ballet are ported from the revit-ballet repository. Whe
 - **ElementId → Layout Names**: Revit uses numeric ElementIds, AutoCAD uses string layout names
 - **View Change Logging**: Both systems use similar logging patterns:
   - Revit: `%APPDATA%/revit-scripts/LogViewChanges/{ProjectName}`
-  - AutoCAD: `%APPDATA%/autocad-ballet/runtime/LogLayoutChanges/{ProjectName}`
+  - AutoCAD: `%APPDATA%/autocad-ballet/runtime/switch-view-logs/{ProjectName}`
 - **API Differences**:
   - Revit: `uidoc.ActiveView = view`
   - AutoCAD: `LayoutManager.Current.CurrentLayout = layoutName`
 - **Document Access**: Both use similar document manager patterns but with different namespaces
 - **Runtime Data Storage**: All runtime information (logs, temporary data) should be stored in `%APPDATA%/autocad-ballet/runtime/`
+  - `runtime/selection/` - Per-document selection files (from SelectionStorage)
+  - `runtime/switch-view-logs/` - Layout switching history logs (from SwitchViewLogging)
+  - `runtime/selection-logs/` - Selection change logs (from SwitchViewLogging)
 
 Commands successfully ported from revit-ballet include:
-- `switch-view-last` - Switches to the most recent layout from log history
-- `switch-view-recent` - Shows layouts ordered by usage history for selection
+- `switch-view-last.cs` - Switches to the most recent layout from log history
+- `switch-view-recent.cs` - Shows layouts ordered by usage history for selection
+- `switch-view.cs` - Interactive layout switching with grid selection
 
 ## AutoCAD .NET API Patterns
 
@@ -296,33 +313,35 @@ public void MyCommand()
 
 **Examples in Codebase**:
 - `filter-selection.cs` - Perfect example of proper selection handling
-- `copy-selection-to-views-in-process.cs` - Uses this pattern correctly
+- `copy-selection-to-views-in-application.cs` - Uses this pattern correctly (note: renamed from "process" to "application" scope)
 
 ### Selection Scope Handling
-**CRITICAL**: All AutoCAD Ballet commands must properly handle the five selection scopes. Commands should check `SelectionScopeManager.CurrentScope` and adapt their selection behavior accordingly.
+**CRITICAL**: AutoCAD Ballet provides three selection scopes through separate command variants: view, document, and application.
 
-**The Five Selection Scopes**:
-1. **`view`** - Current active space/layout only (default AutoCAD behavior)
-2. **`document`** - Entire current document (all layouts)
-3. **`process`** - All opened documents in current AutoCAD process
-4. **`desktop`** - All documents in all AutoCAD instances on desktop
-5. **`network`** - Across network (future implementation)
+**The Three Selection Scopes**:
+1. **`view`** - Current active space/layout only (default AutoCAD behavior, uses pickfirst set)
+2. **`document`** - Entire current document (all layouts, uses stored selection)
+3. **`application`** - All opened documents in current AutoCAD process (uses stored selection)
 
-**The Problem**: Commands that only handle view scope break the enhanced selection workflow that users expect from AutoCAD Ballet.
+**Architecture**: Commands use a **scope-based command pattern**:
+- Each command has three variants: `{command}-in-view`, `{command}-in-document`, `{command}-in-application`
+- Main implementation file contains separate `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()` methods
+- Scope-specific command files are stubs that call the appropriate method
 
-**The Solution**: Always implement scope-aware selection handling:
+**The Problem**: Commands that only handle view scope don't provide the cross-document capabilities users expect from AutoCAD Ballet.
+
+**The Solution**: Implement all three scope methods in the main command file:
 
 ```csharp
-[CommandMethod("my-command", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-public void MyCommand()
+// Main implementation file: my-command.cs
+public static class MyCommand
 {
-    var doc = AcadApp.DocumentManager.MdiActiveDocument;
-    var ed = doc.Editor;
-    var currentScope = SelectionScopeManager.CurrentScope;
-
-    if (currentScope == SelectionScopeManager.SelectionScope.view)
+    // View scope: Use pickfirst set or prompt for selection
+    public static void ExecuteViewScope(Editor ed)
     {
-        // Handle view scope: Use pickfirst set or prompt for selection
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var db = doc.Database;
+
         var selResult = ed.SelectImplied();
 
         if (selResult.Status == PromptStatus.Error)
@@ -342,81 +361,170 @@ public void MyCommand()
             return;
         }
 
-        // Process selection...
+        var selectedIds = selResult.Value.GetObjectIds();
+        // Process current view selection...
     }
-    else
+
+    // Document scope: Use stored selection filtered to current document
+    public static void ExecuteDocumentScope(Editor ed, Database db)
     {
-        // Handle document, process, desktop, network scopes: Use stored selection
-        var storedSelection = SelectionStorage.LoadSelection();
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var docName = Path.GetFileName(doc.Name);
+
+        var storedSelection = SelectionStorage.LoadSelection(docName);
         if (storedSelection == null || storedSelection.Count == 0)
         {
-            ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories' first or switch to 'view' scope.\n");
+            ed.WriteMessage($"\nNo stored selection found for document. Use 'select-by-categories-in-document' first.\n");
             return;
         }
 
-        // Filter to current document if in document scope
-        if (currentScope == SelectionScopeManager.SelectionScope.document)
+        // Filter to current document only
+        var currentDocPath = Path.GetFullPath(doc.Name);
+        storedSelection = storedSelection.Where(item =>
         {
-            var currentDocPath = Path.GetFullPath(doc.Name);
-            storedSelection = storedSelection.Where(item =>
+            try
             {
-                try
-                {
-                    var itemPath = Path.GetFullPath(item.DocumentPath);
-                    return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
-                }
-                catch
-                {
-                    return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
-                }
-            }).ToList();
-        }
+                var itemPath = Path.GetFullPath(item.DocumentPath);
+                return string.Equals(itemPath, currentDocPath, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return string.Equals(item.DocumentPath, doc.Name, StringComparison.OrdinalIgnoreCase);
+            }
+        }).ToList();
 
-        if (storedSelection.Count == 0)
+        // Process document-wide selection...
+    }
+
+    // Application scope: Use stored selection from all documents
+    public static void ExecuteApplicationScope(Editor ed)
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var db = doc.Database;
+
+        var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+        if (storedSelection == null || storedSelection.Count == 0)
         {
-            ed.WriteMessage($"\nNo stored selection found for current scope '{currentScope}'.\n");
+            ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-application' first.\n");
             return;
         }
 
-        // Process stored selection items...
+        // Separate current document from external documents
+        var currentDocEntities = new List<ObjectId>();
+        var externalDocuments = new Dictionary<string, List<SelectionItem>>();
+
         foreach (var item in storedSelection)
         {
-            // Handle current document items
-            if (string.Equals(Path.GetFullPath(item.DocumentPath), Path.GetFullPath(doc.Name), StringComparison.OrdinalIgnoreCase))
+            var itemPath = Path.GetFullPath(item.DocumentPath);
+            var currentPath = Path.GetFullPath(doc.Name);
+
+            if (string.Equals(itemPath, currentPath, StringComparison.OrdinalIgnoreCase))
             {
                 var handle = Convert.ToInt64(item.Handle, 16);
                 var objectId = db.GetObjectId(false, new Handle(handle), 0);
-                // Process current document entity...
+                if (objectId != ObjectId.Null)
+                {
+                    currentDocEntities.Add(objectId);
+                }
             }
             else
             {
-                // Handle external document items (report or skip as appropriate)
-                ed.WriteMessage($"\nNote: External entity found but cannot be processed: {item.DocumentPath}\n");
+                if (!externalDocuments.ContainsKey(item.DocumentPath))
+                {
+                    externalDocuments[item.DocumentPath] = new List<SelectionItem>();
+                }
+                externalDocuments[item.DocumentPath].Add(item);
             }
         }
 
-        // Update stored selection with results if needed
-        // ed.SetImpliedSelectionEx(newObjectIds); // Use extension method for scope-aware selection setting
+        // Process current document entities...
+        // Process external documents (may need to open them)...
+    }
+}
+
+// Stub file: my-command-in-view.cs
+public class MyCommandInView
+{
+    [CommandMethod("my-command-in-view", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    public void MyCommandInViewCommand()
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        try
+        {
+            MyCommand.ExecuteViewScope(ed);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError in my-command-in-view: {ex.Message}\n");
+        }
+    }
+}
+
+// Stub file: my-command-in-document.cs
+public class MyCommandInDocument
+{
+    [CommandMethod("my-command-in-document", CommandFlags.Modal)]
+    public void MyCommandInDocumentCommand()
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+        var db = doc.Database;
+
+        try
+        {
+            MyCommand.ExecuteDocumentScope(ed, db);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError in my-command-in-document: {ex.Message}\n");
+        }
+    }
+}
+
+// Stub file: my-command-in-application.cs
+public class MyCommandInApplication
+{
+    [CommandMethod("my-command-in-application", CommandFlags.Modal)]
+    public void MyCommandInApplicationCommand()
+    {
+        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        try
+        {
+            MyCommand.ExecuteApplicationScope(ed);
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError in my-command-in-application: {ex.Message}\n");
+        }
     }
 }
 ```
 
 **Key Selection Scope Principles**:
-- **Always check `SelectionScopeManager.CurrentScope`** before processing selection
-- **View scope**: Use pickfirst set or prompt for selection (standard AutoCAD behavior)
-- **Other scopes**: Use `SelectionStorage.LoadSelection()` to get cross-document selections
-- **Document scope filtering**: Filter stored selection to current document only
-- **Cross-document limitations**: Many operations can only be performed on current document entities
-- **Update stored selection**: Use `ed.SetImpliedSelectionEx()` to update selection storage in non-view scopes
-- **Clear error messages**: Guide users to use `select-by-categories` or switch scope when no stored selection exists
+- **Implement three separate methods**: `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()`
+- **View scope**: Use pickfirst set or prompt for selection (standard AutoCAD behavior with `CommandFlags.UsePickSet`)
+- **Document scope**: Use `SelectionStorage.LoadSelection(docName)` and filter to current document
+- **Application scope**: Use `SelectionStorage.LoadSelectionFromAllDocuments()` for cross-document selections
+- **Cross-document limitations**: Many operations can only be performed on current document entities - may need to open external documents
+- **Update stored selection**: Use `SelectionStorage.SaveSelection()` to update stored selection after modifications
+- **Clear error messages**: Guide users to use appropriate `select-by-categories-in-{scope}` command first
 
 **Required Imports for Selection Scope Support**:
 ```csharp
-using AutoCADBallet;  // For SelectionScopeManager, SelectionStorage, SelectionItem
+using AutoCADBallet;  // For SelectionStorage, SelectionItem
 using System.IO;      // For Path operations in cross-document scenarios
+using System.Linq;    // For LINQ filtering operations
 ```
 
 **Examples in Codebase**:
-- `filter-selection.cs` lines 37-86 - Perfect reference implementation
-- `duplicate-block.cs` - Updated to handle all selection scopes properly
-- `set-scope.cs` - Core selection scope management system
+- `filter-selection.cs` - Perfect reference implementation for scope-aware selection
+- `delete-selected.cs` - Main implementation with `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()` methods
+  - Stub files: `delete-selected-in-view.cs`, `delete-selected-in-document.cs`, `delete-selected-in-application.cs`
+- `select-by-categories.cs` - Selection by entity category with scope variants
+  - Stub files: `select-by-categories-in-view.cs`, `select-by-categories-in-document.cs`, `select-by-categories-in-application.cs`
+- `duplicate-blocks.cs` - Block duplication with all selection scopes
+  - Stub files: `duplicate-blocks-in-view.cs`, `duplicate-blocks-in-application.cs`

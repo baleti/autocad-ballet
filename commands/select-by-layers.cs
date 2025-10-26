@@ -175,7 +175,7 @@ namespace AutoCADBallet
                 return;
             }
 
-            var selectedLayers = chosenRows.Select(row => row["Layer"].ToString()).ToHashSet();
+            var selectedLayers = new HashSet<string>(chosenRows.Select(row => row["Layer"].ToString()));
             var selectedIds = new List<ObjectId>();
 
             foreach (var layer in selectedLayers)
@@ -225,7 +225,7 @@ namespace AutoCADBallet
                 return;
             }
 
-            var selectedLayerNames = chosenRows.Select(row => row["Layer"].ToString()).ToHashSet();
+            var selectedLayerNames = new HashSet<string>(chosenRows.Select(row => row["Layer"].ToString()));
             var selectedEntities = new List<LayerEntityReference>();
 
             foreach (var layerName in selectedLayerNames)
@@ -290,7 +290,7 @@ namespace AutoCADBallet
                 return;
             }
 
-            var selectedLayerNames = chosenRows.Select(row => row["Layer"].ToString()).ToHashSet();
+            var selectedLayerNames = new HashSet<string>(chosenRows.Select(row => row["Layer"].ToString()));
             var selectedEntities = new List<LayerEntityReference>();
 
             foreach (var layerName in selectedLayerNames)

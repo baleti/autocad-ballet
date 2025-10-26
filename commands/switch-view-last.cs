@@ -14,6 +14,14 @@ namespace AutoCADBallet
 {
     public class SwitchViewLastCommand
     {
+        // Simple class to replace tuple for .NET Framework 4.6/4.7 compatibility
+        private class LayoutHistoryEntry
+        {
+            public DateTime Timestamp { get; set; }
+            public string LayoutName { get; set; }
+            public string DocName { get; set; }
+        }
+
         [CommandMethod("switch-view-last", CommandFlags.Session)]
         public void SwitchViewLast()
         {
@@ -27,7 +35,7 @@ namespace AutoCADBallet
             string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "switch-view-logs");
 
             // Build a chronological list of all layout entries across all documents
-            var allHistoryEntries = new List<(DateTime timestamp, string layoutName, string docName)>();
+            var allHistoryEntries = new List<LayoutHistoryEntry>();
 
             // Read layout logs from all documents if they exist
             if (Directory.Exists(logDirPath))
@@ -51,7 +59,12 @@ namespace AutoCADBallet
                                                          System.Globalization.DateTimeStyles.None, out DateTime timestamp))
                                 {
                                     string layoutName = parts[1];
-                                    allHistoryEntries.Add((timestamp, layoutName, docName));
+                                    allHistoryEntries.Add(new LayoutHistoryEntry
+                                    {
+                                        Timestamp = timestamp,
+                                        LayoutName = layoutName,
+                                        DocName = docName
+                                    });
                                 }
                             }
                         }
@@ -75,8 +88,8 @@ namespace AutoCADBallet
 
             // Sort all entries by timestamp (most recent first) and deduplicate
             var sortedEntries = allHistoryEntries
-                .OrderByDescending(e => e.timestamp)
-                .GroupBy(e => new { e.layoutName, e.docName })
+                .OrderByDescending(e => e.Timestamp)
+                .GroupBy(e => new { e.LayoutName, e.DocName })
                 .Select(g => g.First()) // Take the most recent occurrence of each layout/document combo
                 .ToList();
 
@@ -89,7 +102,7 @@ namespace AutoCADBallet
 
                 foreach (Document doc in docs)
                 {
-                    if (Path.GetFileNameWithoutExtension(doc.Name) == entry.docName)
+                    if (Path.GetFileNameWithoutExtension(doc.Name) == entry.DocName)
                     {
                         targetDoc = doc;
 
@@ -102,14 +115,14 @@ namespace AutoCADBallet
                                 using (var tr = db.TransactionManager.StartTransaction())
                                 {
                                     // Model space is always available, doesn't exist in LayoutDictionary
-                                    if (entry.layoutName.Equals("Model", StringComparison.OrdinalIgnoreCase))
+                                    if (entry.LayoutName.Equals("Model", StringComparison.OrdinalIgnoreCase))
                                     {
                                         layoutExists = true;
                                     }
                                     else
                                     {
                                         var layoutDict = tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead) as DBDictionary;
-                                        layoutExists = layoutDict.Contains(entry.layoutName);
+                                        layoutExists = layoutDict.Contains(entry.LayoutName);
                                     }
                                     tr.Commit();
                                 }
@@ -128,10 +141,10 @@ namespace AutoCADBallet
                 {
                     availableViews.Add(new Dictionary<string, object>
                     {
-                        ["LayoutName"] = entry.layoutName,
-                        ["DocumentName"] = entry.docName,
+                        ["LayoutName"] = entry.LayoutName,
+                        ["DocumentName"] = entry.DocName,
                         ["Document"] = targetDoc,
-                        ["Timestamp"] = entry.timestamp
+                        ["Timestamp"] = entry.Timestamp
                     });
                 }
             }

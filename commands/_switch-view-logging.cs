@@ -245,12 +245,8 @@ namespace AutoCADBallet
                         // Check for document opened time (third header)
                         if (lines.Count < 3 || !lines[2].StartsWith("DOCUMENT_OPENED:"))
                         {
-                            // Try to extract open time from old document-open-times.txt if available
-                            openTime = TryGetDocumentOpenTimeFromOldLog(absolutePath);
-                            if (openTime == null)
-                            {
-                                openTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                            }
+                            // Use current time as default
+                            openTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                             headerLines.Add($"DOCUMENT_OPENED:{openTime}");
                             needsUpdate = true;
                         }
@@ -274,41 +270,6 @@ namespace AutoCADBallet
             {
                 System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.InitializeLogFileIfNeeded error: {ex.Message}");
             }
-        }
-
-        private static string TryGetDocumentOpenTimeFromOldLog(string documentPath)
-        {
-            try
-            {
-                string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string oldLogFile = Path.Combine(appDataPath, "autocad-ballet", "runtime", "document-open-times.txt");
-
-                if (!File.Exists(oldLogFile))
-                    return null;
-
-                var lines = File.ReadAllLines(oldLogFile);
-                foreach (string line in lines)
-                {
-                    var parts = line.Split('\t');
-                    if (parts.Length == 2)
-                    {
-                        string logPath = parts[0];
-                        string timestamp = parts[1];
-
-                        // Compare paths (handle both absolute and relative)
-                        if (string.Equals(Path.GetFullPath(logPath), Path.GetFullPath(documentPath), StringComparison.OrdinalIgnoreCase))
-                        {
-                            return timestamp;
-                        }
-                    }
-                }
-            }
-            catch (System.Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"SwitchViewLogging.TryGetDocumentOpenTimeFromOldLog error: {ex.Message}");
-            }
-
-            return null;
         }
 
         public static void LogLayoutChange(string projectName, string layoutName)

@@ -15,6 +15,14 @@ namespace AutoCADBallet
 {
     public class SwitchViewRecentCommand
     {
+        // Simple class to replace tuple for .NET Framework 4.6/4.7 compatibility
+        private class LayoutHistoryEntry
+        {
+            public DateTime Timestamp { get; set; }
+            public string LayoutName { get; set; }
+            public string DocName { get; set; }
+        }
+
         [CommandMethod("switch-view-recent", CommandFlags.Session)]
         public void SwitchViewRecent()
         {
@@ -28,7 +36,7 @@ namespace AutoCADBallet
             string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "switch-view-logs");
 
             // Build a chronological list of all layout entries across all documents
-            var allHistoryEntries = new List<(DateTime timestamp, string layoutName, string docName)>();
+            var allHistoryEntries = new List<LayoutHistoryEntry>();
 
             // Read layout logs from all documents if they exist
             if (Directory.Exists(logDirPath))
@@ -52,7 +60,12 @@ namespace AutoCADBallet
                                                          System.Globalization.DateTimeStyles.None, out DateTime timestamp))
                                 {
                                     string layoutName = parts[1];
-                                    allHistoryEntries.Add((timestamp, layoutName, docName));
+                                    allHistoryEntries.Add(new LayoutHistoryEntry
+                                    {
+                                        Timestamp = timestamp,
+                                        LayoutName = layoutName,
+                                        DocName = docName
+                                    });
                                 }
                             }
                         }
@@ -76,8 +89,8 @@ namespace AutoCADBallet
 
             // Sort all entries by timestamp (most recent first) and deduplicate
             var sortedEntries = allHistoryEntries
-                .OrderByDescending(e => e.timestamp)
-                .GroupBy(e => new { e.layoutName, e.docName })
+                .OrderByDescending(e => e.Timestamp)
+                .GroupBy(e => new { e.LayoutName, e.DocName })
                 .Select(g => g.First()) // Take the most recent occurrence of each layout/document combo
                 .ToList();
 
@@ -93,7 +106,7 @@ namespace AutoCADBallet
 
                 foreach (Document doc in docs)
                 {
-                    if (Path.GetFileNameWithoutExtension(doc.Name) == entry.docName)
+                    if (Path.GetFileNameWithoutExtension(doc.Name) == entry.DocName)
                     {
                         targetDoc = doc;
 
@@ -106,16 +119,16 @@ namespace AutoCADBallet
                                 using (var tr = db.TransactionManager.StartTransaction())
                                 {
                                     // Model space is always available, doesn't exist in LayoutDictionary
-                                    if (entry.layoutName.Equals("Model", StringComparison.OrdinalIgnoreCase))
+                                    if (entry.LayoutName.Equals("Model", StringComparison.OrdinalIgnoreCase))
                                     {
                                         layoutExists = true;
                                     }
                                     else
                                     {
                                         var layoutDict = tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead) as DBDictionary;
-                                        layoutExists = layoutDict.Contains(entry.layoutName);
+                                        layoutExists = layoutDict.Contains(entry.LayoutName);
                                     }
-                                    isCurrent = (doc == activeDoc && entry.layoutName == currentLayoutName);
+                                    isCurrent = (doc == activeDoc && entry.LayoutName == currentLayoutName);
                                     tr.Commit();
                                 }
                             }
@@ -133,16 +146,16 @@ namespace AutoCADBallet
                 {
                     availableViews.Add(new Dictionary<string, object>
                     {
-                        ["layout"] = entry.layoutName,
-                        ["document"] = entry.docName,
-                        ["last accessed"] = entry.timestamp.ToString("yyyy-MM-dd HH:mm:ss"),
-                        ["LayoutName"] = entry.layoutName,
-                        ["DocumentName"] = entry.docName,
+                        ["layout"] = entry.LayoutName,
+                        ["document"] = entry.DocName,
+                        ["last accessed"] = entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss"),
+                        ["LayoutName"] = entry.LayoutName,
+                        ["DocumentName"] = entry.DocName,
                         ["Document"] = targetDoc,
                         ["IsCurrent"] = isCurrent,
-                        ["DisplayName"] = $"{entry.layoutName} ({entry.docName})",
+                        ["DisplayName"] = $"{entry.LayoutName} ({entry.DocName})",
                         ["HistoryOrder"] = i,
-                        ["Timestamp"] = entry.timestamp
+                        ["Timestamp"] = entry.Timestamp
                     });
                 }
             }
