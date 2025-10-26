@@ -299,19 +299,37 @@ namespace AutoCADBallet
                 string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH:mm:ss");
                 string logEntry = $"{timestamp} {layoutName}";
 
-                // Read existing entries to check for duplicates
-                List<string> logEntries = File.Exists(logFilePath) ?
+                // Read existing entries and separate headers from layout entries
+                var allLines = File.Exists(logFilePath) ?
                     File.ReadAllLines(logFilePath).ToList() : new List<string>();
+
+                var headerLines = new List<string>();
+                var layoutEntries = new List<string>();
+
+                // Separate headers (lines starting with known header prefixes) from layout entries
+                foreach (var line in allLines)
+                {
+                    if (line.StartsWith("DOCUMENT_PATH:") ||
+                        line.StartsWith("LAST_SESSION_PID:") ||
+                        line.StartsWith("DOCUMENT_OPENED:"))
+                    {
+                        headerLines.Add(line);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(line))
+                    {
+                        layoutEntries.Add(line);
+                    }
+                }
 
                 // Check if this layout already exists and update its timestamp, or add new entry
                 bool layoutExists = false;
-                for (int i = 0; i < logEntries.Count; i++)
+                for (int i = 0; i < layoutEntries.Count; i++)
                 {
-                    var parts = logEntries[i].Split(new[] { ' ' }, 2);
+                    var parts = layoutEntries[i].Split(new[] { ' ' }, 2);
                     if (parts.Length == 2 && parts[1] == layoutName)
                     {
                         // Update timestamp for existing layout
-                        logEntries[i] = logEntry;
+                        layoutEntries[i] = logEntry;
                         layoutExists = true;
                         break;
                     }
@@ -320,11 +338,14 @@ namespace AutoCADBallet
                 // If layout doesn't exist, add it as a new entry
                 if (!layoutExists)
                 {
-                    logEntries.Add(logEntry);
+                    layoutEntries.Add(logEntry);
                 }
 
-                // Write the updated entries back to the file
-                File.WriteAllLines(logFilePath, logEntries);
+                // Write headers first, then layout entries
+                var finalLines = new List<string>();
+                finalLines.AddRange(headerLines);
+                finalLines.AddRange(layoutEntries);
+                File.WriteAllLines(logFilePath, finalLines);
 
                 // Update our cache
                 _lastKnownLayouts[projectName] = layoutName;

@@ -4,7 +4,7 @@
 - `commands/` — C# AutoCAD plugin and AutoLISP utilities (`*.lsp`).
   - Multi-version targeting via `AutoCADYear` in `autocad-ballet.csproj`.
 - `installer/` — Windows Forms installer that bundles built artifacts.
-- `runtime/` — Local development/test runtime data (gitignored); production data lives in `%APPDATA%/autocad-ballet/runtime/`.
+- `runtime/` — **IMPORTANT**: This codebase IS located at `%APPDATA%/autocad-ballet/`, so the `runtime/` folder contains **live usage data** and can be examined to verify code behavior and debug issues. Use `ls -lt runtime/switch-view-logs/ | head` to check recent log activity.
 - Key files: `commands/autocad-ballet.csproj`, `commands/_selection.cs`, `commands/_switch-view-logging.cs`, `commands/_reopen-documents.cs`, `commands/aliases.lsp`, `installer/installer.csproj`.
 
 ## Build, Test, and Development Commands
@@ -33,8 +33,11 @@
 ## Testing Guidelines
 - No formal test suite yet. Validate by:
   - Running commands on sample drawings and checking behavior.
-  - Verifying selection persistence under `%APPDATA%/autocad-ballet/runtime/selection/`.
-  - Checking layout history logs under `%APPDATA%/autocad-ballet/runtime/switch-view-logs/`.
+  - **Debugging workflow**: Since this codebase is at `%APPDATA%/autocad-ballet/`, examine `runtime/` logs directly:
+    - `runtime/switch-view-logs/` — Layout switching history (use `ls -lt runtime/switch-view-logs/ | head` for recent activity)
+    - `runtime/selection/` — Per-document selection persistence
+    - `runtime/selection-logs/` — Selection change history
+    - `runtime/InvokeAddinCommand-history` — Command invocation history
   - NETLOAD checks across targeted AutoCAD years (2017-2026).
 - For bug fixes, include repro steps and expected vs. actual results in the PR.
 

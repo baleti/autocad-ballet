@@ -9,6 +9,25 @@ AutoCAD Ballet is a collection of custom commands for AutoCAD that provides enha
 1. **Commands** (`/commands/`) - C# plugin with custom AutoCAD commands and LISP utilities
 2. **Installer** (`/installer/`) - Windows Forms installer application
 
+## Development Environment
+
+**IMPORTANT**: This codebase is located in the same directory as `%APPDATA%/autocad-ballet`, which means:
+- The `runtime/` folder in this repository reflects **live usage** of the plugin
+- You can examine runtime logs and data to verify code behavior and debug issues
+- Runtime data includes:
+  - `runtime/switch-view-logs/` - Layout switching history logs (one file per document)
+  - `runtime/selection/` - Per-document selection storage files
+  - `runtime/selection-logs/` - Selection change history logs
+  - `runtime/document-open-times.txt` - Document open/close timestamps
+  - `runtime/InvokeAddinCommand-history` - Command invocation history
+  - `runtime/InvokeAddinCommand-last-dll-path` - Last used DLL path
+
+**Debugging Workflow**: When investigating issues:
+1. Check the most recent files in `runtime/switch-view-logs/` to verify logging behavior
+2. Examine selection storage in `runtime/selection/` to confirm cross-document selection is working
+3. Review command history in `runtime/InvokeAddinCommand-history` to trace command executions
+4. Use `ls -lt runtime/switch-view-logs/ | head` to find recently modified log files for active documents
+
 ## Architecture
 
 ### Multi-Version AutoCAD Support
