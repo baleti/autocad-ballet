@@ -52,6 +52,11 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 
 **Command Structure**:
 - C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "delete-selected")
+- **CRITICAL**: Every command class MUST have the assembly-level `[assembly: CommandClass(typeof(YourClassName))]` attribute at the top of the file, outside the namespace declaration
+  - Without this attribute, AutoCAD will not register the commands and they will be invisible
+  - Example: `[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedNamedInView))]`
+  - This tells AutoCAD to scan the class for `[CommandMethod]` attributes
+  - Place this line after `using` statements but before the `namespace` declaration
 - LISP files provide aliases and utility functions
 - Main command invocation through `invoke-addin-command.cs` with history tracking via `invoke-last-addin-command.cs`
 - **IMPORTANT**: Do not add command aliases to `aliases.lsp` - leave alias creation to the project owner

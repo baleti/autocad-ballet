@@ -36,6 +36,9 @@
 (defun c:uil () (command "unisolate-lock-on-new-layer") (princ))
 (defun c:rro () (command "reopen-documents-read-only") (princ))
 (defun c:rrw () (command "reopen-documents-read-write") (princ))
+(defun c:tgv () (command "tag-selected-in-view") (princ))
+(defun c:tgd () (command "tag-selected-in-document") (princ))
+(defun c:tgs () (command "tag-selected-in-session") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))

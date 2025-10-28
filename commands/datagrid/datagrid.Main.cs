@@ -31,9 +31,14 @@ public partial class CustomGUIs
         List<string> propertyNames,
         bool spanAllScreens,
         List<int> initialSelectionIndices = null,
-        Func<List<Dictionary<string, object>>, bool> onDeleteEntries = null)
+        Func<List<Dictionary<string, object>>, bool> onDeleteEntries = null,
+        bool allowCreateFromSearch = false)
     {
-        if (entries == null || entries.Count == 0 || propertyNames == null || propertyNames.Count == 0)
+        if (entries == null || propertyNames == null || propertyNames.Count == 0)
+            return new List<Dictionary<string, object>>();
+
+        // Allow empty entries when allowCreateFromSearch is enabled (user can type new values)
+        if (entries.Count == 0 && !allowCreateFromSearch)
             return new List<Dictionary<string, object>>();
 
         // Clear any previous cached data
@@ -336,6 +341,15 @@ public partial class CustomGUIs
                     ApplyCellEditsToEntities();
                     selectedEntries.Clear();
                     selectedEntries.AddRange(_modifiedEntries);
+                    form.Close();
+                }
+                else if (allowCreateFromSearch && grid.SelectedRows.Count == 0 && !string.IsNullOrWhiteSpace(searchBox.Text))
+                {
+                    // No selection but search text exists - return search text as new entry
+                    var newEntry = new Dictionary<string, object>();
+                    newEntry["__SEARCH_TEXT__"] = searchBox.Text.Trim();
+                    selectedEntries.Clear();
+                    selectedEntries.Add(newEntry);
                     form.Close();
                 }
                 else
@@ -692,14 +706,22 @@ public partial class CustomGUIs
         {
             char c = columnName[i];
 
-            // Add space before uppercase letters (except at start)
-            if (i > 0 && char.IsUpper(c) && !char.IsUpper(columnName[i - 1]))
+            // Replace underscores with spaces
+            if (c == '_')
             {
                 result.Append(' ');
             }
-
+            // Add space before uppercase letters (except at start)
+            else if (i > 0 && char.IsUpper(c) && !char.IsUpper(columnName[i - 1]))
+            {
+                result.Append(' ');
+                result.Append(char.ToLower(c));
+            }
             // Convert to lowercase
-            result.Append(char.ToLower(c));
+            else
+            {
+                result.Append(char.ToLower(c));
+            }
         }
 
         return result.ToString();

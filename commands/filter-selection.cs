@@ -103,6 +103,7 @@ public static class FilterEntityDataHelper
             // Get entities from stored selection based on scope
             List<SelectionItem> storedSelection;
 
+            var loadTimer = System.Diagnostics.Stopwatch.StartNew();
             if (scope == SelectionScope.document)
             {
                 // Document scope - load selection for current document only
@@ -119,6 +120,8 @@ public static class FilterEntityDataHelper
                 // View scope - load from global file
                 storedSelection = SelectionStorage.LoadSelection();
             }
+            loadTimer.Stop();
+            ed.WriteMessage($"  [DIAG] Load stored selection ({scope}): {loadTimer.ElapsedMilliseconds}ms, {storedSelection?.Count ?? 0} items\n");
 
             if (storedSelection == null || storedSelection.Count == 0)
             {
@@ -132,10 +135,14 @@ public static class FilterEntityDataHelper
                 }
             }
 
+            var filterTimer = System.Diagnostics.Stopwatch.StartNew();
             // Filter to current session to avoid confusion with selections from different AutoCAD processes
             var currentSessionId = GetCurrentSessionId();
+            var beforeFilterCount = storedSelection.Count;
             storedSelection = storedSelection.Where(item =>
                 string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
+            filterTimer.Stop();
+            ed.WriteMessage($"  [DIAG] Filter by session: {filterTimer.ElapsedMilliseconds}ms, {beforeFilterCount} -> {storedSelection.Count} items\n");
 
             // Check if filtering resulted in empty selection
             if (storedSelection.Count == 0)
@@ -150,6 +157,11 @@ public static class FilterEntityDataHelper
                 }
             }
 
+            var processTimer = System.Diagnostics.Stopwatch.StartNew();
+            int currentDocCount = 0;
+            int externalDocCount = 0;
+            var externalDocTimer = new System.Diagnostics.Stopwatch();
+
             // Process stored selection items
             foreach (var item in storedSelection)
             {
@@ -158,6 +170,7 @@ public static class FilterEntityDataHelper
                     // Check if this is from the current document
                     if (Path.GetFullPath(item.DocumentPath) == Path.GetFullPath(doc.Name))
                     {
+                        currentDocCount++;
                         // Current document - get entity directly
                         var handle = Convert.ToInt64(item.Handle, 16);
                         var objectId = db.GetObjectId(false, new Handle(handle), 0);
@@ -179,8 +192,11 @@ public static class FilterEntityDataHelper
                     }
                     else
                     {
+                        externalDocCount++;
                         // Different document - retrieve properties from external document
+                        externalDocTimer.Start();
                         var data = GetExternalEntityData(item.DocumentPath, item.Handle, includeProperties);
+                        externalDocTimer.Stop();
                         entityData.Add(data);
                     }
                 }
@@ -189,6 +205,24 @@ public static class FilterEntityDataHelper
                     // Skip problematic entities
                     continue;
                 }
+            }
+            processTimer.Stop();
+            ed.WriteMessage($"  [DIAG] Process items: {processTimer.ElapsedMilliseconds}ms total\n");
+            ed.WriteMessage($"  [DIAG]   - Current doc: {currentDocCount} items\n");
+            ed.WriteMessage($"  [DIAG]   - External docs: {externalDocCount} items, {externalDocTimer.ElapsedMilliseconds}ms\n");
+            if (externalDocCount > 0)
+            {
+                ed.WriteMessage($"  [DIAG]   - Avg per external: {externalDocTimer.ElapsedMilliseconds / externalDocCount}ms\n");
+                ed.WriteMessage($"  [DIAG]   - GetExternalEntityData breakdown:\n");
+                ed.WriteMessage($"  [DIAG]     - Check if doc open: {_diagCheckOpenTimer.ElapsedMilliseconds}ms\n");
+                ed.WriteMessage($"  [DIAG]     - Open documents: {_diagOpenDocTimer.ElapsedMilliseconds}ms\n");
+                ed.WriteMessage($"  [DIAG]     - Read entity data: {_diagReadEntityTimer.ElapsedMilliseconds}ms\n");
+                ed.WriteMessage($"  [DIAG]     - Close documents: {_diagCloseDocTimer.ElapsedMilliseconds}ms\n");
+                // Reset timers for next run
+                _diagCheckOpenTimer.Reset();
+                _diagOpenDocTimer.Reset();
+                _diagReadEntityTimer.Reset();
+                _diagCloseDocTimer.Reset();
             }
         }
         else
@@ -222,12 +256,19 @@ public static class FilterEntityDataHelper
         return entityData;
     }
 
+    // Diagnostic counters for GetExternalEntityData
+    private static System.Diagnostics.Stopwatch _diagCheckOpenTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagOpenDocTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagReadEntityTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagCloseDocTimer = new System.Diagnostics.Stopwatch();
+
     public static Dictionary<string, object> GetExternalEntityData(string documentPath, string handle, bool includeProperties = false)
     {
         var data = new Dictionary<string, object>
         {
             ["Name"] = "External Reference",
             ["Category"] = "External Entity",
+            ["Tags"] = "",
             ["Layer"] = "N/A",
             ["Color"] = "N/A",
             ["LineType"] = "N/A",
@@ -248,6 +289,7 @@ public static class FilterEntityDataHelper
             Document externalDoc = null;
             bool docWasAlreadyOpen = false;
 
+            _diagCheckOpenTimer.Start();
             // Check if the document is already open in the current session
             foreach (Document openDoc in docs)
             {
@@ -258,17 +300,21 @@ public static class FilterEntityDataHelper
                     break;
                 }
             }
+            _diagCheckOpenTimer.Stop();
 
             // If not already open, try to open it temporarily
             if (externalDoc == null && File.Exists(documentPath))
             {
                 try
                 {
+                    _diagOpenDocTimer.Start();
                     externalDoc = docs.Open(documentPath, false); // Open read-only
+                    _diagOpenDocTimer.Stop();
                     docWasAlreadyOpen = false;
                 }
                 catch
                 {
+                    _diagOpenDocTimer.Stop();
                     // If we can't open the document, return the N/A data
                     return data;
                 }
@@ -279,6 +325,7 @@ public static class FilterEntityDataHelper
             {
                 try
                 {
+                    _diagReadEntityTimer.Start();
                     var handleValue = Convert.ToInt64(handle, 16);
                     var objectId = externalDoc.Database.GetObjectId(false, new Handle(handleValue), 0);
 
@@ -297,6 +344,7 @@ public static class FilterEntityDataHelper
                             tr.Commit();
                         }
                     }
+                    _diagReadEntityTimer.Stop();
                 }
                 finally
                 {
@@ -305,10 +353,13 @@ public static class FilterEntityDataHelper
                     {
                         try
                         {
+                            _diagCloseDocTimer.Start();
                             externalDoc.CloseAndDiscard();
+                            _diagCloseDocTimer.Stop();
                         }
                         catch
                         {
+                            _diagCloseDocTimer.Stop();
                             // Ignore close errors
                         }
                     }
@@ -390,6 +441,32 @@ public static class FilterEntityDataHelper
         };
 
         data["DisplayName"] = !string.IsNullOrEmpty(entityName) ? entityName : data["Category"].ToString();
+
+        // Add all attributes from unified attribute system (including Tags)
+        try
+        {
+            var attributes = EntityAttributes.GetEntityAttributes(entity.ObjectId, entity.Database);
+            foreach (var attr in attributes)
+            {
+                // Tags get special treatment (no prefix) for backward compatibility
+                // All other attributes get "attr_" prefix
+                var columnName = attr.Key.Equals("Tags", StringComparison.OrdinalIgnoreCase)
+                    ? "Tags"
+                    : $"attr_{attr.Key}";
+                data[columnName] = attr.Value.AsString();
+            }
+        }
+        catch
+        {
+            // Skip if attributes can't be read
+        }
+
+        // Tags column will be split into tag_1, tag_2, tag_3, etc. during post-processing
+        // Ensure Tags exists as empty string for entities without tags (for consistent processing)
+        if (!data.ContainsKey("Tags"))
+        {
+            data["Tags"] = "";
+        }
 
         // Add space information if available
         if (!string.IsNullOrEmpty(spaceName))
@@ -1234,6 +1311,112 @@ public static class FilterEntityDataHelper
 
         return orderMap.TryGetValue(propertyName, out int order) ? order : 999;
     }
+
+    /// <summary>
+    /// Post-processes entity data to:
+    /// 1. Split Tags column into tag_1, tag_2, tag_3, etc. (one tag per column)
+    /// 2. Remove attribute columns (Tags, attr_*) that have no data across all entities
+    /// </summary>
+    public static void ProcessTagsAndAttributes(List<Dictionary<string, object>> entityData)
+    {
+        if (entityData == null || entityData.Count == 0)
+            return;
+
+        // Step 1: Determine maximum number of tags across all entities
+        int maxTagCount = 0;
+        foreach (var entity in entityData)
+        {
+            if (entity.TryGetValue("Tags", out object tagsObj) && tagsObj != null)
+            {
+                string tagsStr = tagsObj.ToString();
+                if (!string.IsNullOrWhiteSpace(tagsStr))
+                {
+                    var tags = tagsStr.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                     .Select(t => t.Trim())
+                                     .Where(t => !string.IsNullOrEmpty(t))
+                                     .ToList();
+                    maxTagCount = Math.Max(maxTagCount, tags.Count);
+                }
+            }
+        }
+
+        // Step 2: Split Tags into separate columns if any tags exist
+        if (maxTagCount > 0)
+        {
+            foreach (var entity in entityData)
+            {
+                // Get tags for this entity
+                List<string> tags = new List<string>();
+                if (entity.TryGetValue("Tags", out object tagsObj) && tagsObj != null)
+                {
+                    string tagsStr = tagsObj.ToString();
+                    if (!string.IsNullOrWhiteSpace(tagsStr))
+                    {
+                        tags = tagsStr.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                     .Select(t => t.Trim())
+                                     .Where(t => !string.IsNullOrEmpty(t))
+                                     .ToList();
+                    }
+                }
+
+                // Remove the original Tags column
+                entity.Remove("Tags");
+
+                // Add individual tag columns (tag_1, tag_2, tag_3, etc.)
+                for (int i = 0; i < maxTagCount; i++)
+                {
+                    string columnName = $"tag_{i + 1}";
+                    entity[columnName] = i < tags.Count ? tags[i] : "";
+                }
+            }
+        }
+        else
+        {
+            // No tags exist - remove Tags column from all entities
+            foreach (var entity in entityData)
+            {
+                entity.Remove("Tags");
+            }
+        }
+
+        // Step 3: Find all attribute columns (attr_*) that have no data
+        var allKeys = entityData.First().Keys.Where(k => k.StartsWith("attr_")).ToList();
+        var emptyAttributeColumns = new HashSet<string>();
+
+        foreach (var attrKey in allKeys)
+        {
+            bool hasData = false;
+            foreach (var entity in entityData)
+            {
+                if (entity.TryGetValue(attrKey, out object value) && value != null)
+                {
+                    string strValue = value.ToString();
+                    if (!string.IsNullOrWhiteSpace(strValue))
+                    {
+                        hasData = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasData)
+            {
+                emptyAttributeColumns.Add(attrKey);
+            }
+        }
+
+        // Step 4: Remove empty attribute columns from all entities
+        if (emptyAttributeColumns.Count > 0)
+        {
+            foreach (var entity in entityData)
+            {
+                foreach (var emptyCol in emptyAttributeColumns)
+                {
+                    entity.Remove(emptyCol);
+                }
+            }
+        }
+    }
 }
 
 /// <summary>
@@ -1263,9 +1446,14 @@ public abstract class FilterElementsBase
         var ed = doc.Editor;
         ObjectId[] originalSelection = null;
 
+        var totalTimer = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
+            var timer = System.Diagnostics.Stopwatch.StartNew();
             var entityData = FilterEntityDataHelper.GetEntityData(ed, Scope, out originalSelection, UseSelectedElements, IncludeProperties);
+            timer.Stop();
+            ed.WriteMessage($"\n[DIAG] GetEntityData ({Scope} scope): {timer.ElapsedMilliseconds}ms for {entityData.Count} entities\n");
 
             if (!entityData.Any())
             {
@@ -1278,20 +1466,37 @@ public abstract class FilterElementsBase
                 return;
             }
 
+            timer.Restart();
             // Add index to each entity for mapping back after user selection
             for (int i = 0; i < entityData.Count; i++)
             {
                 entityData[i]["OriginalIndex"] = i;
             }
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] Add indices: {timer.ElapsedMilliseconds}ms\n");
 
+            timer.Restart();
+            // Post-process: Split Tags into separate columns (tag_1, tag_2, tag_3, etc.)
+            // and remove columns that have no data across all entities
+            FilterEntityDataHelper.ProcessTagsAndAttributes(entityData);
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] ProcessTagsAndAttributes: {timer.ElapsedMilliseconds}ms\n");
+
+            timer.Restart();
             // Get property names, excluding internal fields
             var propertyNames = entityData.First().Keys
                 .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex")
                 .ToList();
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] Get property names: {timer.ElapsedMilliseconds}ms\n");
 
+            timer.Restart();
             // Reorder to put most useful columns first
             var orderedProps = new List<string> { "Name", "Contents", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
-            var remainingProps = propertyNames.Except(orderedProps);
+
+            // Extract tag columns (tag_1, tag_2, tag_3, etc.) to place after Category
+            var tagColumns = propertyNames.Where(p => p.StartsWith("tag_")).OrderBy(p => p).ToList();
+            var remainingProps = propertyNames.Except(orderedProps).Except(tagColumns);
 
             // Separate geometry properties, attributes and extension data for better organization
             var geometryProps = remainingProps.Where(p => FilterEntityDataHelper.IsGeometryProperty(p)).OrderBy(p => FilterEntityDataHelper.GetGeometryPropertyOrder(p));
@@ -1301,17 +1506,26 @@ public abstract class FilterElementsBase
             var documentPathProp = propertyNames.Contains("DocumentPath") ? new[] { "DocumentPath" } : new string[0];
 
             propertyNames = orderedProps.Where(p => propertyNames.Contains(p))
+                .Concat(tagColumns)  // Add tag columns right after the ordered props
                 .Concat(geometryProps)
                 .Concat(attributeProps)
                 .Concat(extensionProps)
                 .Concat(otherProps)
                 .Concat(documentPathProp)
                 .ToList();
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] Reorder properties: {timer.ElapsedMilliseconds}ms\n");
 
             // Reset the edits flag at the start of each DataGrid session
             CustomGUIs.ResetEditsAppliedFlag();
 
+            totalTimer.Stop();
+            ed.WriteMessage($"[DIAG] Total before DataGrid: {totalTimer.ElapsedMilliseconds}ms\n");
+
+            timer.Restart();
             var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] DataGrid display: {timer.ElapsedMilliseconds}ms\n");
 
             // Check if any edits were applied during DataGrid interaction
             bool editsWereApplied = CustomGUIs.HasPendingEdits() || CustomGUIs.WereEditsApplied();

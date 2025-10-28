@@ -18,6 +18,9 @@
 ## Coding Style & Naming Conventions
 - C#: 4-space indent; PascalCase for types/methods; camelCase for locals/fields.
 - Commands: one command per file (kebab-case naming); create under `commands/` with `[CommandMethod]` attribute.
+- **CRITICAL**: Every command class MUST have `[assembly: CommandClass(typeof(YourClassName))]` at the top of the file (after `using` statements, before `namespace`).
+  - Without this assembly-level attribute, AutoCAD will not register the command and it will be invisible.
+  - Example: `[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedNamedInView))]`
 - Shared utilities: files prefixed with underscore (e.g., `_selection.cs`, `_edit-dialog.cs`) may contain multiple related classes.
 - AutoLISP: filenames kebab-case (e.g., `select-current-layer.lsp`); define commands as `c:command-name`; maintain shortcuts in `aliases.lsp`.
 - Keep logic small and composable; avoid UI in core command classes.
