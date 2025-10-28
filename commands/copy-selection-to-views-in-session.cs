@@ -11,11 +11,11 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(CopySelectionToViewsInApplication))]
+[assembly: CommandClass(typeof(CopySelectionToViewsInSession))]
 
-public class CopySelectionToViewsInApplication
+public class CopySelectionToViewsInSession
 {
-    [CommandMethod("copy-selection-to-views-in-application", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Session)]
+    [CommandMethod("copy-selection-to-views-in-session", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Session)]
     public void CopyToViews()
     {
         DocumentCollection docs = AcadApp.DocumentManager;

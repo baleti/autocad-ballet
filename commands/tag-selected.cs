@@ -208,7 +208,7 @@ namespace AutoCADBallet
             var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
             if (storedSelection == null || storedSelection.Count == 0)
             {
-                ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-application' first.\n");
+                ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-session' first.\n");
                 return;
             }
 

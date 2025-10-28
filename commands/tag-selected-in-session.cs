@@ -1,14 +1,14 @@
 using Autodesk.AutoCAD.Runtime;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedInApplication))]
+[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedInSession))]
 
 namespace AutoCADBallet
 {
-    public class TagSelectedInApplication
+    public class TagSelectedInSession
     {
-        [CommandMethod("tag-selected-in-application", CommandFlags.Modal)]
-        public void TagSelectedInApplicationCommand()
+        [CommandMethod("tag-selected-in-session", CommandFlags.Modal)]
+        public void TagSelectedInSessionCommand()
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc.Editor;
@@ -19,7 +19,7 @@ namespace AutoCADBallet
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError in tag-selected-in-application: {ex.Message}\n");
+                ed.WriteMessage($"\nError in tag-selected-in-session: {ex.Message}\n");
             }
         }
     }

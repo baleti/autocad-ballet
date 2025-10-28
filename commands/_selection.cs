@@ -128,7 +128,7 @@ namespace AutoCADBallet
             return items;
         }
 
-        // New method for explicitly loading from all documents (application scope)
+        // New method for explicitly loading from all documents (session scope)
         public static List<SelectionItem> LoadSelectionFromAllDocuments()
         {
             var items = new List<SelectionItem>();

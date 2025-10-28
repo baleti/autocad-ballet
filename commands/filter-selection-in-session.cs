@@ -9,25 +9,25 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(FilterSelectionApplicationElements))]
+[assembly: CommandClass(typeof(FilterSelectionSessionElements))]
 
 /// <summary>
-/// Command that always uses application scope for filtering selection, regardless of current selection scope setting
+/// Command that always uses session scope for filtering selection, regardless of current selection scope setting
 /// </summary>
-public class FilterSelectionApplicationElements
+public class FilterSelectionSessionElements
 {
-    [CommandMethod("filter-selection-in-application", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void FilterSelectionApplicationCommand()
+    [CommandMethod("filter-selection-in-session", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    public void FilterSelectionSessionCommand()
     {
-        var command = new FilterSelectionApplicationImpl();
+        var command = new FilterSelectionSessionImpl();
         command.Execute();
     }
 }
 
-public class FilterSelectionApplicationImpl : FilterElementsBase
+public class FilterSelectionSessionImpl : FilterElementsBase
 {
     public override bool SpanAllScreens => false;
-    public override bool UseSelectedElements => true; // Use stored selection from application scope (all documents)
+    public override bool UseSelectedElements => true; // Use stored selection from session scope (all documents)
     public override bool IncludeProperties => true;
     public override SelectionScope Scope => SelectionScope.application;
 
@@ -39,12 +39,12 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
 
         try
         {
-            // Force application scope behavior - load selection from all open documents
+            // Force session scope behavior - load selection from all open documents
             var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
 
             if (storedSelection == null || storedSelection.Count == 0)
             {
-                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-application' first.\n");
+                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-session' first.\n");
                 return;
             }
 
@@ -113,7 +113,7 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
                     }
                     else
                     {
-                        // Document is not open - skip it (application scope only works with open documents)
+                        // Document is not open - skip it (session scope only works with open documents)
                         ed.WriteMessage($"\nWarning: Document '{Path.GetFileName(item.DocumentPath)}' is not open, skipping entity.\n");
                     }
                 }
@@ -241,7 +241,7 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
             try
             {
                 ed.SetImpliedSelection(selectedIds.ToArray());
-                ed.WriteMessage($"\n{selectedIds.Count} entities selected in current document from application-wide stored selection.\n");
+                ed.WriteMessage($"\n{selectedIds.Count} entities selected in current document from session-wide stored selection.\n");
             }
             catch (Autodesk.AutoCAD.Runtime.Exception acEx)
             {
@@ -267,7 +267,7 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
             }
         }
 
-        // Clear all existing selections and save only the filtered results (application scope behavior)
+        // Clear all existing selections and save only the filtered results (session scope behavior)
         ClearAllStoredSelections();
 
         if ((selectedIds.Count > 0 || selectedExternalEntities.Count > 0))
@@ -281,7 +281,7 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
                 {
                     DocumentPath = doc.Name,
                     Handle = id.Handle.ToString(),
-                    SessionId = null // Application scope doesn't use session restrictions
+                    SessionId = null // Session scope doesn't use session restrictions
                 });
             }
 
@@ -296,7 +296,7 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
                 });
             }
 
-            SelectionStorage.SaveSelection(selectionItems); // Save to global storage for application scope
+            SelectionStorage.SaveSelection(selectionItems); // Save to global storage for session scope
             ed.WriteMessage($"Filtered selection saved: {selectedIds.Count} current document entities + {selectedExternalEntities.Count} external entities.\n");
         }
         else
@@ -306,7 +306,7 @@ public class FilterSelectionApplicationImpl : FilterElementsBase
     }
 
     /// <summary>
-    /// Clear all stored selections across all documents for application scope
+    /// Clear all stored selections across all documents for session scope
     /// </summary>
     private void ClearAllStoredSelections()
     {

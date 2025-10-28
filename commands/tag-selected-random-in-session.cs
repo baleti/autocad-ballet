@@ -1,14 +1,14 @@
 using Autodesk.AutoCAD.Runtime;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedRandomInApplication))]
+[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedRandomInSession))]
 
 namespace AutoCADBallet
 {
-    public class TagSelectedRandomInApplication
+    public class TagSelectedRandomInSession
     {
-        [CommandMethod("tag-selected-random-in-application", CommandFlags.Modal)]
-        public void TagSelectedRandomInApplicationCommand()
+        [CommandMethod("tag-selected-random-in-session", CommandFlags.Modal)]
+        public void TagSelectedRandomInSessionCommand()
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc.Editor;
@@ -19,7 +19,7 @@ namespace AutoCADBallet
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError in tag-selected-random-in-application: {ex.Message}\n");
+                ed.WriteMessage($"\nError in tag-selected-random-in-session: {ex.Message}\n");
             }
         }
     }

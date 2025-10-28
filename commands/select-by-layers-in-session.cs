@@ -2,12 +2,12 @@ using Autodesk.AutoCAD.Runtime;
 using AutoCADBallet;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-[assembly: CommandClass(typeof(SelectByLayersInApplication))]
+[assembly: CommandClass(typeof(SelectByLayersInSession))]
 
-public class SelectByLayersInApplication
+public class SelectByLayersInSession
 {
-    [CommandMethod("select-by-layers-in-application", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
-    public void SelectByLayersInApplicationCommand()
+    [CommandMethod("select-by-layers-in-session", CommandFlags.UsePickSet | CommandFlags.Redraw | CommandFlags.Modal)]
+    public void SelectByLayersInSessionCommand()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
@@ -18,7 +18,7 @@ public class SelectByLayersInApplication
         }
         catch (System.Exception ex)
         {
-            ed.WriteMessage($"\nError in select-by-layers-in-application: {ex.Message}\n");
+            ed.WriteMessage($"\nError in select-by-layers-in-session: {ex.Message}\n");
         }
     }
 }

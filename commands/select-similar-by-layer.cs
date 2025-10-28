@@ -228,7 +228,7 @@ public class SelectSimilarByLayer
             var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
             if (storedSelection == null || storedSelection.Count == 0)
             {
-                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-application' first.\n");
+                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-session' first.\n");
                 return;
             }
 

@@ -129,7 +129,7 @@ public class DeleteSelected
             var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
             if (storedSelection == null || storedSelection.Count == 0)
             {
-                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-application' first.\n");
+                ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-session' first.\n");
                 return;
             }
 
@@ -193,7 +193,7 @@ public class DeleteSelected
 
             if (totalDeleted > 0)
             {
-                // Clear all document-specific selection files for application scope
+                // Clear all document-specific selection files for session scope
                 ClearAllStoredSelections();
                 ed.WriteMessage("Cleared stored selection.\n");
             }
@@ -205,7 +205,7 @@ public class DeleteSelected
     }
 
     /// <summary>
-    /// Clear all stored selections across all documents for application scope
+    /// Clear all stored selections across all documents for session scope
     /// </summary>
     private static void ClearAllStoredSelections()
     {

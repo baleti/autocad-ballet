@@ -337,22 +337,24 @@ public void MyCommand()
 
 **Examples in Codebase**:
 - `filter-selection.cs` - Perfect example of proper selection handling
-- `copy-selection-to-views-in-application.cs` - Uses this pattern correctly (note: renamed from "process" to "application" scope)
+- `copy-selection-to-views-in-session.cs` - Uses this pattern correctly (note: renamed from "process" to "session" scope)
 
 ### Selection Scope Handling
-**CRITICAL**: AutoCAD Ballet provides three selection scopes through separate command variants: view, document, and application.
+**CRITICAL**: AutoCAD Ballet provides three selection scopes through separate command variants: view, document, and session.
 
 **The Three Selection Scopes**:
 1. **`view`** - Current active space/layout only (default AutoCAD behavior, uses pickfirst set)
 2. **`document`** - Entire current document (all layouts, uses stored selection)
-3. **`application`** - All opened documents in current AutoCAD process (uses stored selection)
+3. **`session`** - All opened documents in current AutoCAD process (uses stored selection)
 
 **Architecture**: Commands use a **scope-based command pattern**:
-- Each command has three variants: `{command}-in-view`, `{command}-in-document`, `{command}-in-application`
+- Each command has three variants: `{command}-in-view`, `{command}-in-document`, `{command}-in-session`
 - Main implementation file contains separate `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()` methods
 - Scope-specific command files are stubs that call the appropriate method
 
 **The Problem**: Commands that only handle view scope don't provide the cross-document capabilities users expect from AutoCAD Ballet.
+
+**Note on Terminology**: The third scope is called "session" in command names (e.g., `select-by-categories-in-session`) but the implementation method is still called `ExecuteApplicationScope()` for backwards compatibility.
 
 **The Solution**: Implement all three scope methods in the main command file:
 
@@ -420,7 +422,7 @@ public static class MyCommand
         // Process document-wide selection...
     }
 
-    // Application scope: Use stored selection from all documents
+    // Session scope: Use stored selection from all documents
     public static void ExecuteApplicationScope(Editor ed)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
@@ -429,7 +431,7 @@ public static class MyCommand
         var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
         if (storedSelection == null || storedSelection.Count == 0)
         {
-            ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-application' first.\n");
+            ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-session' first.\n");
             return;
         }
 
@@ -507,11 +509,11 @@ public class MyCommandInDocument
     }
 }
 
-// Stub file: my-command-in-application.cs
-public class MyCommandInApplication
+// Stub file: my-command-in-session.cs
+public class MyCommandInSession
 {
-    [CommandMethod("my-command-in-application", CommandFlags.Modal)]
-    public void MyCommandInApplicationCommand()
+    [CommandMethod("my-command-in-session", CommandFlags.Modal)]
+    public void MyCommandInSessionCommand()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
@@ -522,7 +524,7 @@ public class MyCommandInApplication
         }
         catch (System.Exception ex)
         {
-            ed.WriteMessage($"\nError in my-command-in-application: {ex.Message}\n");
+            ed.WriteMessage($"\nError in my-command-in-session: {ex.Message}\n");
         }
     }
 }
@@ -532,7 +534,7 @@ public class MyCommandInApplication
 - **Implement three separate methods**: `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()`
 - **View scope**: Use pickfirst set or prompt for selection (standard AutoCAD behavior with `CommandFlags.UsePickSet`)
 - **Document scope**: Use `SelectionStorage.LoadSelection(docName)` and filter to current document
-- **Application scope**: Use `SelectionStorage.LoadSelectionFromAllDocuments()` for cross-document selections
+- **Session scope**: Use `SelectionStorage.LoadSelectionFromAllDocuments()` for cross-document selections
 - **Cross-document limitations**: Many operations can only be performed on current document entities - may need to open external documents
 - **Update stored selection**: Use `SelectionStorage.SaveSelection()` to update stored selection after modifications
 - **Clear error messages**: Guide users to use appropriate `select-by-categories-in-{scope}` command first
@@ -547,8 +549,8 @@ using System.Linq;    // For LINQ filtering operations
 **Examples in Codebase**:
 - `filter-selection.cs` - Perfect reference implementation for scope-aware selection
 - `delete-selected.cs` - Main implementation with `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()` methods
-  - Stub files: `delete-selected-in-view.cs`, `delete-selected-in-document.cs`, `delete-selected-in-application.cs`
+  - Stub files: `delete-selected-in-view.cs`, `delete-selected-in-document.cs`, `delete-selected-in-session.cs`
 - `select-by-categories.cs` - Selection by entity category with scope variants
-  - Stub files: `select-by-categories-in-view.cs`, `select-by-categories-in-document.cs`, `select-by-categories-in-application.cs`
+  - Stub files: `select-by-categories-in-view.cs`, `select-by-categories-in-document.cs`, `select-by-categories-in-session.cs`
 - `duplicate-blocks.cs` - Block duplication with all selection scopes
-  - Stub files: `duplicate-blocks-in-view.cs`, `duplicate-blocks-in-application.cs`
+  - Stub files: `duplicate-blocks-in-view.cs`, `duplicate-blocks-in-session.cs`

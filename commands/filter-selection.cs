@@ -542,7 +542,7 @@ public static class FilterEntityDataHelper
                     break;
 
                 default:
-                    // For application scope - fall back to Document scope for now
+                    // For session scope - fall back to Document scope for now
                     goto case SelectionScope.document;
             }
 
@@ -1589,7 +1589,7 @@ public abstract class FilterElementsBase
             {
                 try
                 {
-                    // For application scope, we need to actually set the AutoCAD selection (not just save to storage)
+                    // For session scope, we need to actually set the AutoCAD selection (not just save to storage)
                     // to properly narrow down the selection as expected
                     if (Scope == SelectionScope.application)
                     {
@@ -1682,4 +1682,4 @@ public abstract class FilterElementsBase
 // Use scope-specific commands instead:
 // - filter-selection-in-view
 // - filter-selection-in-document
-// - filter-selection-in-application
+// - filter-selection-in-session
