@@ -422,13 +422,13 @@ public static class MyCommand
         // Process document-wide selection...
     }
 
-    // Session scope: Use stored selection from all documents
+    // Session scope: Use stored selection from all open documents
     public static void ExecuteApplicationScope(Editor ed)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var db = doc.Database;
 
-        var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+        var storedSelection = SelectionStorage.LoadSelectionFromOpenDocuments();
         if (storedSelection == null || storedSelection.Count == 0)
         {
             ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-session' first.\n");
@@ -534,7 +534,7 @@ public class MyCommandInSession
 - **Implement three separate methods**: `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()`
 - **View scope**: Use pickfirst set or prompt for selection (standard AutoCAD behavior with `CommandFlags.UsePickSet`)
 - **Document scope**: Use `SelectionStorage.LoadSelection(docName)` and filter to current document
-- **Session scope**: Use `SelectionStorage.LoadSelectionFromAllDocuments()` for cross-document selections
+- **Session scope**: Use `SelectionStorage.LoadSelectionFromOpenDocuments()` for cross-document selections (only includes currently open documents)
 - **Cross-document limitations**: Many operations can only be performed on current document entities - may need to open external documents
 - **Update stored selection**: Use `SelectionStorage.SaveSelection()` to update stored selection after modifications
 - **Clear error messages**: Guide users to use appropriate `select-by-categories-in-{scope}` command first

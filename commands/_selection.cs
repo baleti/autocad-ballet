@@ -154,6 +154,102 @@ namespace AutoCADBallet
             return items;
         }
 
+        // Load selection from only currently open documents (true session scope)
+        public static List<SelectionItem> LoadSelectionFromOpenDocuments()
+        {
+            var items = new List<SelectionItem>();
+
+            // Get all currently open documents
+            var openDocumentPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var docs = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager;
+                foreach (Autodesk.AutoCAD.ApplicationServices.Document doc in docs)
+                {
+                    try
+                    {
+                        openDocumentPaths.Add(Path.GetFullPath(doc.Name));
+                    }
+                    catch
+                    {
+                        // If GetFullPath fails, add the original path
+                        openDocumentPaths.Add(doc.Name);
+                    }
+                }
+            }
+            catch
+            {
+                // If we can't get the document list, fall back to loading all
+                return LoadSelectionFromAllDocuments();
+            }
+
+            if (openDocumentPaths.Count == 0)
+            {
+                return items; // No open documents
+            }
+
+            // Load from all per-document selection files
+            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var selectionDir = Path.Combine(appDataPath, "autocad-ballet", "runtime", "selection");
+            if (Directory.Exists(selectionDir))
+            {
+                foreach (var file in Directory.GetFiles(selectionDir))
+                {
+                    var fileItems = LoadSelectionFromFile(file);
+
+                    // Filter to only include items from currently open documents
+                    foreach (var item in fileItems)
+                    {
+                        try
+                        {
+                            var itemFullPath = Path.GetFullPath(item.DocumentPath);
+                            if (openDocumentPaths.Contains(itemFullPath))
+                            {
+                                items.Add(item);
+                            }
+                        }
+                        catch
+                        {
+                            // If GetFullPath fails, try direct comparison
+                            if (openDocumentPaths.Contains(item.DocumentPath))
+                            {
+                                items.Add(item);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Also check legacy global file for backward compatibility
+            var legacyFilePath = GetSelectionFilePath();
+            if (File.Exists(legacyFilePath))
+            {
+                var legacyItems = LoadSelectionFromFile(legacyFilePath);
+
+                // Filter legacy items to only open documents
+                foreach (var item in legacyItems)
+                {
+                    try
+                    {
+                        var itemFullPath = Path.GetFullPath(item.DocumentPath);
+                        if (openDocumentPaths.Contains(itemFullPath))
+                        {
+                            items.Add(item);
+                        }
+                    }
+                    catch
+                    {
+                        if (openDocumentPaths.Contains(item.DocumentPath))
+                        {
+                            items.Add(item);
+                        }
+                    }
+                }
+            }
+
+            return items;
+        }
+
         private static List<SelectionItem> LoadSelectionFromFile(string filePath)
         {
             var items = new List<SelectionItem>();

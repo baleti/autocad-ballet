@@ -118,7 +118,7 @@ namespace AutoCADCommands
         public static void ExecuteApplicationScope(Editor ed)
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
-            var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            var storedSelection = SelectionStorage.LoadSelectionFromOpenDocuments();
             if (storedSelection == null || storedSelection.Count == 0)
             {
                 ed.WriteMessage("\nNo stored selection found. Use commands like 'select-by-categories-in-session' first.\n");

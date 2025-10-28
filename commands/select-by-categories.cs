@@ -105,30 +105,33 @@ namespace AutoCADBallet
                 tr.Commit();
             }
 
-            ShowSelectionDialogForDocument(ed, entityGroups, doc.Name);
+            ShowSelectionDialogForDocument(ed, db, entityGroups, doc.Name);
         }
 
         public static void ExecuteApplicationScope(Editor ed)
         {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var db = doc.Database;
+
             ed.WriteMessage("\nApplication Mode: Gathering entities from all open documents...\n");
 
             var docManager = AcadApp.DocumentManager;
             var allReferences = new List<CategoryEntityReference>();
             var categoryGroups = new Dictionary<string, List<CategoryEntityReference>>();
 
-            foreach (Autodesk.AutoCAD.ApplicationServices.Document doc in docManager)
+            foreach (Autodesk.AutoCAD.ApplicationServices.Document openDoc in docManager)
             {
-                string docPath = doc.Name;
+                string docPath = openDoc.Name;
                 string docName = Path.GetFileName(docPath);
 
                 ed.WriteMessage($"\nScanning: {docName}...");
 
                 try
                 {
-                    var refs = GatherEntityReferencesFromDocument(doc.Database, docPath, docName);
+                    var refs = GatherEntityReferencesFromDocument(openDoc.Database, docPath, docName);
                     allReferences.AddRange(refs);
 
-                    var layoutRefs = GatherLayoutReferencesFromDocument(doc.Database, docPath, docName);
+                    var layoutRefs = GatherLayoutReferencesFromDocument(openDoc.Database, docPath, docName);
                     allReferences.AddRange(layoutRefs);
 
                     foreach (var entityRef in refs.Concat(layoutRefs))
@@ -145,7 +148,7 @@ namespace AutoCADBallet
                 }
             }
 
-            ShowSelectionDialogForApplication(ed, categoryGroups);
+            ShowSelectionDialogForApplication(ed, db, categoryGroups);
         }
 
         private static void ShowSelectionDialogForView(Editor ed, Dictionary<string, List<ObjectId>> entityGroups, string spaceName)
@@ -194,7 +197,7 @@ namespace AutoCADBallet
             }
         }
 
-        private static void ShowSelectionDialogForDocument(Editor ed, Dictionary<string, List<CategoryEntityReference>> entityGroups, string documentName)
+        private static void ShowSelectionDialogForDocument(Editor ed, Database db, Dictionary<string, List<CategoryEntityReference>> entityGroups, string documentName)
         {
             if (entityGroups.Count == 0)
             {
@@ -244,6 +247,7 @@ namespace AutoCADBallet
                 SessionId = null
             }).ToList();
 
+            // Save selection (replacing previous document selection)
             try
             {
                 var docName = Path.GetFileName(documentName);
@@ -257,9 +261,50 @@ namespace AutoCADBallet
             {
                 ed.WriteMessage($"\nError saving selection: {ex.Message}\n");
             }
+
+            // Set current view selection to subset of selected entities in current space
+            var currentViewIds = new List<ObjectId>();
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var entityRef in selectedEntities)
+                {
+                    try
+                    {
+                        var handle = Convert.ToInt64(entityRef.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                        if (!objectId.IsNull && objectId.IsValid)
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
+                            if (entity != null && entity.BlockId == db.CurrentSpaceId)
+                            {
+                                currentViewIds.Add(objectId);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip invalid entities
+                    }
+                }
+                tr.Commit();
+            }
+
+            if (currentViewIds.Count > 0)
+            {
+                try
+                {
+                    ed.SetImpliedSelection(currentViewIds.ToArray());
+                    ed.WriteMessage($"  Selected {currentViewIds.Count} entities in current view.\n");
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage($"\nError setting current view selection: {ex.Message}\n");
+                }
+            }
         }
 
-        private static void ShowSelectionDialogForApplication(Editor ed, Dictionary<string, List<CategoryEntityReference>> categoryGroups)
+        private static void ShowSelectionDialogForApplication(Editor ed, Database db, Dictionary<string, List<CategoryEntityReference>> categoryGroups)
         {
             if (categoryGroups.Count == 0)
             {
@@ -309,6 +354,9 @@ namespace AutoCADBallet
                 SessionId = null
             }).ToList();
 
+            // Clear all existing selections and save (session scope behavior)
+            ClearAllStoredSelections();
+
             try
             {
                 SelectionStorage.SaveSelection(selectionItems);
@@ -320,6 +368,55 @@ namespace AutoCADBallet
             catch (System.Exception ex)
             {
                 ed.WriteMessage($"\nError saving selection: {ex.Message}\n");
+            }
+
+            // Set current view selection to subset of selected entities in current document's current space
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var currentDocPath = Path.GetFullPath(doc.Name);
+            var currentViewIds = new List<ObjectId>();
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var entityRef in selectedEntities)
+                {
+                    try
+                    {
+                        // Only process entities from current document
+                        var entityDocPath = Path.GetFullPath(entityRef.DocumentPath);
+                        if (!string.Equals(entityDocPath, currentDocPath, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        var handle = Convert.ToInt64(entityRef.Handle, 16);
+                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                        if (!objectId.IsNull && objectId.IsValid)
+                        {
+                            var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
+                            if (entity != null && entity.BlockId == db.CurrentSpaceId)
+                            {
+                                currentViewIds.Add(objectId);
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Skip invalid entities
+                    }
+                }
+                tr.Commit();
+            }
+
+            if (currentViewIds.Count > 0)
+            {
+                try
+                {
+                    ed.SetImpliedSelection(currentViewIds.ToArray());
+                    ed.WriteMessage($"  Selected {currentViewIds.Count} entities in current view.\n");
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage($"\nError setting current view selection: {ex.Message}\n");
+                }
             }
         }
 
@@ -501,6 +598,49 @@ namespace AutoCADBallet
             else
             {
                 return typeName.Replace("Autodesk.AutoCAD.", "");
+            }
+        }
+
+        private static void ClearAllStoredSelections()
+        {
+            try
+            {
+                // Clear all per-document selection files
+                var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                var selectionDir = Path.Combine(appDataPath, "autocad-ballet", "runtime", "selection");
+
+                if (Directory.Exists(selectionDir))
+                {
+                    foreach (var file in Directory.GetFiles(selectionDir))
+                    {
+                        try
+                        {
+                            File.Delete(file);
+                        }
+                        catch
+                        {
+                            // Skip files that can't be deleted
+                        }
+                    }
+                }
+
+                // Also clear legacy global file for backward compatibility
+                var legacyFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet", "selection");
+                if (File.Exists(legacyFilePath))
+                {
+                    try
+                    {
+                        File.WriteAllLines(legacyFilePath, new string[0]);
+                    }
+                    catch
+                    {
+                        // Skip if can't clear legacy file
+                    }
+                }
+            }
+            catch
+            {
+                // If clearing fails, continue anyway - the save operation will overwrite
             }
         }
     }

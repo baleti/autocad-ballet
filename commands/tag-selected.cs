@@ -205,7 +205,7 @@ namespace AutoCADBallet
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var db = doc.Database;
 
-            var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            var storedSelection = SelectionStorage.LoadSelectionFromOpenDocuments();
             if (storedSelection == null || storedSelection.Count == 0)
             {
                 ed.WriteMessage("\nNo stored selection found. Use 'select-by-categories-in-session' first.\n");

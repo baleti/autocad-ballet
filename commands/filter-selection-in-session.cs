@@ -39,8 +39,8 @@ public class FilterSelectionSessionImpl : FilterElementsBase
 
         try
         {
-            // Force session scope behavior - load selection from all open documents
-            var storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+            // Force session scope behavior - load selection from all open documents (not closed ones)
+            var storedSelection = SelectionStorage.LoadSelectionFromOpenDocuments();
 
             if (storedSelection == null || storedSelection.Count == 0)
             {

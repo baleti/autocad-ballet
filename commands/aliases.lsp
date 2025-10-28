@@ -41,6 +41,9 @@
 (defun c:tgs () (command "tag-selected-in-session") (princ))
 (defun c:ssd () (command "select-similar-in-document") (princ))
 (defun c:sss () (command "select-similar-in-session") (princ))
+(defun c:stgv () (command "select-by-tags-in-view") (princ))
+(defun c:stgd () (command "select-by-tags-in-document") (princ))
+(defun c:stgs () (command "select-by-tags-in-session") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))
@@ -64,7 +67,6 @@
 (defun c:dps () (command "toggle-display-plot-styles") (princ))
 (defun c:ss () (command "_.pselect" "_p" "") (princ))
 (defun c:ssc () (sssetfirst nil (ssget "x" (list (cons 8 (getvar "clayer"))))) (princ))
-(defun c:sbc () (command "select-by-color") (princ))
 (defun c:bf () (command "draworder" "front") (princ))
 (defun c:sb () (command "draworder" "back") (princ))
 ;; needed until i find out why ctrl+double click no longer edits block attributes in-place

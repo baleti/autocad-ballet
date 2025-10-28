@@ -112,8 +112,8 @@ public static class FilterEntityDataHelper
             }
             else if (scope == SelectionScope.application)
             {
-                // Application scope - load from all open documents
-                storedSelection = SelectionStorage.LoadSelectionFromAllDocuments();
+                // Application scope - load from all open documents (session scope)
+                storedSelection = SelectionStorage.LoadSelectionFromOpenDocuments();
             }
             else
             {
