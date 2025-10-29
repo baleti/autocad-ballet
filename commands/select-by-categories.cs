@@ -514,7 +514,7 @@ namespace AutoCADBallet
             }
         }
 
-        private static string GetEntityCategory(DBObject entity)
+        public static string GetEntityCategory(DBObject entity)
         {
             string typeName = entity.GetType().Name;
 
