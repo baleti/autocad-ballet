@@ -51,6 +51,7 @@
 (defun c:rsa () (command "refset" "add") (princ))
 (defun c:rsr () (command "refset" "remove") (princ))
 (defun c:rf () (command "-refedit" "ok" "all" "no") (princ))
+(defun c:sv () (command ".selectsimilar") (princ))
 (defun c:ssv () (command ".selectsimilar") (princ))
 (defun c:pii () (command "pickstyle") (princ))
 (defun c:cc () (command "lay-cur") (princ))

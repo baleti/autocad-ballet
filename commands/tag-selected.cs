@@ -41,8 +41,8 @@ namespace AutoCADBallet
 
             var selectedIds = selResult.Value.GetObjectIds();
 
-            // Show DataGrid with existing tags from current database
-            var existingTags = TagHelpers.GetAllTagsInDatabase(db);
+            // Show DataGrid with existing tags from current space
+            var existingTags = TagHelpers.GetAllTagsInCurrentSpace(db);
             var entries = existingTags.Select(t => new Dictionary<string, object>
             {
                 { "TagName", t.Name },
@@ -150,8 +150,8 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Show DataGrid with existing tags from current database
-            var existingTags = TagHelpers.GetAllTagsInDatabase(db);
+            // Show DataGrid with existing tags from all layouts in current document
+            var existingTags = TagHelpers.GetAllTagsInLayouts(db);
             var entries = existingTags.Select(t => new Dictionary<string, object>
             {
                 { "TagName", t.Name },
@@ -212,14 +212,14 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Show DataGrid with existing tags from all open documents
+            // Show DataGrid with existing tags from all layouts in all open documents
             var docManager = AcadApp.DocumentManager;
             var databases = new List<Database>();
             foreach (Document openDoc in docManager)
             {
                 databases.Add(openDoc.Database);
             }
-            var existingTags = TagHelpers.GetAllTagsInDocuments(databases);
+            var existingTags = TagHelpers.GetAllTagsInLayoutsAcrossDocuments(databases);
             var entries = existingTags.Select(t => new Dictionary<string, object>
             {
                 { "TagName", t.Name },

@@ -491,10 +491,64 @@ namespace AutoCADBallet
         }
 
         /// <summary>
+        /// Gets all unique tags from entities in the current space with usage counts
+        /// </summary>
+        public static List<TagInfo> GetAllTagsInCurrentSpace(Database db)
+        {
+            var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                try
+                {
+                    var currentSpace = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
+
+                    foreach (ObjectId entityId in currentSpace)
+                    {
+                        try
+                        {
+                            var tags = entityId.GetTags(db);
+                            foreach (var tag in tags)
+                            {
+                                if (tagCounts.ContainsKey(tag))
+                                    tagCounts[tag]++;
+                                else
+                                    tagCounts[tag] = 1;
+                            }
+                        }
+                        catch { }
+                    }
+
+                    tr.Commit();
+                }
+                catch
+                {
+                    tr.Abort();
+                }
+            }
+
+            return tagCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Select((kvp, index) => new TagInfo
+                {
+                    Id = index,
+                    Name = kvp.Key,
+                    UsageCount = kvp.Value
+                })
+                .ToList();
+        }
+
+        /// <summary>
         /// Gets all unique tags from entities in the database with usage counts
         /// </summary>
         public static List<TagInfo> GetAllTagsInDatabase(Database db)
         {
+            var diagnosticTimer = System.Diagnostics.Stopwatch.StartNew();
+            int blockTableRecordsChecked = 0;
+            int entitiesChecked = 0;
+            int entitiesWithTags = 0;
+
             var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -506,6 +560,82 @@ namespace AutoCADBallet
                     foreach (ObjectId btrId in blockTable)
                     {
                         var btr = (BlockTableRecord)tr.GetObject(btrId, OpenMode.ForRead);
+                        blockTableRecordsChecked++;
+
+                        foreach (ObjectId entityId in btr)
+                        {
+                            entitiesChecked++;
+                            try
+                            {
+                                var tags = entityId.GetTags(db);
+                                if (tags.Count > 0)
+                                {
+                                    entitiesWithTags++;
+                                }
+                                foreach (var tag in tags)
+                                {
+                                    if (tagCounts.ContainsKey(tag))
+                                        tagCounts[tag]++;
+                                    else
+                                        tagCounts[tag] = 1;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+
+                    tr.Commit();
+                }
+                catch
+                {
+                    tr.Abort();
+                }
+            }
+
+            diagnosticTimer.Stop();
+
+            // Write diagnostics to AutoCAD command line
+            var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+            if (doc != null)
+            {
+                doc.Editor.WriteMessage($"\n[TAG DIAGNOSTIC] GetAllTagsInDatabase completed in {diagnosticTimer.ElapsedMilliseconds}ms");
+                doc.Editor.WriteMessage($"\n[TAG DIAGNOSTIC] Block table records checked: {blockTableRecordsChecked}");
+                doc.Editor.WriteMessage($"\n[TAG DIAGNOSTIC] Total entities checked: {entitiesChecked}");
+                doc.Editor.WriteMessage($"\n[TAG DIAGNOSTIC] Entities with tags: {entitiesWithTags}");
+                doc.Editor.WriteMessage($"\n[TAG DIAGNOSTIC] Unique tags found: {tagCounts.Count}");
+            }
+
+            return tagCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Select((kvp, index) => new TagInfo
+                {
+                    Id = index,
+                    Name = kvp.Key,
+                    UsageCount = kvp.Value
+                })
+                .ToList();
+        }
+
+        /// <summary>
+        /// Gets all unique tags from entities in all layouts (Model + Paper Spaces) of a database
+        /// Does not scan block definitions
+        /// </summary>
+        public static List<TagInfo> GetAllTagsInLayouts(Database db)
+        {
+            var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                try
+                {
+                    // Get all layouts (Model + Paper Spaces)
+                    var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+                    foreach (DBDictionaryEntry entry in layoutDict)
+                    {
+                        var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+                        var btr = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
 
                         foreach (ObjectId entityId in btr)
                         {
@@ -529,6 +659,38 @@ namespace AutoCADBallet
                 catch
                 {
                     tr.Abort();
+                }
+            }
+
+            return tagCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Select((kvp, index) => new TagInfo
+                {
+                    Id = index,
+                    Name = kvp.Key,
+                    UsageCount = kvp.Value
+                })
+                .ToList();
+        }
+
+        /// <summary>
+        /// Gets all unique tags from layouts across multiple databases
+        /// Does not scan block definitions
+        /// </summary>
+        public static List<TagInfo> GetAllTagsInLayoutsAcrossDocuments(IEnumerable<Database> databases)
+        {
+            var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var db in databases)
+            {
+                var dbTags = GetAllTagsInLayouts(db);
+                foreach (var tagInfo in dbTags)
+                {
+                    if (tagCounts.ContainsKey(tagInfo.Name))
+                        tagCounts[tagInfo.Name] += tagInfo.UsageCount;
+                    else
+                        tagCounts[tagInfo.Name] = tagInfo.UsageCount;
                 }
             }
 
