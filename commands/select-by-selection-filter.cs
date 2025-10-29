@@ -794,6 +794,8 @@ namespace AutoCADBallet
 
         private static string GetEntityCategory(DBObject entity)
         {
+            string typeName = entity.GetType().Name;
+
             if (entity is BlockReference)
             {
                 var br = entity as BlockReference;
@@ -808,21 +810,73 @@ namespace AutoCADBallet
                         return "Block Reference";
                 }
             }
+            else if (entity is Dimension)
+            {
+                if (entity is AlignedDimension)
+                    return "Aligned Dimension";
+                else if (entity is RotatedDimension)
+                    return "Linear Dimension";
+                else if (entity is RadialDimension)
+                    return "Radial Dimension";
+                else if (entity is DiametricDimension)
+                    return "Diametric Dimension";
+                else if (entity is OrdinateDimension)
+                    return "Ordinate Dimension";
+                else if (entity is ArcDimension)
+                    return "Arc Dimension";
+                else if (entity is RadialDimensionLarge)
+                    return "Jogged Dimension";
+                else
+                    return "Dimension";
+            }
             else if (entity is MText)
                 return "MText";
             else if (entity is DBText)
                 return "Text";
-            else if (entity is Line)
-                return "Line";
             else if (entity is Polyline)
                 return "Polyline";
+            else if (entity is Polyline2d)
+                return "Polyline2D";
+            else if (entity is Polyline3d)
+                return "Polyline3D";
+            else if (entity is Line)
+                return "Line";
             else if (entity is Circle)
                 return "Circle";
             else if (entity is Arc)
                 return "Arc";
-            // Add more as needed
+            else if (entity is Ellipse)
+                return "Ellipse";
+            else if (entity is Spline)
+                return "Spline";
+            else if (entity is Hatch)
+                return "Hatch";
+            else if (entity is Solid)
+                return "2D Solid";
+            else if (entity is Leader)
+                return "Leader";
+            else if (entity is MLeader)
+                return "Multileader";
+            else if (entity is Table)
+                return "Table";
+            else if (entity is Viewport)
+                return "Viewport";
+            else if (entity is RasterImage)
+                return "Raster Image";
+            else if (entity is Wipeout)
+                return "Wipeout";
+            else if (entity is DBPoint)
+                return "Point";
+            else if (entity is Ray)
+                return "Ray";
+            else if (entity is Xline)
+                return "Construction Line";
+            else if (entity is Layout)
+                return "Layout";
             else
-                return entity.GetType().Name;
+            {
+                return typeName.Replace("Autodesk.AutoCAD.", "");
+            }
         }
 
         private static string GetEntityName(Entity entity)
@@ -858,6 +912,8 @@ namespace AutoCADBallet
         // Optimized versions that reuse transactions (MAJOR PERFORMANCE IMPROVEMENT)
         private static string GetEntityCategoryOptimized(DBObject entity, Transaction tr)
         {
+            string typeName = entity.GetType().Name;
+
             if (entity is BlockReference)
             {
                 var br = entity as BlockReference;
@@ -869,20 +925,73 @@ namespace AutoCADBallet
                 else
                     return "Block Reference";
             }
+            else if (entity is Dimension)
+            {
+                if (entity is AlignedDimension)
+                    return "Aligned Dimension";
+                else if (entity is RotatedDimension)
+                    return "Linear Dimension";
+                else if (entity is RadialDimension)
+                    return "Radial Dimension";
+                else if (entity is DiametricDimension)
+                    return "Diametric Dimension";
+                else if (entity is OrdinateDimension)
+                    return "Ordinate Dimension";
+                else if (entity is ArcDimension)
+                    return "Arc Dimension";
+                else if (entity is RadialDimensionLarge)
+                    return "Jogged Dimension";
+                else
+                    return "Dimension";
+            }
             else if (entity is MText)
                 return "MText";
             else if (entity is DBText)
                 return "Text";
-            else if (entity is Line)
-                return "Line";
             else if (entity is Polyline)
                 return "Polyline";
+            else if (entity is Polyline2d)
+                return "Polyline2D";
+            else if (entity is Polyline3d)
+                return "Polyline3D";
+            else if (entity is Line)
+                return "Line";
             else if (entity is Circle)
                 return "Circle";
             else if (entity is Arc)
                 return "Arc";
+            else if (entity is Ellipse)
+                return "Ellipse";
+            else if (entity is Spline)
+                return "Spline";
+            else if (entity is Hatch)
+                return "Hatch";
+            else if (entity is Solid)
+                return "2D Solid";
+            else if (entity is Leader)
+                return "Leader";
+            else if (entity is MLeader)
+                return "Multileader";
+            else if (entity is Table)
+                return "Table";
+            else if (entity is Viewport)
+                return "Viewport";
+            else if (entity is RasterImage)
+                return "Raster Image";
+            else if (entity is Wipeout)
+                return "Wipeout";
+            else if (entity is DBPoint)
+                return "Point";
+            else if (entity is Ray)
+                return "Ray";
+            else if (entity is Xline)
+                return "Construction Line";
+            else if (entity is Layout)
+                return "Layout";
             else
-                return entity.GetType().Name;
+            {
+                return typeName.Replace("Autodesk.AutoCAD.", "");
+            }
         }
 
         private static string GetEntityNameOptimized(Entity entity, Transaction tr)
