@@ -9,7 +9,7 @@ using System.IO;
 using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
-public class SelectSimilarByLayer
+public class SelectBySameLayersOfSelected
 {
     public static void ExecuteViewScope(Editor ed)
     {

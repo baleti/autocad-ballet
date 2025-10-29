@@ -10,12 +10,13 @@ using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 namespace AutoCADBallet
 {
     /// <summary>
-    /// Selects entities that have exactly the same tags as the currently selected entities (siblings)
+    /// Selects entities that have at least one of the tags from the currently selected entities
+    /// Shows a dialog to let user pick which tags to use for selection
     /// </summary>
-    public static class SelectBySiblingTagsOfSelected
+    public static class SelectByTagsOfSelected
     {
         /// <summary>
-        /// View scope: Select siblings by tags from pickfirst set
+        /// View scope: Select parents by tags from pickfirst set
         /// </summary>
         public static void ExecuteViewScope(Editor ed)
         {
@@ -28,7 +29,7 @@ namespace AutoCADBallet
             if (selResult.Status == PromptStatus.Error)
             {
                 var selectionOpts = new PromptSelectionOptions();
-                selectionOpts.MessageForAdding = "\nSelect objects to find siblings of: ";
+                selectionOpts.MessageForAdding = "\nSelect objects to extract tags from: ";
                 selResult = ed.GetSelection(selectionOpts);
             }
             else if (selResult.Status == PromptStatus.OK)
@@ -44,28 +45,67 @@ namespace AutoCADBallet
 
             var selectedIds = selResult.Value.GetObjectIds();
 
-            // Collect all unique tag sets from selected entities
-            var tagSets = new List<HashSet<string>>();
+            // Collect all unique tags from selected entities with counts
+            var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var objId in selectedIds)
             {
                 try
                 {
                     var tags = objId.GetTags(db);
-                    if (tags.Count > 0)
+                    foreach (var tag in tags)
                     {
-                        tagSets.Add(new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase));
+                        if (tagCounts.ContainsKey(tag))
+                            tagCounts[tag]++;
+                        else
+                            tagCounts[tag] = 1;
                     }
                 }
                 catch { }
             }
 
-            if (tagSets.Count == 0)
+            if (tagCounts.Count == 0)
             {
                 ed.WriteMessage("\nSelected entities have no tags.\n");
                 return;
             }
 
-            // Find all entities in current space with matching tag sets
+            // Show DataGrid with tags for user selection
+            var entries = tagCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Select(kvp => new Dictionary<string, object>
+                {
+                    { "TagName", kvp.Key },
+                    { "UsageCount", kvp.Value }
+                })
+                .ToList();
+
+            var propertyNames = new List<string> { "TagName", "UsageCount" };
+
+            ed.WriteMessage($"\nSelect tags to find entities with...\n");
+
+            var selectedTags = CustomGUIs.DataGrid(entries, propertyNames, spanAllScreens: false,
+                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false);
+
+            if (selectedTags == null || selectedTags.Count == 0)
+            {
+                ed.WriteMessage("\nNo tags selected.\n");
+                return;
+            }
+
+            // Extract selected tag names
+            var tagNames = selectedTags
+                .Where(tag => tag.ContainsKey("TagName"))
+                .Select(tag => (string)tag["TagName"])
+                .ToList();
+
+            if (tagNames.Count == 0)
+            {
+                ed.WriteMessage("\nNo valid tags selected.\n");
+                return;
+            }
+
+            // Find all entities in current space with at least one of the selected tags
             var matchingEntities = new List<ObjectId>();
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -82,16 +122,10 @@ namespace AutoCADBallet
                             if (tags.Count == 0)
                                 continue;
 
-                            var entityTagSet = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
-
-                            // Check if entity has exactly the same tags as any selected entity
-                            foreach (var targetTagSet in tagSets)
+                            // Check if entity has at least one of the selected tags
+                            if (tags.Any(tag => tagNames.Contains(tag, StringComparer.OrdinalIgnoreCase)))
                             {
-                                if (entityTagSet.SetEquals(targetTagSet))
-                                {
-                                    matchingEntities.Add(entityId);
-                                    break;
-                                }
+                                matchingEntities.Add(entityId);
                             }
                         }
                         catch { }
@@ -107,18 +141,18 @@ namespace AutoCADBallet
 
             if (matchingEntities.Count == 0)
             {
-                ed.WriteMessage("\nNo sibling entities found with matching tags.\n");
+                ed.WriteMessage("\nNo entities found with selected tags.\n");
                 return;
             }
 
             // Set implied selection for view scope
             ed.SetImpliedSelection(matchingEntities.ToArray());
 
-            ed.WriteMessage($"\nSelected {matchingEntities.Count} sibling entity(ies) with matching tags.\n");
+            ed.WriteMessage($"\nSelected {matchingEntities.Count} entity(ies) with at least one of {tagNames.Count} tag(s).\n");
         }
 
         /// <summary>
-        /// Document scope: Select siblings by tags from stored selection
+        /// Document scope: Select parents by tags from stored selection
         /// </summary>
         public static void ExecuteDocumentScope(Editor ed, Database db)
         {
@@ -153,8 +187,8 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Convert to ObjectIds and collect tag sets
-            var tagSets = new List<HashSet<string>>();
+            // Convert to ObjectIds and collect tags with counts
+            var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var item in storedSelection)
             {
                 try
@@ -164,22 +198,61 @@ namespace AutoCADBallet
                     if (objectId != ObjectId.Null)
                     {
                         var tags = objectId.GetTags(db);
-                        if (tags.Count > 0)
+                        foreach (var tag in tags)
                         {
-                            tagSets.Add(new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase));
+                            if (tagCounts.ContainsKey(tag))
+                                tagCounts[tag]++;
+                            else
+                                tagCounts[tag] = 1;
                         }
                     }
                 }
                 catch { }
             }
 
-            if (tagSets.Count == 0)
+            if (tagCounts.Count == 0)
             {
                 ed.WriteMessage("\nStored selection has no entities with tags.\n");
                 return;
             }
 
-            // Find all entities in all layouts with matching tag sets
+            // Show DataGrid with tags for user selection
+            var entries = tagCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Select(kvp => new Dictionary<string, object>
+                {
+                    { "TagName", kvp.Key },
+                    { "UsageCount", kvp.Value }
+                })
+                .ToList();
+
+            var propertyNames = new List<string> { "TagName", "UsageCount" };
+
+            ed.WriteMessage($"\nSelect tags to find entities with...\n");
+
+            var selectedTags = CustomGUIs.DataGrid(entries, propertyNames, spanAllScreens: false,
+                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false);
+
+            if (selectedTags == null || selectedTags.Count == 0)
+            {
+                ed.WriteMessage("\nNo tags selected.\n");
+                return;
+            }
+
+            // Extract selected tag names
+            var tagNames = selectedTags
+                .Where(tag => tag.ContainsKey("TagName"))
+                .Select(tag => (string)tag["TagName"])
+                .ToList();
+
+            if (tagNames.Count == 0)
+            {
+                ed.WriteMessage("\nNo valid tags selected.\n");
+                return;
+            }
+
+            // Find all entities in all layouts with at least one of the selected tags
             var matchingSelectionItems = new List<SelectionItem>();
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -201,24 +274,18 @@ namespace AutoCADBallet
                                 if (tags.Count == 0)
                                     continue;
 
-                                var entityTagSet = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
-
-                                // Check if entity has exactly the same tags as any selected entity
-                                foreach (var targetTagSet in tagSets)
+                                // Check if entity has at least one of the selected tags
+                                if (tags.Any(tag => tagNames.Contains(tag, StringComparer.OrdinalIgnoreCase)))
                                 {
-                                    if (entityTagSet.SetEquals(targetTagSet))
+                                    var entity = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
+                                    if (entity != null)
                                     {
-                                        var entity = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
-                                        if (entity != null)
+                                        matchingSelectionItems.Add(new SelectionItem
                                         {
-                                            matchingSelectionItems.Add(new SelectionItem
-                                            {
-                                                DocumentPath = doc.Name,
-                                                Handle = entity.Handle.ToString(),
-                                                SessionId = doc.GetHashCode().ToString()
-                                            });
-                                        }
-                                        break;
+                                            DocumentPath = doc.Name,
+                                            Handle = entity.Handle.ToString(),
+                                            SessionId = doc.GetHashCode().ToString()
+                                        });
                                     }
                                 }
                             }
@@ -236,18 +303,18 @@ namespace AutoCADBallet
 
             if (matchingSelectionItems.Count == 0)
             {
-                ed.WriteMessage("\nNo sibling entities found with matching tags.\n");
+                ed.WriteMessage("\nNo entities found with selected tags.\n");
                 return;
             }
 
             // Save to stored selection
             SelectionStorage.SaveSelection(matchingSelectionItems, docName);
 
-            ed.WriteMessage($"\nSelected {matchingSelectionItems.Count} sibling entity(ies) with matching tags in document.\n");
+            ed.WriteMessage($"\nSelected {matchingSelectionItems.Count} entity(ies) with at least one of {tagNames.Count} tag(s) in document.\n");
         }
 
         /// <summary>
-        /// Session scope: Select siblings by tags from stored selection across all documents
+        /// Session scope: Select parents by tags from stored selection across all documents
         /// </summary>
         public static void ExecuteApplicationScope(Editor ed)
         {
@@ -261,8 +328,8 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Collect tag sets from all selected entities across documents
-            var tagSets = new List<HashSet<string>>();
+            // Collect tags from all selected entities across documents
+            var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var docs = AcadApp.DocumentManager;
 
             foreach (var item in storedSelection)
@@ -295,9 +362,12 @@ namespace AutoCADBallet
                         if (objectId != ObjectId.Null)
                         {
                             var tags = objectId.GetTags(itemDb);
-                            if (tags.Count > 0)
+                            foreach (var tag in tags)
                             {
-                                tagSets.Add(new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase));
+                                if (tagCounts.ContainsKey(tag))
+                                    tagCounts[tag]++;
+                                else
+                                    tagCounts[tag] = 1;
                             }
                         }
                     }
@@ -305,9 +375,45 @@ namespace AutoCADBallet
                 }
             }
 
-            if (tagSets.Count == 0)
+            if (tagCounts.Count == 0)
             {
                 ed.WriteMessage("\nStored selection has no entities with tags.\n");
+                return;
+            }
+
+            // Show DataGrid with tags for user selection
+            var entries = tagCounts
+                .OrderByDescending(kvp => kvp.Value)
+                .ThenBy(kvp => kvp.Key)
+                .Select(kvp => new Dictionary<string, object>
+                {
+                    { "TagName", kvp.Key },
+                    { "UsageCount", kvp.Value }
+                })
+                .ToList();
+
+            var propertyNames = new List<string> { "TagName", "UsageCount" };
+
+            ed.WriteMessage($"\nSelect tags to find entities with...\n");
+
+            var selectedTags = CustomGUIs.DataGrid(entries, propertyNames, spanAllScreens: false,
+                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false);
+
+            if (selectedTags == null || selectedTags.Count == 0)
+            {
+                ed.WriteMessage("\nNo tags selected.\n");
+                return;
+            }
+
+            // Extract selected tag names
+            var tagNames = selectedTags
+                .Where(tag => tag.ContainsKey("TagName"))
+                .Select(tag => (string)tag["TagName"])
+                .ToList();
+
+            if (tagNames.Count == 0)
+            {
+                ed.WriteMessage("\nNo valid tags selected.\n");
                 return;
             }
 
@@ -337,24 +443,18 @@ namespace AutoCADBallet
                                     if (tags.Count == 0)
                                         continue;
 
-                                    var entityTagSet = new HashSet<string>(tags, StringComparer.OrdinalIgnoreCase);
-
-                                    // Check if entity has exactly the same tags as any selected entity
-                                    foreach (var targetTagSet in tagSets)
+                                    // Check if entity has at least one of the selected tags
+                                    if (tags.Any(tag => tagNames.Contains(tag, StringComparer.OrdinalIgnoreCase)))
                                     {
-                                        if (entityTagSet.SetEquals(targetTagSet))
+                                        var entity = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
+                                        if (entity != null)
                                         {
-                                            var entity = tr.GetObject(entityId, OpenMode.ForRead) as Entity;
-                                            if (entity != null)
+                                            matchingSelectionItems.Add(new SelectionItem
                                             {
-                                                matchingSelectionItems.Add(new SelectionItem
-                                                {
-                                                    DocumentPath = openDoc.Name,
-                                                    Handle = entity.Handle.ToString(),
-                                                    SessionId = openDoc.GetHashCode().ToString()
-                                                });
-                                            }
-                                            break;
+                                                DocumentPath = openDoc.Name,
+                                                Handle = entity.Handle.ToString(),
+                                                SessionId = openDoc.GetHashCode().ToString()
+                                            });
                                         }
                                     }
                                 }
@@ -373,7 +473,7 @@ namespace AutoCADBallet
 
             if (matchingSelectionItems.Count == 0)
             {
-                ed.WriteMessage("\nNo sibling entities found with matching tags.\n");
+                ed.WriteMessage("\nNo entities found with selected tags.\n");
                 return;
             }
 
@@ -386,7 +486,7 @@ namespace AutoCADBallet
                 SelectionStorage.SaveSelection(docGroup.ToList(), docGroup.Key);
             }
 
-            ed.WriteMessage($"\nSelected {matchingSelectionItems.Count} sibling entity(ies) with matching tags across {groupedByDoc.Count()} document(s).\n");
+            ed.WriteMessage($"\nSelected {matchingSelectionItems.Count} entity(ies) with at least one of {tagNames.Count} tag(s) across {groupedByDoc.Count()} document(s).\n");
         }
     }
 }
