@@ -52,6 +52,67 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 - Per-document selection files with format: `DocumentPath,SessionId` followed by comma-separated handles
 - Extension methods for Editor to support legacy `SetImpliedSelectionEx()` calls
 
+**Entity Attributes and Tag System** (`_entity-attributes.cs`):
+AutoCAD Ballet provides a type-safe, extensible attribute storage system for AutoCAD entities using extension dictionaries.
+
+*Architecture:*
+- **EntityAttributes class**: Generic key-value attribute storage with multiple data types (Text, Integer, Real, Boolean, Date)
+- **TagHelpers class**: Specialized tag management where tags are stored as comma-separated text attributes
+- **Storage mechanism**: Attributes are stored in entity extension dictionaries under the key "AUTOCAD_BALLET_ATTRIBUTES"
+- **Tag storage**: Tags use the "Tags" attribute key and are stored as comma-separated strings (case-insensitive)
+
+*Core Tag Operations (Extension Methods):*
+- `GetTags(entityId, db)` - Returns List<string> of all tags on an entity
+- `AddTags(entityId, db, params string[] tags)` - Adds tags to entity (merges with existing, no duplicates)
+- `SetTags(entityId, db, params string[] tags)` - Replaces all tags on entity
+- `RemoveTags(entityId, db, params string[] tags)` - Removes specific tags from entity
+- `ClearTags(entityId, db)` - Removes all tags from entity
+- `HasTag(entityId, db, string tag)` - Checks if entity has specific tag
+- `HasAnyTags(entityId, db)` - Checks if entity has any tags
+
+*Tag Discovery Methods (Static):*
+- `TagHelpers.GetAllTagsInCurrentSpace(db)` - Returns List<TagInfo> from current space (Model/Paper)
+- `TagHelpers.GetAllTagsInLayouts(db)` - Returns List<TagInfo> from all layouts (Model + Paper Spaces) in database
+- `TagHelpers.GetAllTagsInLayoutsAcrossDocuments(databases)` - Returns List<TagInfo> across multiple databases
+- `TagHelpers.GetAllTagsInDatabase(db)` - Returns List<TagInfo> from entire database including block definitions
+- `TagHelpers.FindEntitiesWithTag(db, string tag)` - Returns List<ObjectId> of all entities with specific tag
+- TagInfo contains: Id, Name, UsageCount (number of entities with that tag)
+
+*Tag Commands:*
+- `tag-selected-in-{view,document,session}` - Tag entities interactively
+  - Shows DataGrid with existing tags and usage counts
+  - Allows creating new tags by typing in search box (allowCreateFromSearch: true)
+  - User can select multiple existing tags or create new ones
+  - Adds selected/new tags to selected entities (merges with existing)
+
+- `select-by-sibling-tags-of-selected-in-{view,document,session}` - Select sibling entities
+  - Collects all unique tag sets from selected entities
+  - Finds all entities with **exactly** the same combination of tags
+  - Useful for finding entities that were tagged together as a group
+  - Example: If entity has tags "floor1, electrical", finds all entities with exactly those two tags
+
+- `select-by-parent-tags-of-selected-in-{view,document,session}` - Select parent entities by tag
+  - Collects all unique tags from selected entities with usage counts
+  - Shows DataGrid for user to select which tags to use for selection
+  - Finds all entities with **at least one** of the selected tags
+  - Useful for finding broader categories or related entities
+  - Example: If selecting tags "floor1, floor2", finds all entities with either tag
+
+*Use Cases:*
+- **Organization**: Tag entities by category, phase, responsibility, etc.
+- **Selection workflows**: Build complex selections based on tag criteria
+- **Cross-document coordination**: Tags persist with entities and work across documents
+- **Filtering**: Combine with other selection commands for powerful filtering
+- **Documentation**: Track entity metadata without modifying drawing properties
+
+*Implementation Notes:*
+- All tag operations are case-insensitive
+- Tags are trimmed of whitespace automatically
+- Empty or whitespace-only tags are ignored
+- Tag data persists in the drawing file (stored in extension dictionaries)
+- No limit on number of tags per entity or number of unique tags in a document
+- Performance: Tag discovery methods include diagnostic timing information
+
 **Command Structure**:
 - C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "delete-selected")
 - **CRITICAL**: Every command class MUST have the assembly-level `[assembly: CommandClass(typeof(YourClassName))]` attribute at the top of the file, outside the namespace declaration

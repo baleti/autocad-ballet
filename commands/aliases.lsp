@@ -41,12 +41,15 @@
 (defun c:tgs () (command "tag-selected-in-session") (princ))
 (defun c:ssd () (command "select-similar-in-document") (princ))
 (defun c:sss () (command "select-similar-in-session") (princ))
+(defun c:stv () (command "select-by-tags-in-view") (princ))
 (defun c:stgv () (command "select-by-tags-in-view") (princ))
 (defun c:stgd () (command "select-by-tags-in-document") (princ))
 (defun c:stgs () (command "select-by-tags-in-session") (princ))
 (defun c:sfv () (command "select-by-selection-filters-in-view") (princ))
 (defun c:sfd () (command "select-by-selection-filters-in-document") (princ))
 (defun c:sfs () (command "select-by-selection-filters-in-session") (princ))
+(defun c:sptv () (command "select-by-parent-tags-of-selected-in-view") (princ))
+(defun c:sstv () (command "select-by-sibling-tags-of-selected-in-view") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))
