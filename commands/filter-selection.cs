@@ -279,7 +279,8 @@ public static class FilterEntityDataHelper
             ["Handle"] = handle,
             ["Id"] = handle,
             ["IsExternal"] = true,
-            ["DisplayName"] = $"External: {Path.GetFileName(documentPath)}"
+            ["DisplayName"] = $"External: {Path.GetFileName(documentPath)}",
+            ["DynamicBlockName"] = "N/A"
         };
 
         try
@@ -437,10 +438,27 @@ public static class FilterEntityDataHelper
             ["Handle"] = entity.Handle.ToString(),
             ["Id"] = entity.ObjectId.Handle.Value,
             ["IsExternal"] = false,
-            ["ObjectId"] = entity.ObjectId // Store for selection
+            ["ObjectId"] = entity.ObjectId, // Store for selection
+            ["DynamicBlockName"] = "" // Will be populated for dynamic blocks
         };
 
         data["DisplayName"] = !string.IsNullOrEmpty(entityName) ? entityName : data["Category"].ToString();
+
+        // For BlockReferences, add dynamic block parent name if applicable
+        if (entity is BlockReference blockRef)
+        {
+            using (var tr = blockRef.Database.TransactionManager.StartTransaction())
+            {
+                var dynamicBlockTableRecordId = blockRef.DynamicBlockTableRecord;
+                if (dynamicBlockTableRecordId != ObjectId.Null && dynamicBlockTableRecordId != blockRef.BlockTableRecord)
+                {
+                    // This is a dynamic block - get the parent block name
+                    var dynamicBtr = tr.GetObject(dynamicBlockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
+                    data["DynamicBlockName"] = dynamicBtr?.Name ?? "";
+                }
+                tr.Commit();
+            }
+        }
 
         // Add all attributes from unified attribute system (including Tags)
         try
@@ -475,9 +493,9 @@ public static class FilterEntityDataHelper
         }
 
         // Add block attributes if entity is a block reference
-        if (entity is BlockReference blockRef)
+        if (entity is BlockReference)
         {
-            AddBlockAttributes(blockRef, data);
+            AddBlockAttributes((BlockReference)entity, data);
         }
 
         // Add plot settings for Layout entities
@@ -1316,11 +1334,35 @@ public static class FilterEntityDataHelper
     /// Post-processes entity data to:
     /// 1. Split Tags column into tag_1, tag_2, tag_3, etc. (one tag per column)
     /// 2. Remove attribute columns (Tags, attr_*) that have no data across all entities
+    /// 3. Remove DynamicBlockName column if no dynamic blocks are present
     /// </summary>
     public static void ProcessTagsAndAttributes(List<Dictionary<string, object>> entityData)
     {
         if (entityData == null || entityData.Count == 0)
             return;
+
+        // Step 0: Check if any dynamic blocks exist and remove column if not
+        bool hasDynamicBlocks = false;
+        foreach (var entity in entityData)
+        {
+            if (entity.TryGetValue("DynamicBlockName", out object dynBlockName) &&
+                dynBlockName != null &&
+                !string.IsNullOrWhiteSpace(dynBlockName.ToString()) &&
+                dynBlockName.ToString() != "N/A")
+            {
+                hasDynamicBlocks = true;
+                break;
+            }
+        }
+
+        if (!hasDynamicBlocks)
+        {
+            // Remove DynamicBlockName column from all entities
+            foreach (var entity in entityData)
+            {
+                entity.Remove("DynamicBlockName");
+            }
+        }
 
         // Step 1: Determine maximum number of tags across all entities
         int maxTagCount = 0;
@@ -1492,7 +1534,7 @@ public abstract class FilterElementsBase
 
             timer.Restart();
             // Reorder to put most useful columns first
-            var orderedProps = new List<string> { "Name", "Contents", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
+            var orderedProps = new List<string> { "Name", "DynamicBlockName", "Contents", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
 
             // Extract tag columns (tag_1, tag_2, tag_3, etc.) to place after Category
             var tagColumns = propertyNames.Where(p => p.StartsWith("tag_")).OrderBy(p => p).ToList();

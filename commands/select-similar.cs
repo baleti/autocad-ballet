@@ -450,7 +450,16 @@ namespace AutoCADBallet
             {
                 using (var tr = blockRef.Database.TransactionManager.StartTransaction())
                 {
-                    var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                    // For dynamic blocks, use the parent block definition instead of the anonymous block
+                    // This matches AutoCAD's native SELECTSIMILAR behavior
+                    var blockTableRecordId = blockRef.DynamicBlockTableRecord;
+                    if (blockTableRecordId == ObjectId.Null)
+                    {
+                        // Not a dynamic block, use regular BlockTableRecord
+                        blockTableRecordId = blockRef.BlockTableRecord;
+                    }
+
+                    var btr = tr.GetObject(blockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
                     key.BlockName = btr?.Name ?? "";
                 }
             }
