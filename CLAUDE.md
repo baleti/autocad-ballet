@@ -14,10 +14,12 @@ AutoCAD Ballet is a collection of custom commands for AutoCAD that provides enha
 **IMPORTANT**: This codebase is located in the same directory as `%APPDATA%/autocad-ballet`, which means:
 - The `runtime/` folder in this repository reflects **live usage** of the plugin
 - You can examine runtime logs and data to verify code behavior and debug issues
+- **ALL runtime data MUST be stored in `runtime/` subdirectory** - this includes logs, temporary data, caches, and user-generated data files
 - Runtime data includes:
   - `runtime/switch-view-logs/` - Layout switching history logs (one file per document)
   - `runtime/selection/` - Per-document selection storage files
   - `runtime/selection-logs/` - Selection change history logs
+  - `runtime/selection-filters` - Saved selection filter queries with names and source documents
   - `runtime/document-open-times.txt` - Document open/close timestamps
   - `runtime/InvokeAddinCommand-history` - Command invocation history
   - `runtime/InvokeAddinCommand-last-dll-path` - Last used DLL path

@@ -72,6 +72,7 @@ public partial class CustomGUIs
             case "radius":
             case "textheight":
             case "widthfactor":
+            case "query":
                 return true;
         }
         if (lowerName.StartsWith("attr_")) return true;

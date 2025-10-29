@@ -44,6 +44,9 @@
 (defun c:stgv () (command "select-by-tags-in-view") (princ))
 (defun c:stgd () (command "select-by-tags-in-document") (princ))
 (defun c:stgs () (command "select-by-tags-in-session") (princ))
+(defun c:sfv () (command "select-by-selection-filter-in-view") (princ))
+(defun c:sfd () (command "select-by-selection-filter-in-document") (princ))
+(defun c:sfs () (command "select-by-selection-filter-in-session") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))

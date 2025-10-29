@@ -497,48 +497,37 @@ public partial class CustomGUIs
             }
             else if (e.KeyCode == Keys.Delete && !_isEditMode && sender == grid && onDeleteEntries != null)
             {
-                // Delete key: Invoke callback if provided
+                // Delete key: Invoke callback if provided (callback handles confirmation)
                 if (grid.SelectedRows.Count > 0)
                 {
-                    // Show confirmation dialog
-                    var result = MessageBox.Show(
-                        $"Delete {grid.SelectedRows.Count} selected entry(ies)?",
-                        "Confirm Deletion",
-                        MessageBoxButtons.OKCancel,
-                        MessageBoxIcon.Question,
-                        MessageBoxDefaultButton.Button2); // Default to Cancel for safety
+                    // Collect entries to delete
+                    var entriesToDelete = new List<Dictionary<string, object>>();
 
-                    if (result == DialogResult.OK)
+                    foreach (DataGridViewRow row in grid.SelectedRows)
                     {
-                        // Collect entries to delete
-                        var entriesToDelete = new List<Dictionary<string, object>>();
-
-                        foreach (DataGridViewRow row in grid.SelectedRows)
+                        if (row.Index < _cachedFilteredData.Count)
                         {
-                            if (row.Index < _cachedFilteredData.Count)
-                            {
-                                entriesToDelete.Add(_cachedFilteredData[row.Index]);
-                            }
+                            entriesToDelete.Add(_cachedFilteredData[row.Index]);
+                        }
+                    }
+
+                    // Invoke callback to handle deletion (callback shows its own confirmation dialog)
+                    bool success = onDeleteEntries(entriesToDelete);
+
+                    if (success)
+                    {
+                        // Remove entries from cached data
+                        foreach (var entry in entriesToDelete)
+                        {
+                            _cachedOriginalData.Remove(entry);
+                            _cachedFilteredData.Remove(entry);
                         }
 
-                        // Invoke callback to handle deletion
-                        bool success = onDeleteEntries(entriesToDelete);
+                        // Rebuild search index after deletion
+                        BuildSearchIndex(_cachedOriginalData, propertyNames);
 
-                        if (success)
-                        {
-                            // Remove entries from cached data
-                            foreach (var entry in entriesToDelete)
-                            {
-                                _cachedOriginalData.Remove(entry);
-                                _cachedFilteredData.Remove(entry);
-                            }
-
-                            // Rebuild search index after deletion
-                            BuildSearchIndex(_cachedOriginalData, propertyNames);
-
-                            // Update grid
-                            UpdateFilteredGrid();
-                        }
+                        // Update grid
+                        UpdateFilteredGrid();
                     }
                 }
                 e.Handled = true;

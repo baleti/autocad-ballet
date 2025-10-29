@@ -201,30 +201,50 @@ namespace AutoCADBallet
                     initialSelectionIndices,
                     onDeleteEntries: (entriesToDelete) =>
                     {
-                        // Delete log files from runtime folder
-                        foreach (var entry in entriesToDelete)
+                        // Confirm deletion
+                        if (entriesToDelete.Count == 0)
+                            return false;
+
+                        string message = entriesToDelete.Count == 1
+                            ? $"Remove '{entriesToDelete[0]["document name"]}' from recent documents?"
+                            : $"Remove {entriesToDelete.Count} documents from recent list?";
+
+                        var result = MessageBox.Show(
+                            message,
+                            "Confirm Removal",
+                            MessageBoxButtons.OKCancel,
+                            MessageBoxIcon.Question,
+                            MessageBoxDefaultButton.Button1); // OK is default (focused)
+
+                        if (result == DialogResult.OK)
                         {
-                            if (entry.ContainsKey("DocumentName"))
+                            // Delete log files from runtime folder
+                            foreach (var entry in entriesToDelete)
                             {
-                                string docName = entry["DocumentName"]?.ToString();
-                                if (!string.IsNullOrEmpty(docName))
+                                if (entry.ContainsKey("DocumentName"))
                                 {
-                                    string logFilePath = Path.Combine(logDirPath, docName);
-                                    if (File.Exists(logFilePath))
+                                    string docName = entry["DocumentName"]?.ToString();
+                                    if (!string.IsNullOrEmpty(docName))
                                     {
-                                        try
+                                        string logFilePath = Path.Combine(logDirPath, docName);
+                                        if (File.Exists(logFilePath))
                                         {
-                                            File.Delete(logFilePath);
-                                        }
-                                        catch (System.Exception)
-                                        {
-                                            // Silently continue if file deletion fails
+                                            try
+                                            {
+                                                File.Delete(logFilePath);
+                                            }
+                                            catch (System.Exception)
+                                            {
+                                                // Silently continue if file deletion fails
+                                            }
                                         }
                                     }
                                 }
                             }
+                            return true; // Remove from grid
                         }
-                        return true; // Always return true to remove from grid
+
+                        return false; // Don't remove from grid if cancelled
                     });
 
                 if (chosen != null && chosen.Count > 0)
