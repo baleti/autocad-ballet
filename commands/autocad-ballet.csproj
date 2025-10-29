@@ -31,8 +31,10 @@
     <GenerateDependencyFile>false</GenerateDependencyFile>
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AutoCAD.NET" Version="$(AutoCADPackageVersion)" ExcludeAssets="runtime" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
   </ItemGroup>
 </Project>

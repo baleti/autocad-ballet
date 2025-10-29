@@ -9,6 +9,8 @@ using Autodesk.AutoCAD.Runtime;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.EditorInput;
 
+using Mono.Cecil;
+
 // Alias to avoid Application naming ambiguity
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
@@ -50,11 +52,19 @@ namespace AutocadBallet
         private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
         private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
 
-        // Static dictionary to track assemblies loaded in this AppDomain
-        private static Dictionary<string, WeakReference> loadedAssemblyCache = new Dictionary<string, WeakReference>();
-        
-        // Stronger cache for recently used assemblies to prevent GC
-        private static Dictionary<string, Assembly> strongAssemblyCache = new Dictionary<string, Assembly>();
+        // Cached command info - tracks individual commands that have been loaded
+        private class CachedCommandInfo
+        {
+            public Assembly Assembly { get; set; }
+            public string OriginalName { get; set; }
+            public string ModifiedName { get; set; }
+            public string TypeFullName { get; set; }
+            public string MethodName { get; set; }
+        }
+
+        // Static dictionary to track loaded commands per DLL version
+        // Key format: "dllPath|timestamp|filesize|commandName"
+        private static Dictionary<string, CachedCommandInfo> loadedCommandCache = new Dictionary<string, CachedCommandInfo>();
 
         // Instance dictionary for dependency resolution within a single invocation
         private Dictionary<string, Assembly> sessionAssemblies = new Dictionary<string, Assembly>();
@@ -62,14 +72,16 @@ namespace AutocadBallet
         // Command info class
         private class CommandInfo
         {
-            public string CommandName { get; }
+            public string OriginalCommandName { get; }
+            public string ModifiedCommandName { get; }
             public string TypeName { get; }
             public string FullTypeName { get; }
             public string MethodName { get; }
 
-            public CommandInfo(string commandName, string typeName, string fullTypeName, string methodName)
+            public CommandInfo(string originalCommandName, string modifiedCommandName, string typeName, string fullTypeName, string methodName)
             {
-                CommandName = commandName;
+                OriginalCommandName = originalCommandName;
+                ModifiedCommandName = modifiedCommandName;
                 TypeName = typeName;
                 FullTypeName = fullTypeName;
                 MethodName = methodName;
@@ -96,112 +108,22 @@ namespace AutocadBallet
             {
                 // Get file info for cache management
                 var fileInfo = new FileInfo(dllPath);
-                string cacheKey = $"{dllPath}|{fileInfo.LastWriteTimeUtc.Ticks}|{fileInfo.Length}";
+                string baseCacheKey = $"{dllPath}|{fileInfo.LastWriteTimeUtc.Ticks}|{fileInfo.Length}";
 
-                Assembly assembly = null;
+                // Inspect DLL with Mono.Cecil to extract command names (don't load assembly yet)
+                ed.WriteMessage("\nInspecting assembly...");
+                var commandNames = InspectCommandNames(dllPath);
 
-                // Check strong cache first
-                if (strongAssemblyCache.ContainsKey(cacheKey))
-                {
-                    assembly = strongAssemblyCache[cacheKey];
-                    ed.WriteMessage("\nUsing strongly cached assembly (no file changes detected).");
-                }
-                // Check strong cache first
-                if (strongAssemblyCache.ContainsKey(cacheKey))
-                {
-                    assembly = strongAssemblyCache[cacheKey];
-                    ed.WriteMessage("\nUsing strongly cached assembly (no file changes detected).");
-                }
-                // 
-                // Check if we have a cached assembly with the same timestamp and size
-                else if (loadedAssemblyCache.ContainsKey(cacheKey))
-                {
-                    var weakRef = loadedAssemblyCache[cacheKey];
-                    if (weakRef.IsAlive)
-                    {
-                        assembly = weakRef.Target as Assembly;
-                        // Move to strong cache for future use
-                        strongAssemblyCache[cacheKey] = assembly;
-                        ed.WriteMessage("\nUsing cached assembly (no file changes detected).");
-                    }
-                }
-
-                // If not cached or cache is invalid, load the assembly
-                if (assembly == null)
-                {
-                    // Clear old cache entries for this file
-                    // Also clear strong cache entries
-                    var strongKeysToRemove = strongAssemblyCache.Keys
-                        .Where(k => k.StartsWith(dllPath + "|"))
-                        .ToList();
-                    foreach (var key in strongKeysToRemove)
-                    {
-                        strongAssemblyCache.Remove(key);
-                    }
-                    // Limit strong cache size to prevent memory leaks
-                    if (strongAssemblyCache.Count > 10)
-                    {
-                        var oldestKeys = strongAssemblyCache.Keys.Take(strongAssemblyCache.Count - 5).ToList();
-                        foreach (var key in oldestKeys)
-                        {
-                            strongAssemblyCache.Remove(key);
-                        }
-                    }
-                    var keysToRemove = loadedAssemblyCache.Keys
-                        .Where(k => k.StartsWith(dllPath + "|"))
-                        .ToList();
-                    foreach (var key in keysToRemove)
-                    {
-                        loadedAssemblyCache.Remove(key);
-                    }
-
-                    // Register the assembly resolve event handler for dependencies
-                    AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
-
-                    try
-                    {
-                        // Load without triggering AutoCAD registration
-                        try
-                        {
-                            assembly = LoadAssemblyWithoutRegistration(dllPath);
-                        }
-                        catch (Autodesk.AutoCAD.Runtime.Exception acadEx) when (acadEx.ErrorStatus.ToString().Contains("eDuplicateKey"))
-                        {
-                            // This happens when commands are already registered - not a fatal error
-                            ed.WriteMessage("\nWarning: Commands already registered, reusing existing assembly.");
-                            // Try to find the assembly in already loaded assemblies
-                            assembly = AppDomain.CurrentDomain.GetAssemblies()
-                                .FirstOrDefault(a => a.Location.Equals(dllPath, StringComparison.OrdinalIgnoreCase));
-                            if (assembly == null) throw;
-                        }
-
-                        // Cache the assembly with a weak reference
-                        loadedAssemblyCache[cacheKey] = new WeakReference(assembly);
-                        strongAssemblyCache[cacheKey] = assembly;
-                        ed.WriteMessage("\nLoaded fresh assembly from disk.");
-                    }
-                    finally
-                    {
-                        AppDomain.CurrentDomain.AssemblyResolve -= CurrentDomain_AssemblyResolve;
-                    }
-                }
-
-                // Extract all commands
-                var commands = ExtractCommandsFromAssembly(assembly);
-
-                if (commands.Count == 0)
+                if (commandNames.Count == 0)
                 {
                     ed.WriteMessage("\nNo [CommandMethod] commands found in the assembly.");
                     return;
                 }
 
-                // Convert to format expected by DataGrid
-                var entries = commands.Select(cmd => new Dictionary<string, object>
+                // Convert to format expected by DataGrid - show ORIGINAL names to user
+                var entries = commandNames.Select(cmdName => new Dictionary<string, object>
                 {
-                    ["Command"] = cmd.CommandName,
-                    ["Type"] = cmd.TypeName,
-                    ["Method"] = cmd.MethodName,
-                    ["Full Name"] = cmd.FullTypeName
+                    ["Command"] = cmdName
                 }).ToList();
 
                 var propertyNames = new List<string> { "Command" };
@@ -215,19 +137,66 @@ namespace AutocadBallet
                     return;
                 }
 
-                // Get the selected command info
+                // Get the selected command name
                 var selectedEntry = selected.First();
-                var selectedCmd = commands.First(c =>
-                    c.CommandName == selectedEntry["Command"].ToString() &&
-                    c.FullTypeName == selectedEntry["Full Name"].ToString());
+                string selectedCommandName = selectedEntry["Command"].ToString();
 
-                ed.WriteMessage($"\nInvoking command: {selectedCmd.CommandName}");
+                // Check if this specific command is already cached
+                string commandCacheKey = $"{baseCacheKey}|{selectedCommandName}";
+                CachedCommandInfo cachedCommand = null;
+
+                if (loadedCommandCache.ContainsKey(commandCacheKey))
+                {
+                    cachedCommand = loadedCommandCache[commandCacheKey];
+                    ed.WriteMessage($"\nUsing cached command: {selectedCommandName}");
+                }
+                else
+                {
+                    // Clear old cache entries for this DLL version (different timestamp/size)
+                    var keysToRemove = loadedCommandCache.Keys
+                        .Where(k => k.StartsWith(dllPath + "|") && !k.StartsWith(baseCacheKey))
+                        .ToList();
+                    foreach (var key in keysToRemove)
+                    {
+                        loadedCommandCache.Remove(key);
+                    }
+
+                    // Limit cache size to prevent memory leaks
+                    if (loadedCommandCache.Count > 50)
+                    {
+                        var oldestKeys = loadedCommandCache.Keys.Take(loadedCommandCache.Count - 25).ToList();
+                        foreach (var key in oldestKeys)
+                        {
+                            loadedCommandCache.Remove(key);
+                        }
+                    }
+
+                    // Register the assembly resolve event handler for dependencies
+                    AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+
+                    try
+                    {
+                        // Rewrite ONLY the selected command with unique name and load
+                        ed.WriteMessage($"\nRewriting and loading command: {selectedCommandName}...");
+                        cachedCommand = RewriteAndLoadSingleCommand(dllPath, selectedCommandName, ed);
+
+                        // Cache the command info
+                        loadedCommandCache[commandCacheKey] = cachedCommand;
+                        ed.WriteMessage($"\nLoaded command: {selectedCommandName}");
+                    }
+                    finally
+                    {
+                        AppDomain.CurrentDomain.AssemblyResolve -= CurrentDomain_AssemblyResolve;
+                    }
+                }
+
+                ed.WriteMessage($"\nInvoking command: {cachedCommand.OriginalName}");
 
                 // Save the command and DLL path for invoke-last-addin-command
-                SaveLastCommandInfo(selectedCmd, dllPath);
+                SaveLastCommandInfo(cachedCommand, dllPath);
 
-                // Invoke the chosen method
-                InvokeCommandMethod(selectedCmd, assembly, ed);
+                // Invoke the chosen method (using MODIFIED name for AutoCAD)
+                InvokeCommandMethod(cachedCommand, ed);
 
                 // Note: SendStringToExecute is asynchronous, so we can't report completion here
             }
@@ -247,7 +216,169 @@ namespace AutocadBallet
             }
         }
 
-        private Assembly LoadAssemblyWithoutRegistration(string assemblyPath)
+        private List<string> InspectCommandNames(string assemblyPath)
+        {
+            var commandNames = new List<string>();
+
+            try
+            {
+                // Use Mono.Cecil to inspect the assembly WITHOUT loading it
+                using (var ms = new MemoryStream(File.ReadAllBytes(assemblyPath)))
+                {
+                    var readerParams = new ReaderParameters { ReadSymbols = false };
+                    var assemblyDef = AssemblyDefinition.ReadAssembly(ms, readerParams);
+
+                    // Iterate through all types and methods to find CommandMethod attributes
+                    foreach (var type in assemblyDef.MainModule.Types)
+                    {
+                        foreach (var method in type.Methods)
+                        {
+                            if (method.HasCustomAttributes)
+                            {
+                                var cmdAttr = method.CustomAttributes
+                                    .FirstOrDefault(a => a.AttributeType.FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute");
+
+                                if (cmdAttr != null && cmdAttr.ConstructorArguments.Count > 0)
+                                {
+                                    // Get the command name
+                                    var nameArg = cmdAttr.ConstructorArguments[0];
+                                    if (nameArg.Value is string commandName)
+                                    {
+                                        commandNames.Add(commandName);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to inspect assembly: {ex.Message}", ex);
+            }
+
+            return commandNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private CachedCommandInfo RewriteAndLoadSingleCommand(string assemblyPath, string targetCommandName, Editor ed)
+        {
+            // Generate unique suffix for the target command to avoid registration conflicts
+            string uniqueSuffix = "-" + DateTime.Now.Ticks.ToString();
+
+            byte[] modifiedAssemblyBytes;
+            string modifiedCommandName = null;
+            string typeFullName = null;
+            string methodName = null;
+
+            // Use Mono.Cecil to REMOVE all other commands and rewrite only the target one
+            using (var ms = new MemoryStream(File.ReadAllBytes(assemblyPath)))
+            {
+                var readerParams = new ReaderParameters { ReadSymbols = false };
+                var assemblyDef = AssemblyDefinition.ReadAssembly(ms, readerParams);
+
+                bool foundTargetCommand = false;
+
+                // Iterate through all types and methods to find CommandMethod attributes
+                foreach (var type in assemblyDef.MainModule.Types)
+                {
+                    foreach (var method in type.Methods)
+                    {
+                        if (method.HasCustomAttributes)
+                        {
+                            var cmdAttr = method.CustomAttributes
+                                .FirstOrDefault(a => a.AttributeType.FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute");
+
+                            if (cmdAttr != null && cmdAttr.ConstructorArguments.Count > 0)
+                            {
+                                // Get the original command name
+                                var nameArg = cmdAttr.ConstructorArguments[0];
+                                if (nameArg.Value is string originalName)
+                                {
+                                    if (originalName == targetCommandName)
+                                    {
+                                        // This is the target command - rewrite it with unique suffix
+                                        modifiedCommandName = originalName + uniqueSuffix;
+
+                                        cmdAttr.ConstructorArguments[0] = new CustomAttributeArgument(
+                                            nameArg.Type,
+                                            modifiedCommandName
+                                        );
+
+                                        // Store command info
+                                        typeFullName = type.FullName;
+                                        methodName = method.Name;
+                                        foundTargetCommand = true;
+                                    }
+                                    else
+                                    {
+                                        // This is NOT the target command - REMOVE the attribute
+                                        method.CustomAttributes.Remove(cmdAttr);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!foundTargetCommand)
+                {
+                    throw new InvalidOperationException($"Command '{targetCommandName}' not found in assembly");
+                }
+
+                // Write modified assembly to memory
+                using (var outputMs = new MemoryStream())
+                {
+                    assemblyDef.Write(outputMs);
+                    modifiedAssemblyBytes = outputMs.ToArray();
+                }
+            }
+
+            // Load dependencies first
+            string directory = Path.GetDirectoryName(assemblyPath);
+            string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
+
+            foreach (string dllFile in Directory.GetFiles(directory, "*.dll"))
+            {
+                if (dllFile != assemblyPath)
+                {
+                    string dllName = Path.GetFileNameWithoutExtension(dllFile);
+                    if (!sessionAssemblies.ContainsKey(dllName))
+                    {
+                        try
+                        {
+                            byte[] dllBytes = File.ReadAllBytes(dllFile);
+                            Assembly dllAssembly = Assembly.Load(dllBytes);
+                            sessionAssemblies[dllName] = dllAssembly;
+                        }
+                        catch (BadImageFormatException)
+                        {
+                            // Skip native DLLs or incompatible assemblies
+                            continue;
+                        }
+                        catch (System.Exception)
+                        {
+                            // Skip assemblies that fail to load
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Load the modified assembly
+            Assembly assembly = Assembly.Load(modifiedAssemblyBytes);
+            sessionAssemblies[assemblyName] = assembly;
+
+            return new CachedCommandInfo
+            {
+                Assembly = assembly,
+                OriginalName = targetCommandName,
+                ModifiedName = modifiedCommandName,
+                TypeFullName = typeFullName,
+                MethodName = methodName
+            };
+        }
+
+        private Assembly LoadAssemblyWithoutRegistration_OLD(string assemblyPath)
         {
             // Load the assembly in a way that doesn't trigger AutoCAD's automatic command registration
             // We do this by loading into a separate context first for inspection
@@ -326,16 +457,13 @@ namespace AutocadBallet
                 return sessionAssemblies[shortName];
             }
 
-            // Check cached assemblies
-            foreach (var kvp in loadedAssemblyCache)
+            // Check cached commands
+            foreach (var kvp in loadedCommandCache)
             {
-                if (kvp.Value.IsAlive)
+                var asm = kvp.Value.Assembly;
+                if (asm != null && asm.GetName().Name == shortName)
                 {
-                    var asm = kvp.Value.Target as Assembly;
-                    if (asm != null && asm.GetName().Name == shortName)
-                    {
-                        return asm;
-                    }
+                    return asm;
                 }
             }
 
@@ -362,7 +490,7 @@ namespace AutocadBallet
             return null;
         }
 
-        private List<CommandInfo> ExtractCommandsFromAssembly(Assembly assembly)
+        private List<CommandInfo> ExtractCommandsFromAssembly(Assembly assembly, Dictionary<string, string> commandMappings)
         {
             var list = new List<CommandInfo>();
 
@@ -379,9 +507,16 @@ namespace AutocadBallet
                             // Check for CommandMethodAttribute
                             if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
                             {
-                                string commandName = TryGetCommandName(attr) ?? method.Name;
+                                string modifiedCommandName = TryGetCommandName(attr) ?? method.Name;
+
+                                // Find the original name from mappings (reverse lookup)
+                                string originalCommandName = commandMappings
+                                    .FirstOrDefault(kvp => kvp.Value == modifiedCommandName)
+                                    .Key ?? modifiedCommandName;
+
                                 list.Add(new CommandInfo(
-                                    commandName,
+                                    originalCommandName,
+                                    modifiedCommandName,
                                     type.Name,
                                     type.FullName ?? type.Name,
                                     method.Name));
@@ -405,9 +540,16 @@ namespace AutocadBallet
                             {
                                 if (attr.GetType().FullName == "Autodesk.AutoCAD.Runtime.CommandMethodAttribute")
                                 {
-                                    string commandName = TryGetCommandName(attr) ?? method.Name;
+                                    string modifiedCommandName = TryGetCommandName(attr) ?? method.Name;
+
+                                    // Find the original name from mappings (reverse lookup)
+                                    string originalCommandName = commandMappings
+                                        .FirstOrDefault(kvp => kvp.Value == modifiedCommandName)
+                                        .Key ?? modifiedCommandName;
+
                                     list.Add(new CommandInfo(
-                                        commandName,
+                                        originalCommandName,
+                                        modifiedCommandName,
                                         type.Name,
                                         type.FullName ?? type.Name,
                                         method.Name));
@@ -423,7 +565,7 @@ namespace AutocadBallet
                 }
             }
 
-            return list.OrderBy(c => c.CommandName, StringComparer.OrdinalIgnoreCase).ToList();
+            return list.OrderBy(c => c.OriginalCommandName, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         private string TryGetCommandName(object cmdAttr)
@@ -453,11 +595,11 @@ namespace AutocadBallet
             return null;
         }
 
-        private void InvokeCommandMethod(CommandInfo info, Assembly assembly, Editor ed)
+        private void InvokeCommandMethod(CachedCommandInfo commandInfo, Editor ed)
         {
             try
             {
-                ed.WriteMessage($"\nExecuting command: {info.CommandName}");
+                ed.WriteMessage($"\nExecuting command: {commandInfo.OriginalName}");
 
                 var doc = AcAp.DocumentManager.MdiActiveDocument;
                 if (doc == null)
@@ -466,19 +608,20 @@ namespace AutocadBallet
                 }
 
                 // Use SendStringToExecute to invoke through AutoCAD's command pipeline
+                // Use the MODIFIED name that was actually registered with AutoCAD
                 // This ensures proper command context and selection handling
                 // The 'true' parameters: activate document, send from command line, echo command
-                doc.SendStringToExecute(info.CommandName + "\n", true, false, true);
+                doc.SendStringToExecute(commandInfo.ModifiedName + "\n", true, false, true);
             }
             catch (System.Exception ex)
             {
                 if (ed != null)
-                    ed.WriteMessage($"\n[InvokeAddin] Failed to invoke command '{info.CommandName}': {ex.Message}");
+                    ed.WriteMessage($"\n[InvokeAddin] Failed to invoke command '{commandInfo.OriginalName}': {ex.Message}");
                 throw;
             }
         }
 
-        private void SaveLastCommandInfo(CommandInfo selectedCmd, string dllPath)
+        private void SaveLastCommandInfo(CachedCommandInfo commandInfo, string dllPath)
         {
             try
             {
@@ -491,8 +634,8 @@ namespace AutocadBallet
                 // Save the DLL path
                 File.WriteAllText(ConfigFilePath, dllPath);
 
-                // Save the user-friendly command name
-                File.WriteAllText(LastCommandFilePath, selectedCmd.CommandName);
+                // Save the user-friendly ORIGINAL command name
+                File.WriteAllText(LastCommandFilePath, commandInfo.OriginalName);
             }
             catch (System.Exception ex)
             {

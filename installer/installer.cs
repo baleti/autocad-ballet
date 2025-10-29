@@ -346,19 +346,29 @@ namespace AutoCADBalletInstaller
 
             foreach (string year in installedYears)
             {
-                // Look for DLL resource for this year
-                // Resource names are like: installer._2026.autocad-ballet.dll
-                string dllResourcePattern = $"installer._{year}.autocad-ballet.dll";
-                var dllResource = resourceNames.FirstOrDefault(r => r.EndsWith($"_{year}.autocad-ballet.dll"));
+                // Create year-specific directory
+                string yearDir = Path.Combine(targetDir, "commands", "bin", year);
+                Directory.CreateDirectory(yearDir);
 
-                if (dllResource != null)
+                // Look for all DLL resources for this year (autocad-ballet.dll and Mono.Cecil*.dll)
+                var yearDllResources = resourceNames.Where(r =>
+                    r.Contains($"_{year}.") && r.EndsWith(".dll")).ToList();
+
+                foreach (var dllResource in yearDllResources)
                 {
-                    // Create year-specific directory
-                    string yearDir = Path.Combine(targetDir, "commands", "bin", year);
-                    Directory.CreateDirectory(yearDir);
+                    // Extract filename from resource name
+                    // Resource names are like: installer._2026.autocad-ballet.dll or installer._2026.Mono.Cecil.dll
+                    string fileName = dllResource.Substring(dllResource.LastIndexOf('.', dllResource.Length - 5) + 1);
 
-                    // Extract the DLL
-                    string dllPath = Path.Combine(yearDir, "autocad-ballet.dll");
+                    // Handle pattern like: installer._2026.Mono.Cecil.dll
+                    // We want to extract just "Mono.Cecil.dll" or "autocad-ballet.dll"
+                    int yearDotIndex = dllResource.IndexOf($"_{year}.");
+                    if (yearDotIndex >= 0)
+                    {
+                        fileName = dllResource.Substring(yearDotIndex + year.Length + 2); // +2 for "_{year}."
+                    }
+
+                    string dllPath = Path.Combine(yearDir, fileName);
                     ExtractResource(dllResource, dllPath);
                 }
             }
