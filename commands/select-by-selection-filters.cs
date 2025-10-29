@@ -18,7 +18,7 @@ namespace AutoCADBallet
         public string SpaceName { get; set; }
     }
 
-    public static class SelectBySelectionFilter
+    public static class SelectBySelectionFilters
     {
         /// <summary>
         /// Saves any modified filters back to storage after DataGrid editing
@@ -146,17 +146,28 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Apply selected filter to current view
-            var selectedFilter = chosenRows[0]; // Single selection
-            string filterName = selectedFilter["Name"].ToString();
-            string queryString = selectedFilter["Query"].ToString();
+            // Apply selected filters to current view (combine results with OR logic)
+            var selectedFilters = chosenRows.Select(row => new
+            {
+                Name = row["Name"].ToString(),
+                Query = row["Query"].ToString(),
+                ParsedQuery = ParseQuery(row["Query"].ToString())
+            }).ToList();
 
-            ed.WriteMessage($"\nApplying filter '{filterName}' to current view...\n");
+            if (selectedFilters.Count == 1)
+            {
+                ed.WriteMessage($"\nApplying filter '{selectedFilters[0].Name}' to current view...\n");
+            }
+            else
+            {
+                ed.WriteMessage($"\nApplying {selectedFilters.Count} filters to current view (combining results)...\n");
+                foreach (var filter in selectedFilters)
+                {
+                    ed.WriteMessage($"  - {filter.Name}\n");
+                }
+            }
 
-            // Parse query once before loop (optimization!)
-            var parsedQuery = ParseQuery(queryString);
-
-            var matchedIds = new List<ObjectId>();
+            var matchedIds = new HashSet<ObjectId>();
             var spaceName = GetCurrentSpaceName(db);
 
             using (var tr = db.TransactionManager.StartTransaction())
@@ -168,9 +179,17 @@ namespace AutoCADBallet
                     try
                     {
                         var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                        if (entity != null && MatchesQueryParsed(entity, parsedQuery, tr))
+                        if (entity != null && entity.Visible)
                         {
-                            matchedIds.Add(id);
+                            // Check if entity matches ANY of the selected filters (OR logic)
+                            foreach (var filter in selectedFilters)
+                            {
+                                if (MatchesQueryParsed(entity, filter.ParsedQuery, tr))
+                                {
+                                    matchedIds.Add(id);
+                                    break; // No need to check other filters once matched
+                                }
+                            }
                         }
                     }
                     catch
@@ -185,11 +204,25 @@ namespace AutoCADBallet
             if (matchedIds.Count > 0)
             {
                 ed.SetImpliedSelection(matchedIds.ToArray());
-                ed.WriteMessage($"\nSelected {matchedIds.Count} entities matching filter '{filterName}' in {spaceName}.\n");
+                if (selectedFilters.Count == 1)
+                {
+                    ed.WriteMessage($"\nSelected {matchedIds.Count} entities matching filter '{selectedFilters[0].Name}' in {spaceName}.\n");
+                }
+                else
+                {
+                    ed.WriteMessage($"\nSelected {matchedIds.Count} entities matching any of {selectedFilters.Count} filters in {spaceName}.\n");
+                }
             }
             else
             {
-                ed.WriteMessage($"\nNo entities found matching filter '{filterName}' in {spaceName}.\n");
+                if (selectedFilters.Count == 1)
+                {
+                    ed.WriteMessage($"\nNo entities found matching filter '{selectedFilters[0].Name}' in {spaceName}.\n");
+                }
+                else
+                {
+                    ed.WriteMessage($"\nNo entities found matching any of {selectedFilters.Count} filters in {spaceName}.\n");
+                }
             }
         }
 
@@ -261,13 +294,26 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Apply selected filter to entire document
-            var selectedFilter = chosenRows[0]; // Single selection
-            string filterName = selectedFilter["Name"].ToString();
-            string queryString = selectedFilter["Query"].ToString();
+            // Apply selected filters to entire document (combine results with OR logic)
+            var selectedFilters = chosenRows.Select(row => new
+            {
+                Name = row["Name"].ToString(),
+                Query = row["Query"].ToString()
+            }).ToList();
 
-            ed.WriteMessage($"\nApplying filter '{filterName}' to entire document...\n");
-            ed.WriteMessage($"Query: {queryString}\n");
+            if (selectedFilters.Count == 1)
+            {
+                ed.WriteMessage($"\nApplying filter '{selectedFilters[0].Name}' to entire document...\n");
+                ed.WriteMessage($"Query: {selectedFilters[0].Query}\n");
+            }
+            else
+            {
+                ed.WriteMessage($"\nApplying {selectedFilters.Count} filters to entire document (combining results)...\n");
+                foreach (var filter in selectedFilters)
+                {
+                    ed.WriteMessage($"  - {filter.Name}\n");
+                }
+            }
 
             var matchedEntities = new List<FilterEntityReference>();
 
@@ -286,15 +332,29 @@ namespace AutoCADBallet
                         try
                         {
                             var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                            if (entity != null && MatchesQuery(entity, queryString, db))
+                            if (entity != null)
                             {
-                                matchedEntities.Add(new FilterEntityReference
+                                // Check if entity matches ANY of the selected filters (OR logic)
+                                bool matches = false;
+                                foreach (var filter in selectedFilters)
                                 {
-                                    DocumentPath = doc.Name,
-                                    DocumentName = Path.GetFileName(doc.Name),
-                                    Handle = entity.Handle.ToString(),
-                                    SpaceName = spaceName
-                                });
+                                    if (MatchesQuery(entity, filter.Query, db))
+                                    {
+                                        matches = true;
+                                        break;
+                                    }
+                                }
+
+                                if (matches)
+                                {
+                                    matchedEntities.Add(new FilterEntityReference
+                                    {
+                                        DocumentPath = doc.Name,
+                                        DocumentName = Path.GetFileName(doc.Name),
+                                        Handle = entity.Handle.ToString(),
+                                        SpaceName = spaceName
+                                    });
+                                }
                             }
                         }
                         catch
@@ -434,13 +494,26 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Apply selected filter to all open documents
-            var selectedFilter = chosenRows[0]; // Single selection
-            string filterName = selectedFilter["Name"].ToString();
-            string queryString = selectedFilter["Query"].ToString();
+            // Apply selected filters to all open documents (combine results with OR logic)
+            var selectedFilters = chosenRows.Select(row => new
+            {
+                Name = row["Name"].ToString(),
+                Query = row["Query"].ToString()
+            }).ToList();
 
-            ed.WriteMessage($"\nApplying filter '{filterName}' to all open documents...\n");
-            ed.WriteMessage($"Query: {queryString}\n");
+            if (selectedFilters.Count == 1)
+            {
+                ed.WriteMessage($"\nApplying filter '{selectedFilters[0].Name}' to all open documents...\n");
+                ed.WriteMessage($"Query: {selectedFilters[0].Query}\n");
+            }
+            else
+            {
+                ed.WriteMessage($"\nApplying {selectedFilters.Count} filters to all open documents (combining results)...\n");
+                foreach (var filter in selectedFilters)
+                {
+                    ed.WriteMessage($"  - {filter.Name}\n");
+                }
+            }
 
             var docManager = AcadApp.DocumentManager;
             var matchedEntities = new List<FilterEntityReference>();
@@ -454,7 +527,7 @@ namespace AutoCADBallet
 
                 try
                 {
-                    var refs = GatherMatchingEntitiesFromDocument(doc.Database, docPath, docName, queryString);
+                    var refs = GatherMatchingEntitiesFromDocument(doc.Database, docPath, docName, selectedFilters);
                     matchedEntities.AddRange(refs);
                     ed.WriteMessage($" found {refs.Count} matching entities");
                 }
@@ -531,9 +604,20 @@ namespace AutoCADBallet
             }
         }
 
-        private static List<FilterEntityReference> GatherMatchingEntitiesFromDocument(Database db, string docPath, string docName, string queryString)
+        private static List<FilterEntityReference> GatherMatchingEntitiesFromDocument<T>(Database db, string docPath, string docName, List<T> selectedFilters) where T : class
         {
             var references = new List<FilterEntityReference>();
+
+            // Extract query strings from the filter objects (support both anonymous types and StoredSelectionFilter)
+            var queryStrings = new List<string>();
+            foreach (var filter in selectedFilters)
+            {
+                var queryProp = filter.GetType().GetProperty("Query");
+                if (queryProp != null)
+                {
+                    queryStrings.Add(queryProp.GetValue(filter)?.ToString() ?? "");
+                }
+            }
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -550,15 +634,29 @@ namespace AutoCADBallet
                         try
                         {
                             var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                            if (entity != null && MatchesQuery(entity, queryString, db))
+                            if (entity != null)
                             {
-                                references.Add(new FilterEntityReference
+                                // Check if entity matches ANY of the filters (OR logic)
+                                bool matches = false;
+                                foreach (var queryString in queryStrings)
                                 {
-                                    DocumentPath = docPath,
-                                    DocumentName = docName,
-                                    Handle = entity.Handle.ToString(),
-                                    SpaceName = spaceName
-                                });
+                                    if (MatchesQuery(entity, queryString, db))
+                                    {
+                                        matches = true;
+                                        break;
+                                    }
+                                }
+
+                                if (matches)
+                                {
+                                    references.Add(new FilterEntityReference
+                                    {
+                                        DocumentPath = docPath,
+                                        DocumentName = docName,
+                                        Handle = entity.Handle.ToString(),
+                                        SpaceName = spaceName
+                                    });
+                                }
                             }
                         }
                         catch
