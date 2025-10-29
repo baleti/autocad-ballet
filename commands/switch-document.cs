@@ -1,4 +1,5 @@
 using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using System;
@@ -53,8 +54,35 @@ namespace AutoCADBallet
             if (chosen != null && chosen.Count > 0)
             {
                 Document chosenDoc = chosen.First()["Document"] as Document;
-                if (chosenDoc != null)
+                if (chosenDoc != null && chosenDoc != activeDoc)
                 {
+                    // Set up event handler to log layout change after document activation
+                    DocumentCollectionEventHandler handler = null;
+                    handler = (sender, e) =>
+                    {
+                        if (e.Document == chosenDoc)
+                        {
+                            // Unsubscribe from event to avoid memory leaks
+                            docs.DocumentActivated -= handler;
+
+                            try
+                            {
+                                // Log the current layout of the activated document
+                                string projectName = Path.GetFileNameWithoutExtension(chosenDoc.Name) ?? "UnknownProject";
+                                string currentLayout = LayoutManager.Current.CurrentLayout;
+                                if (!string.IsNullOrEmpty(currentLayout))
+                                {
+                                    SwitchViewLogging.LogLayoutChange(projectName, currentLayout, true);
+                                }
+                            }
+                            catch (System.Exception)
+                            {
+                                // Silently handle logging errors
+                            }
+                        }
+                    };
+
+                    docs.DocumentActivated += handler;
                     docs.MdiActiveDocument = chosenDoc;
                 }
             }
