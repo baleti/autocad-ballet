@@ -121,11 +121,10 @@ namespace AutocadBallet
                     return;
                 }
 
-                // Invoke the command method directly
+                // Invoke the command method through AutoCAD's command pipeline
                 InvokeCommandMethod(targetCommand, assembly, ed);
 
-                // Use safe messaging that handles document closure scenarios
-                SafeWriteMessage(ed, $"\nCommand completed successfully.");
+                // Note: SendStringToExecute is asynchronous, so we can't report completion here
             }
             catch (System.Exception ex)
             {
@@ -469,28 +468,16 @@ namespace AutocadBallet
             {
                 ed.WriteMessage($"\nExecuting command: {info.CommandName}");
 
-                // Find the type and method
-                Type targetType = assembly.GetType(info.FullTypeName);
-                if (targetType == null)
+                var doc = AcApp.DocumentManager.MdiActiveDocument;
+                if (doc == null)
                 {
-                    throw new InvalidOperationException($"Type '{info.FullTypeName}' not found in assembly");
+                    throw new InvalidOperationException("No active document");
                 }
 
-                MethodInfo targetMethod = targetType.GetMethod(info.MethodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-                if (targetMethod == null)
-                {
-                    throw new InvalidOperationException($"Method '{info.MethodName}' not found in type '{info.FullTypeName}'");
-                }
-
-                // Create instance if method is not static
-                object instance = null;
-                if (!targetMethod.IsStatic)
-                {
-                    instance = Activator.CreateInstance(targetType);
-                }
-
-                // Invoke the method directly to preserve pickfirst selection
-                targetMethod.Invoke(instance, null);
+                // Use SendStringToExecute to invoke through AutoCAD's command pipeline
+                // This ensures proper command context and selection handling
+                // The 'true' parameters: activate document, send from command line, echo command
+                doc.SendStringToExecute(info.CommandName + "\n", true, false, true);
             }
             catch (System.Exception ex)
             {
