@@ -73,11 +73,13 @@ public partial class CustomGUIs
             case "textheight":
             case "widthfactor":
             case "query":
+            case "tags":
                 return true;
         }
         if (lowerName.StartsWith("attr_")) return true;
         if (lowerName.StartsWith("xdata_")) return true;
         if (lowerName.StartsWith("ext_dict_")) return true;
+        if (lowerName.StartsWith("tag_")) return true;
         return false;
     }
 

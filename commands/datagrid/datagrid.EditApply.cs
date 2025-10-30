@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 using Autodesk.AutoCAD.PlottingServices;
+using AutoCADBallet;
 
 public partial class CustomGUIs
 {
@@ -158,7 +160,7 @@ public partial class CustomGUIs
                             var dbObject = tr.GetObject(objectId, OpenMode.ForWrite);
                             if (dbObject != null)
                             {
-                                ApplyEditToDBObject(dbObject, edit.ColumnName, edit.NewValue, tr);
+                                ApplyEditToDBObject(dbObject, edit.ColumnName, edit.NewValue, edit.Entry, tr);
                                 appliedCount++;
                                 ed.WriteMessage($"\nEdit applied successfully");
                             }
@@ -244,7 +246,7 @@ public partial class CustomGUIs
                                 var dbObject = tr.GetObject(objectId, OpenMode.ForWrite);
                                 if (dbObject != null)
                                 {
-                                    ApplyEditToDBObjectInExternalDocument(dbObject, edit.ColumnName, edit.NewValue, tr);
+                                    ApplyEditToDBObjectInExternalDocument(dbObject, edit.ColumnName, edit.NewValue, edit.Entry, tr);
                                     appliedCount++;
                                     ed.WriteMessage($"\nExternal edit applied successfully");
                                 }
@@ -278,15 +280,79 @@ public partial class CustomGUIs
         return appliedCount;
     }
 
-    private static void ApplyEditToDBObjectInExternalDocument(DBObject dbObject, string columnName, string newValue, Transaction tr)
+    private static void ApplyEditToDBObjectInExternalDocument(DBObject dbObject, string columnName, string newValue, Dictionary<string, object> entry, Transaction tr)
     {
         var currentDoc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
         var ed = currentDoc.Editor;
         ed.WriteMessage($"\n  >> ApplyEditToDBObjectInExternalDocument: DBObject={dbObject.GetType().Name}, Column='{columnName}', Value='{newValue}'");
         try
         {
-            switch (columnName.ToLowerInvariant())
+            string lowerColumnName = columnName.ToLowerInvariant();
+
+            // Handle tag_* columns (tag_1, tag_2, tag_3, etc.)
+            if (lowerColumnName.StartsWith("tag_") && dbObject is Entity)
             {
+                // Collect all tag_* values from the entry dictionary
+                var allTags = new List<string>();
+                foreach (var kvp in entry)
+                {
+                    if (kvp.Key.ToLowerInvariant().StartsWith("tag_"))
+                    {
+                        string tagValue = kvp.Value?.ToString() ?? "";
+                        // Update the current column with the new value
+                        if (string.Equals(kvp.Key, columnName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            tagValue = newValue;
+                        }
+                        // Add non-empty tags to the list
+                        if (!string.IsNullOrWhiteSpace(tagValue))
+                        {
+                            allTags.Add(tagValue.Trim());
+                        }
+                    }
+                }
+
+                // Apply all tags to the entity (or clear if empty)
+                if (allTags.Count > 0)
+                {
+                    dbObject.ObjectId.SetTags(dbObject.Database, allTags.ToArray());
+                }
+                else
+                {
+                    dbObject.ObjectId.ClearTags(dbObject.Database);
+                }
+                return;
+            }
+
+            switch (lowerColumnName)
+            {
+                case "tags":
+                    if (dbObject is Entity)
+                    {
+                        // Empty string or single space means clear all tags
+                        if (string.IsNullOrEmpty(newValue) || newValue.Trim() == "")
+                        {
+                            dbObject.ObjectId.ClearTags(dbObject.Database);
+                        }
+                        else
+                        {
+                            // Parse comma-separated tags and set them
+                            var tags = newValue.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                              .Select(t => t.Trim())
+                                              .Where(t => !string.IsNullOrEmpty(t))
+                                              .ToArray();
+                            if (tags.Length > 0)
+                            {
+                                dbObject.ObjectId.SetTags(dbObject.Database, tags);
+                            }
+                            else
+                            {
+                                // If all tags are empty after parsing, clear tags
+                                dbObject.ObjectId.ClearTags(dbObject.Database);
+                            }
+                        }
+                    }
+                    break;
                 case "contents":
                     if (dbObject is MText mtextExt) mtextExt.Contents = newValue;
                     else if (dbObject is DBText textExt) textExt.TextString = newValue;
@@ -369,15 +435,79 @@ public partial class CustomGUIs
         }
     }
 
-    private static void ApplyEditToDBObject(DBObject dbObject, string columnName, string newValue, Transaction tr)
+    private static void ApplyEditToDBObject(DBObject dbObject, string columnName, string newValue, Dictionary<string, object> entry, Transaction tr)
     {
         var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
         ed.WriteMessage($"\n  >> ApplyEditToDBObject: DBObject={dbObject.GetType().Name}, Column='{columnName}', Value='{newValue}'");
         try
         {
-            switch (columnName.ToLowerInvariant())
+            string lowerColumnName = columnName.ToLowerInvariant();
+
+            // Handle tag_* columns (tag_1, tag_2, tag_3, etc.)
+            if (lowerColumnName.StartsWith("tag_") && dbObject is Entity)
             {
+                // Collect all tag_* values from the entry dictionary
+                var allTags = new List<string>();
+                foreach (var kvp in entry)
+                {
+                    if (kvp.Key.ToLowerInvariant().StartsWith("tag_"))
+                    {
+                        string tagValue = kvp.Value?.ToString() ?? "";
+                        // Update the current column with the new value
+                        if (string.Equals(kvp.Key, columnName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            tagValue = newValue;
+                        }
+                        // Add non-empty tags to the list
+                        if (!string.IsNullOrWhiteSpace(tagValue))
+                        {
+                            allTags.Add(tagValue.Trim());
+                        }
+                    }
+                }
+
+                // Apply all tags to the entity (or clear if empty)
+                if (allTags.Count > 0)
+                {
+                    dbObject.ObjectId.SetTags(dbObject.Database, allTags.ToArray());
+                }
+                else
+                {
+                    dbObject.ObjectId.ClearTags(dbObject.Database);
+                }
+                return;
+            }
+
+            switch (lowerColumnName)
+            {
+                case "tags":
+                    if (dbObject is Entity)
+                    {
+                        // Empty string or single space means clear all tags
+                        if (string.IsNullOrEmpty(newValue) || newValue.Trim() == "")
+                        {
+                            dbObject.ObjectId.ClearTags(dbObject.Database);
+                        }
+                        else
+                        {
+                            // Parse comma-separated tags and set them
+                            var tags = newValue.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                                              .Select(t => t.Trim())
+                                              .Where(t => !string.IsNullOrEmpty(t))
+                                              .ToArray();
+                            if (tags.Length > 0)
+                            {
+                                dbObject.ObjectId.SetTags(dbObject.Database, tags);
+                            }
+                            else
+                            {
+                                // If all tags are empty after parsing, clear tags
+                                dbObject.ObjectId.ClearTags(dbObject.Database);
+                            }
+                        }
+                    }
+                    break;
                 case "layer":
                     if (dbObject is Entity entity) entity.Layer = newValue; else ed.WriteMessage("\n  >> Not an Entity");
                     break;
