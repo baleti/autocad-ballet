@@ -27,10 +27,26 @@ namespace AutoCADBallet
             foreach (Document doc in docs)
             {
                 string docName = Path.GetFileNameWithoutExtension(doc.Name);
+
+                // Check for unsaved changes using COM Saved property (doesn't require switching documents)
+                bool hasUnsavedChanges = false;
+                try
+                {
+                    dynamic acadDoc = doc.GetAcadDocument();
+                    // Saved property: true = no unsaved changes, false = has unsaved changes
+                    hasUnsavedChanges = !acadDoc.Saved;
+                }
+                catch (System.Exception)
+                {
+                    // If we can't check Saved property, assume no unsaved changes
+                    hasUnsavedChanges = false;
+                }
+
                 availableDocuments.Add(new Dictionary<string, object>
                 {
                     ["document"] = docName,
                     ["ReadOnly"] = doc.IsReadOnly ? "read only" : "",
+                    ["UnsavedChanges"] = hasUnsavedChanges ? "unsaved" : "",
                     ["IsActive"] = doc == activeDoc,
                     ["Document"] = doc
                 });
@@ -44,7 +60,7 @@ namespace AutoCADBallet
             int selectedIndex = -1;
             selectedIndex = availableDocuments.FindIndex(d => (bool)d["IsActive"]);
 
-            var propertyNames = new List<string> { "document", "ReadOnly" };
+            var propertyNames = new List<string> { "document", "ReadOnly", "UnsavedChanges" };
             var initialSelectionIndices = selectedIndex >= 0
                                             ? new List<int> { selectedIndex }
                                             : new List<int>();
