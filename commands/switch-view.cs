@@ -183,7 +183,7 @@ namespace AutoCADBallet
 
                                         // Log the layout change
                                         string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
-                                        SwitchViewLogging.LogLayoutChange(projectName, targetLayout, true);
+                                        SwitchViewLogging.LogLayoutChange(projectName, targetDoc.Name, targetLayout, true);
 
                                     }
                                     catch (Autodesk.AutoCAD.Runtime.Exception)
@@ -207,7 +207,7 @@ namespace AutoCADBallet
                                 }
 
                                 string projectName = Path.GetFileNameWithoutExtension(targetDoc.Name) ?? "UnknownProject";
-                                SwitchViewLogging.LogLayoutChange(projectName, targetLayout, true);
+                                SwitchViewLogging.LogLayoutChange(projectName, targetDoc.Name, targetLayout, true);
 
                             }
                             catch (Autodesk.AutoCAD.Runtime.Exception)

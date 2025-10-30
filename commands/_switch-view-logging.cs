@@ -13,6 +13,25 @@ using LayoutEventArgs = Autodesk.AutoCAD.DatabaseServices.LayoutEventArgs;
 
 namespace AutoCADBallet
 {
+    // Helper class to represent a document section in the log file
+    internal class DocumentSection
+    {
+        public string DocumentPath { get; set; }
+        public string SessionPid { get; set; }
+        public string DocumentOpened { get; set; }
+        public List<string> LayoutEntries { get; set; } = new List<string>();
+
+        public List<string> ToLines()
+        {
+            var lines = new List<string>();
+            lines.Add($"DOCUMENT_PATH:{DocumentPath}");
+            lines.Add($"LAST_SESSION_PID:{SessionPid}");
+            lines.Add($"DOCUMENT_OPENED:{DocumentOpened}");
+            lines.AddRange(LayoutEntries);
+            return lines;
+        }
+    }
+
     public class SwitchViewLogging : IExtensionApplication
     {
         private static string _sessionId;
@@ -84,7 +103,7 @@ namespace AutoCADBallet
                 if (activeDoc != null)
                 {
                     string projectName = Path.GetFileNameWithoutExtension(activeDoc.Name) ?? "UnknownProject";
-                    LogLayoutChange(projectName, e.Name);
+                    LogLayoutChange(projectName, activeDoc.Name, e.Name);
                 }
             }
             catch (System.Exception ex)
@@ -102,13 +121,13 @@ namespace AutoCADBallet
                     string projectName = Path.GetFileNameWithoutExtension(e.Document.Name) ?? "UnknownProject";
 
                     // Check if we need to initialize the log file for this document
-                    InitializeLogFileIfNeeded(projectName);
+                    InitializeLogFileIfNeeded(projectName, e.Document);
 
                     // Log the current layout of the activated document
                     string currentLayout = LayoutManager.Current.CurrentLayout;
                     if (!string.IsNullOrEmpty(currentLayout))
                     {
-                        LogLayoutChange(projectName, currentLayout);
+                        LogLayoutChange(projectName, e.Document.Name, currentLayout);
                     }
                 }
             }
@@ -125,7 +144,7 @@ namespace AutoCADBallet
                 if (e.Document != null)
                 {
                     string projectName = Path.GetFileNameWithoutExtension(e.Document.Name) ?? "UnknownProject";
-                    InitializeLogFileIfNeeded(projectName, clearExisting: false);
+                    InitializeLogFileIfNeeded(projectName, e.Document, clearExisting: false);
                     RegisterDocumentSelectionEvents(e.Document);
                 }
             }
@@ -161,7 +180,7 @@ namespace AutoCADBallet
 
                     if (!string.IsNullOrEmpty(currentLayout))
                     {
-                        LogLayoutChange(projectName, currentLayout);
+                        LogLayoutChange(projectName, e.Document.Name, currentLayout);
                     }
                 }
             }
@@ -171,10 +190,96 @@ namespace AutoCADBallet
             }
         }
 
-        private static void InitializeLogFileIfNeeded(string projectName, bool clearExisting = false)
+        // Parse log file into document sections
+        private static List<DocumentSection> ParseDocumentSections(string logFilePath)
+        {
+            var sections = new List<DocumentSection>();
+
+            if (!File.Exists(logFilePath))
+                return sections;
+
+            var lines = File.ReadAllLines(logFilePath);
+            DocumentSection currentSection = null;
+
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                if (line.StartsWith("DOCUMENT_PATH:"))
+                {
+                    // Start a new section
+                    if (currentSection != null)
+                    {
+                        sections.Add(currentSection);
+                    }
+                    currentSection = new DocumentSection
+                    {
+                        DocumentPath = line.Substring("DOCUMENT_PATH:".Length).Trim()
+                    };
+                }
+                else if (currentSection != null)
+                {
+                    if (line.StartsWith("LAST_SESSION_PID:"))
+                    {
+                        currentSection.SessionPid = line.Substring("LAST_SESSION_PID:".Length).Trim();
+                    }
+                    else if (line.StartsWith("DOCUMENT_OPENED:"))
+                    {
+                        currentSection.DocumentOpened = line.Substring("DOCUMENT_OPENED:".Length).Trim();
+                    }
+                    else
+                    {
+                        // Layout entry
+                        currentSection.LayoutEntries.Add(line);
+                    }
+                }
+            }
+
+            // Add the last section
+            if (currentSection != null)
+            {
+                sections.Add(currentSection);
+            }
+
+            return sections;
+        }
+
+        // Find section by document path (case-insensitive)
+        private static DocumentSection FindSectionByPath(List<DocumentSection> sections, string documentPath)
+        {
+            string normalizedPath = Path.GetFullPath(documentPath).ToLowerInvariant();
+            return sections.FirstOrDefault(s =>
+                !string.IsNullOrEmpty(s.DocumentPath) &&
+                Path.GetFullPath(s.DocumentPath).ToLowerInvariant() == normalizedPath);
+        }
+
+        // Write all sections back to log file
+        private static void WriteSections(string logFilePath, List<DocumentSection> sections)
+        {
+            var allLines = new List<string>();
+
+            for (int i = 0; i < sections.Count; i++)
+            {
+                allLines.AddRange(sections[i].ToLines());
+
+                // Add blank line between sections (except after last one)
+                if (i < sections.Count - 1)
+                {
+                    allLines.Add("");
+                }
+            }
+
+            File.WriteAllLines(logFilePath, allLines);
+        }
+
+        private static void InitializeLogFileIfNeeded(string projectName, Document document, bool clearExisting = false)
         {
             try
             {
+                if (document == null)
+                    return;
+
                 string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
                 string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "switch-view-logs");
 
@@ -182,6 +287,7 @@ namespace AutoCADBallet
                     Directory.CreateDirectory(logDirPath);
 
                 string logFilePath = Path.Combine(logDirPath, projectName);
+                string absolutePath = Path.GetFullPath(document.Name);
 
                 if (clearExisting && File.Exists(logFilePath))
                 {
@@ -190,80 +296,31 @@ namespace AutoCADBallet
                     _lastKnownLayouts.Remove(projectName);
                 }
 
-                // Ensure the log file starts with the absolute document path and session info
-                if (!File.Exists(logFilePath) || clearExisting)
+                // Parse existing sections or create empty list
+                var sections = ParseDocumentSections(logFilePath);
+
+                // Find or create section for this document
+                var section = FindSectionByPath(sections, absolutePath);
+
+                if (section == null)
                 {
-                    Document activeDoc = AcadApp.DocumentManager.MdiActiveDocument;
-                    if (activeDoc != null)
+                    // Create new section for this document
+                    section = new DocumentSection
                     {
-                        string absolutePath = Path.GetFullPath(activeDoc.Name);
-                        int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
-                        string openTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                        File.WriteAllText(logFilePath, $"DOCUMENT_PATH:{absolutePath}\nLAST_SESSION_PID:{processId}\nDOCUMENT_OPENED:{openTime}\n");
-                    }
+                        DocumentPath = absolutePath,
+                        SessionPid = System.Diagnostics.Process.GetCurrentProcess().Id.ToString(),
+                        DocumentOpened = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    };
+                    sections.Add(section);
+
+                    // Write updated sections
+                    WriteSections(logFilePath, sections);
                 }
                 else
                 {
-                    // Check if the header lines already exist
-                    var lines = File.ReadAllLines(logFilePath).ToList();
-                    bool needsUpdate = false;
-                    var headerLines = new List<string>();
-                    int headerCount = 0;
-
-                    Document activeDoc = AcadApp.DocumentManager.MdiActiveDocument;
-                    if (activeDoc != null)
-                    {
-                        string absolutePath = Path.GetFullPath(activeDoc.Name);
-                        int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
-                        string openTime = null;
-
-                        // Check for document path (first header)
-                        if (lines.Count == 0 || !lines[0].StartsWith("DOCUMENT_PATH:"))
-                        {
-                            headerLines.Add($"DOCUMENT_PATH:{absolutePath}");
-                            needsUpdate = true;
-                        }
-                        else
-                        {
-                            headerLines.Add(lines[0]);
-                            headerCount = 1;
-                        }
-
-                        // Check for session PID (second header)
-                        if (lines.Count < 2 || !lines[1].StartsWith("LAST_SESSION_PID:"))
-                        {
-                            headerLines.Add($"LAST_SESSION_PID:{processId}");
-                            needsUpdate = true;
-                        }
-                        else
-                        {
-                            headerLines.Add($"LAST_SESSION_PID:{processId}");
-                            headerCount = 2;
-                            needsUpdate = true; // Always update PID
-                        }
-
-                        // Check for document opened time (third header)
-                        if (lines.Count < 3 || !lines[2].StartsWith("DOCUMENT_OPENED:"))
-                        {
-                            // Use current time as default
-                            openTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                            headerLines.Add($"DOCUMENT_OPENED:{openTime}");
-                            needsUpdate = true;
-                        }
-                        else
-                        {
-                            headerLines.Add(lines[2]); // Keep existing open time
-                            headerCount = 3;
-                        }
-
-                        // Add remaining content after headers
-                        headerLines.AddRange(lines.Skip(headerCount));
-
-                        if (needsUpdate)
-                        {
-                            File.WriteAllLines(logFilePath, headerLines);
-                        }
-                    }
+                    // Update session PID for existing section (document was reopened)
+                    section.SessionPid = System.Diagnostics.Process.GetCurrentProcess().Id.ToString();
+                    WriteSections(logFilePath, sections);
                 }
             }
             catch (System.Exception ex)
@@ -272,19 +329,22 @@ namespace AutoCADBallet
             }
         }
 
-        public static void LogLayoutChange(string projectName, string layoutName)
+        public static void LogLayoutChange(string projectName, string documentPath, string layoutName)
         {
-            LogLayoutChange(projectName, layoutName, false);
+            LogLayoutChange(projectName, documentPath, layoutName, false);
         }
 
-        public static void LogLayoutChange(string projectName, string layoutName, bool forceUpdate)
+        public static void LogLayoutChange(string projectName, string documentPath, string layoutName, bool forceUpdate)
         {
             try
             {
-                // Check if this is the same as the last known layout for this project
+                string absolutePath = Path.GetFullPath(documentPath);
+                string cacheKey = $"{projectName}|{absolutePath}";
+
+                // Check if this is the same as the last known layout for this document
                 // Skip duplicate check if forceUpdate is true (for manual switch commands)
-                if (!forceUpdate && _lastKnownLayouts.ContainsKey(projectName) &&
-                    _lastKnownLayouts[projectName] == layoutName)
+                if (!forceUpdate && _lastKnownLayouts.ContainsKey(cacheKey) &&
+                    _lastKnownLayouts[cacheKey] == layoutName)
                 {
                     return; // Don't log duplicate consecutive layout changes
                 }
@@ -296,59 +356,55 @@ namespace AutoCADBallet
                     Directory.CreateDirectory(logDirPath);
 
                 string logFilePath = Path.Combine(logDirPath, projectName);
+
+                // Parse existing sections
+                var sections = ParseDocumentSections(logFilePath);
+
+                // Find section for this document
+                var section = FindSectionByPath(sections, absolutePath);
+
+                if (section == null)
+                {
+                    // Create new section if document isn't tracked yet
+                    section = new DocumentSection
+                    {
+                        DocumentPath = absolutePath,
+                        SessionPid = System.Diagnostics.Process.GetCurrentProcess().Id.ToString(),
+                        DocumentOpened = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    };
+                    sections.Add(section);
+                }
+
+                // Update DOCUMENT_OPENED to current time
+                section.DocumentOpened = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+                // Update or add layout entry
                 string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH:mm:ss");
                 string logEntry = $"{timestamp} {layoutName}";
 
-                // Read existing entries and separate headers from layout entries
-                var allLines = File.Exists(logFilePath) ?
-                    File.ReadAllLines(logFilePath).ToList() : new List<string>();
-
-                var headerLines = new List<string>();
-                var layoutEntries = new List<string>();
-
-                // Separate headers (lines starting with known header prefixes) from layout entries
-                foreach (var line in allLines)
-                {
-                    if (line.StartsWith("DOCUMENT_PATH:") ||
-                        line.StartsWith("LAST_SESSION_PID:") ||
-                        line.StartsWith("DOCUMENT_OPENED:"))
-                    {
-                        headerLines.Add(line);
-                    }
-                    else if (!string.IsNullOrWhiteSpace(line))
-                    {
-                        layoutEntries.Add(line);
-                    }
-                }
-
-                // Check if this layout already exists and update its timestamp, or add new entry
                 bool layoutExists = false;
-                for (int i = 0; i < layoutEntries.Count; i++)
+                for (int i = 0; i < section.LayoutEntries.Count; i++)
                 {
-                    var parts = layoutEntries[i].Split(new[] { ' ' }, 2);
+                    var parts = section.LayoutEntries[i].Split(new[] { ' ' }, 2);
                     if (parts.Length == 2 && parts[1] == layoutName)
                     {
                         // Update timestamp for existing layout
-                        layoutEntries[i] = logEntry;
+                        section.LayoutEntries[i] = logEntry;
                         layoutExists = true;
                         break;
                     }
                 }
 
-                // If layout doesn't exist, add it as a new entry
                 if (!layoutExists)
                 {
-                    layoutEntries.Add(logEntry);
+                    section.LayoutEntries.Add(logEntry);
                 }
 
-                // Write headers first, then layout entries
-                var finalLines = new List<string>();
-                finalLines.AddRange(headerLines);
-                finalLines.AddRange(layoutEntries);
-                File.WriteAllLines(logFilePath, finalLines);
+                // Write all sections back to file
+                WriteSections(logFilePath, sections);
 
                 // Update our cache
-                _lastKnownLayouts[projectName] = layoutName;
+                _lastKnownLayouts[cacheKey] = layoutName;
             }
             catch (System.Exception ex)
             {

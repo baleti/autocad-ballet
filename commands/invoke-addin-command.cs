@@ -94,6 +94,16 @@ namespace AutocadBallet
             var ed = AcAp.DocumentManager.MdiActiveDocument?.Editor;
             if (ed == null) return;
 
+            // Capture pickfirst selection at the start to preserve it
+            Autodesk.AutoCAD.DatabaseServices.ObjectId[] pickfirstSelection = null;
+            var selResult = ed.SelectImplied();
+            if (selResult.Status == PromptStatus.OK)
+            {
+                pickfirstSelection = selResult.Value.GetObjectIds();
+                // Clear it so the DataGrid doesn't interfere
+                ed.SetImpliedSelection(new Autodesk.AutoCAD.DatabaseServices.ObjectId[0]);
+            }
+
             // Resolve the path
             string dllPath = Environment.ExpandEnvironmentVariables(TargetDllPath);
 
@@ -196,7 +206,7 @@ namespace AutocadBallet
                 SaveLastCommandInfo(cachedCommand, dllPath);
 
                 // Invoke the chosen method (using MODIFIED name for AutoCAD)
-                InvokeCommandMethod(cachedCommand, ed);
+                InvokeCommandMethod(cachedCommand, ed, pickfirstSelection);
 
                 // Note: SendStringToExecute is asynchronous, so we can't report completion here
             }
@@ -595,7 +605,7 @@ namespace AutocadBallet
             return null;
         }
 
-        private void InvokeCommandMethod(CachedCommandInfo commandInfo, Editor ed)
+        private void InvokeCommandMethod(CachedCommandInfo commandInfo, Editor ed, Autodesk.AutoCAD.DatabaseServices.ObjectId[] pickfirstSelection)
         {
             try
             {
@@ -605,6 +615,12 @@ namespace AutocadBallet
                 if (doc == null)
                 {
                     throw new InvalidOperationException("No active document");
+                }
+
+                // Restore pickfirst selection before invoking the command
+                if (pickfirstSelection != null && pickfirstSelection.Length > 0)
+                {
+                    ed.SetImpliedSelection(pickfirstSelection);
                 }
 
                 // Use SendStringToExecute to invoke through AutoCAD's command pipeline

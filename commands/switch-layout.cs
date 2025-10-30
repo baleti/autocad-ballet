@@ -91,7 +91,7 @@ namespace AutoCADBallet
                         {
                             LayoutManager.Current.CurrentLayout = chosenLayoutName;
                         }
-                        SwitchViewLogging.LogLayoutChange(projectName, chosenLayoutName, true);
+                        SwitchViewLogging.LogLayoutChange(projectName, targetDoc.Name, chosenLayoutName, true);
                     }
                     catch (Autodesk.AutoCAD.Runtime.Exception)
                     {

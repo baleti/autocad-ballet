@@ -21,6 +21,7 @@ namespace AutoCADBallet
             public DateTime Timestamp { get; set; }
             public string LayoutName { get; set; }
             public string DocName { get; set; }
+            public string DocumentPath { get; set; }  // Full absolute path
         }
 
         [CommandMethod("switch-view-recent", CommandFlags.Session)]
@@ -39,33 +40,48 @@ namespace AutoCADBallet
             var allHistoryEntries = new List<LayoutHistoryEntry>();
 
             // Read layout logs from all documents if they exist
+            // Now supports multiple document sections per log file
             if (Directory.Exists(logDirPath))
             {
                 foreach (string logFile in Directory.GetFiles(logDirPath))
                 {
                     try
                     {
-                        string docName = Path.GetFileName(logFile);
-                        var lines = File.ReadAllLines(logFile)
-                                        .Select(l => l.Trim())
-                                        .Where(l => l.Length > 0);
+                        var lines = File.ReadAllLines(logFile);
 
-                        foreach (string line in lines)
+                        // Parse document sections
+                        string sectionDocumentPath = null;
+                        string sectionDocName = null;
+
+                        foreach (var line in lines)
                         {
-                            var parts = line.Split(new[] { ' ' }, 2);
-                            if (parts.Length == 2)
+                            if (string.IsNullOrWhiteSpace(line))
+                                continue;
+
+                            if (line.StartsWith("DOCUMENT_PATH:"))
                             {
-                                if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd_HH:mm:ss",
-                                                         System.Globalization.CultureInfo.InvariantCulture,
-                                                         System.Globalization.DateTimeStyles.None, out DateTime timestamp))
+                                sectionDocumentPath = line.Substring("DOCUMENT_PATH:".Length).Trim();
+                                sectionDocName = Path.GetFileNameWithoutExtension(sectionDocumentPath);
+                            }
+                            else if (!line.StartsWith("LAST_SESSION_PID:") && !line.StartsWith("DOCUMENT_OPENED:"))
+                            {
+                                // Layout entry
+                                var parts = line.Split(new[] { ' ' }, 2);
+                                if (parts.Length == 2)
                                 {
-                                    string layoutName = parts[1];
-                                    allHistoryEntries.Add(new LayoutHistoryEntry
+                                    if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd_HH:mm:ss",
+                                                             System.Globalization.CultureInfo.InvariantCulture,
+                                                             System.Globalization.DateTimeStyles.None, out DateTime timestamp))
                                     {
-                                        Timestamp = timestamp,
-                                        LayoutName = layoutName,
-                                        DocName = docName
-                                    });
+                                        string layoutName = parts[1];
+                                        allHistoryEntries.Add(new LayoutHistoryEntry
+                                        {
+                                            Timestamp = timestamp,
+                                            LayoutName = layoutName,
+                                            DocName = sectionDocName ?? Path.GetFileName(logFile),
+                                            DocumentPath = sectionDocumentPath
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -90,7 +106,7 @@ namespace AutoCADBallet
             // Sort all entries by timestamp (most recent first) and deduplicate
             var sortedEntries = allHistoryEntries
                 .OrderByDescending(e => e.Timestamp)
-                .GroupBy(e => new { e.LayoutName, e.DocName })
+                .GroupBy(e => new { e.LayoutName, e.DocumentPath })
                 .Select(g => g.First()) // Take the most recent occurrence of each layout/document combo
                 .ToList();
 
@@ -106,7 +122,28 @@ namespace AutoCADBallet
 
                 foreach (Document doc in docs)
                 {
-                    if (Path.GetFileNameWithoutExtension(doc.Name) == entry.DocName)
+                    // Match by full path if available, otherwise fall back to filename
+                    bool isMatch = false;
+                    if (!string.IsNullOrEmpty(entry.DocumentPath))
+                    {
+                        try
+                        {
+                            string docFullPath = Path.GetFullPath(doc.Name);
+                            string entryFullPath = Path.GetFullPath(entry.DocumentPath);
+                            isMatch = string.Equals(docFullPath, entryFullPath, StringComparison.OrdinalIgnoreCase);
+                        }
+                        catch
+                        {
+                            isMatch = false;
+                        }
+                    }
+                    else
+                    {
+                        // Fallback for old log entries without document path
+                        isMatch = Path.GetFileNameWithoutExtension(doc.Name) == entry.DocName;
+                    }
+
+                    if (isMatch)
                     {
                         targetDoc = doc;
 
@@ -204,7 +241,7 @@ namespace AutoCADBallet
                                         LayoutManager.Current.CurrentLayout = chosenLayoutName;
                                     }
 
-                                    SwitchViewLogging.LogLayoutChange(targetDocName, chosenLayoutName, true);
+                                    SwitchViewLogging.LogLayoutChange(targetDocName, targetDoc.Name, chosenLayoutName, true);
                                 }
                                 catch (Autodesk.AutoCAD.Runtime.Exception)
                                 {
@@ -226,7 +263,7 @@ namespace AutoCADBallet
                                 LayoutManager.Current.CurrentLayout = chosenLayoutName;
                             }
 
-                            SwitchViewLogging.LogLayoutChange(targetDocName, chosenLayoutName, true);
+                            SwitchViewLogging.LogLayoutChange(targetDocName, targetDoc.Name, chosenLayoutName, true);
                         }
                         catch (Autodesk.AutoCAD.Runtime.Exception)
                         {

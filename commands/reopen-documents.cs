@@ -83,41 +83,43 @@ namespace AutoCADBallet
                 lock (_lockObject)
                 {
                     // Read all log files from switch-view-logs directory
+                    // Now supports multiple document sections per log file
                     foreach (string logFile in Directory.GetFiles(logDirPath))
                     {
                         try
                         {
                             var lines = File.ReadAllLines(logFile);
-                            if (lines.Length < 3)
-                                continue;
 
                             string documentPath = null;
                             DateTime openTime = DateTime.MinValue;
 
-                            // Parse headers
+                            // Parse all document sections in the file
                             foreach (string line in lines)
                             {
+                                if (string.IsNullOrWhiteSpace(line))
+                                    continue;
+
                                 if (line.StartsWith("DOCUMENT_PATH:"))
                                 {
-                                    documentPath = line.Substring("DOCUMENT_PATH:".Length);
+                                    // Save previous section if it exists
+                                    if (!string.IsNullOrEmpty(documentPath) && openTime != DateTime.MinValue)
+                                    {
+                                        _documentOpenTimes[documentPath] = openTime;
+                                    }
+
+                                    // Start new section
+                                    documentPath = line.Substring("DOCUMENT_PATH:".Length).Trim();
+                                    openTime = DateTime.MinValue;
                                 }
                                 else if (line.StartsWith("DOCUMENT_OPENED:"))
                                 {
-                                    string timeStr = line.Substring("DOCUMENT_OPENED:".Length);
+                                    string timeStr = line.Substring("DOCUMENT_OPENED:".Length).Trim();
                                     DateTime.TryParse(timeStr, out openTime);
                                 }
-                                else if (line.StartsWith("LAST_SESSION_PID:"))
-                                {
-                                    // Skip this header
-                                    continue;
-                                }
-                                else
-                                {
-                                    // Reached layout entries, stop parsing headers
-                                    break;
-                                }
+                                // Skip other headers and layout entries
                             }
 
+                            // Save last section
                             if (!string.IsNullOrEmpty(documentPath) && openTime != DateTime.MinValue)
                             {
                                 _documentOpenTimes[documentPath] = openTime;

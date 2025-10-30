@@ -59,77 +59,117 @@ namespace AutoCADBallet
             string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             string logDirPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "switch-view-logs");
 
-            // Build dictionaries mapping document names to their info from log files
+            // Build a list of all document access history (keyed by absolute path)
+            var documentAccessTimes = new Dictionary<string, DateTime>();
             var documentPaths = new Dictionary<string, string>();
             var documentSessionPids = new Dictionary<string, string>();
 
-            // Build a list of all document access history
-            var documentAccessTimes = new Dictionary<string, DateTime>();
-
             // Read layout logs from all documents to determine last access times and absolute paths
+            // Now supports multiple document sections per log file
             if (Directory.Exists(logDirPath))
             {
                 foreach (string logFile in Directory.GetFiles(logDirPath))
                 {
                     try
                     {
-                        string docName = Path.GetFileName(logFile);
-                        var lines = File.ReadAllLines(logFile)
-                                        .Select(l => l.Trim())
-                                        .Where(l => l.Length > 0)
-                                        .ToList();
+                        var lines = File.ReadAllLines(logFile);
 
-                        if (lines.Count == 0) continue;
+                        // Parse document sections (log file may contain multiple documents)
+                        var sections = new List<Dictionary<string, object>>();
+                        Dictionary<string, object> currentSection = null;
 
-                        // Parse header lines
-                        string absolutePath = null;
-                        string sessionPid = null;
-                        int startIndex = 0;
-
-                        // First line should contain the absolute document path
-                        if (lines.Count > 0 && lines[0].StartsWith("DOCUMENT_PATH:"))
+                        foreach (var line in lines)
                         {
-                            absolutePath = lines[0].Substring("DOCUMENT_PATH:".Length);
-                            documentPaths[docName] = absolutePath;
-                            startIndex = 1;
-                        }
+                            if (string.IsNullOrWhiteSpace(line))
+                                continue;
 
-                        // Second line should contain the session PID
-                        if (lines.Count > 1 && lines[1].StartsWith("LAST_SESSION_PID:"))
-                        {
-                            sessionPid = lines[1].Substring("LAST_SESSION_PID:".Length);
-                            documentSessionPids[docName] = sessionPid;
-                            startIndex = 2; // Skip both header lines when processing timestamps
-                        }
-
-                        // Third line might contain the document opened time
-                        if (lines.Count > 2 && lines[2].StartsWith("DOCUMENT_OPENED:"))
-                        {
-                            startIndex = 3; // Skip all three header lines when processing timestamps
-                        }
-
-                        DateTime lastAccess = DateTime.MinValue;
-                        for (int i = startIndex; i < lines.Count; i++)
-                        {
-                            string line = lines[i];
-                            var parts = line.Split(new[] { ' ' }, 2);
-                            if (parts.Length == 2)
+                            if (line.StartsWith("DOCUMENT_PATH:"))
                             {
-                                if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd_HH:mm:ss",
-                                                         System.Globalization.CultureInfo.InvariantCulture,
-                                                         System.Globalization.DateTimeStyles.None, out DateTime timestamp))
+                                // Start new section
+                                if (currentSection != null)
                                 {
-                                    if (timestamp > lastAccess)
+                                    sections.Add(currentSection);
+                                }
+                                currentSection = new Dictionary<string, object>
+                                {
+                                    ["DocumentPath"] = line.Substring("DOCUMENT_PATH:".Length).Trim(),
+                                    ["LayoutEntries"] = new List<string>()
+                                };
+                            }
+                            else if (currentSection != null)
+                            {
+                                if (line.StartsWith("LAST_SESSION_PID:"))
+                                {
+                                    currentSection["SessionPid"] = line.Substring("LAST_SESSION_PID:".Length).Trim();
+                                }
+                                else if (line.StartsWith("DOCUMENT_OPENED:"))
+                                {
+                                    string openedTimeStr = line.Substring("DOCUMENT_OPENED:".Length).Trim();
+                                    if (DateTime.TryParseExact(openedTimeStr, "yyyy-MM-dd HH:mm:ss",
+                                                             System.Globalization.CultureInfo.InvariantCulture,
+                                                             System.Globalization.DateTimeStyles.None, out DateTime openedTime))
                                     {
-                                        lastAccess = timestamp;
+                                        currentSection["DocumentOpened"] = openedTime;
                                     }
+                                }
+                                else
+                                {
+                                    // Layout entry
+                                    ((List<string>)currentSection["LayoutEntries"]).Add(line);
                                 }
                             }
                         }
 
-                        if (lastAccess != DateTime.MinValue)
+                        // Add last section
+                        if (currentSection != null)
                         {
-                            documentAccessTimes[docName] = lastAccess;
+                            sections.Add(currentSection);
+                        }
+
+                        // Process each section to find last access time
+                        foreach (var section in sections)
+                        {
+                            string absolutePath = section.ContainsKey("DocumentPath") ? section["DocumentPath"].ToString() : null;
+                            string sessionPid = section.ContainsKey("SessionPid") ? section["SessionPid"].ToString() : "Unknown";
+
+                            if (string.IsNullOrEmpty(absolutePath))
+                                continue;
+
+                            // Find most recent layout access time in this section
+                            DateTime lastAccess = DateTime.MinValue;
+                            var layoutEntries = (List<string>)section["LayoutEntries"];
+
+                            foreach (var entry in layoutEntries)
+                            {
+                                var parts = entry.Split(new[] { ' ' }, 2);
+                                if (parts.Length == 2)
+                                {
+                                    if (DateTime.TryParseExact(parts[0], "yyyy-MM-dd_HH:mm:ss",
+                                                             System.Globalization.CultureInfo.InvariantCulture,
+                                                             System.Globalization.DateTimeStyles.None, out DateTime timestamp))
+                                    {
+                                        if (timestamp > lastAccess)
+                                        {
+                                            lastAccess = timestamp;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Use DOCUMENT_OPENED as fallback if no layout entries
+                            if (lastAccess == DateTime.MinValue && section.ContainsKey("DocumentOpened"))
+                            {
+                                lastAccess = (DateTime)section["DocumentOpened"];
+                            }
+
+                            if (lastAccess != DateTime.MinValue)
+                            {
+                                // Use absolute path as unique key
+                                string uniqueKey = absolutePath;
+                                documentAccessTimes[uniqueKey] = lastAccess;
+                                documentPaths[uniqueKey] = absolutePath;
+                                documentSessionPids[uniqueKey] = sessionPid;
+                            }
                         }
                     }
                     catch (System.Exception)
@@ -141,37 +181,44 @@ namespace AutoCADBallet
 
             // Get all currently closed documents with access history
             var availableDocuments = new List<Dictionary<string, object>>();
-            string currentDocName = Path.GetFileNameWithoutExtension(activeDoc.Name);
 
-            // Get list of currently open documents
-            var openDocuments = new HashSet<string>();
+            // Get list of currently open documents (by absolute path for accurate comparison)
+            var openDocumentPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (Document doc in docs)
             {
-                openDocuments.Add(Path.GetFileNameWithoutExtension(doc.Name));
+                try
+                {
+                    openDocumentPaths.Add(Path.GetFullPath(doc.Name));
+                }
+                catch
+                {
+                    // Skip documents where we can't get the full path
+                }
             }
 
             // Create entries for documents with access history that are not currently open
             foreach (var docAccess in documentAccessTimes)
             {
-                string docName = docAccess.Key;
+                string absolutePath = docAccess.Key; // Now keyed by absolute path
                 DateTime lastAccess = docAccess.Value;
 
-                // Skip if document is currently open
-                if (openDocuments.Contains(docName))
+                // Skip if document is currently open (compare by full path)
+                if (openDocumentPaths.Contains(absolutePath))
                 {
                     continue;
                 }
 
-                // Get the document info from log file
-                string documentPath = documentPaths.ContainsKey(docName) ? documentPaths[docName] : null;
-                string sessionPid = documentSessionPids.ContainsKey(docName) ? documentSessionPids[docName] : "Unknown";
+                // Get document info
+                string documentPath = documentPaths.ContainsKey(absolutePath) ? documentPaths[absolutePath] : absolutePath;
+                string sessionPid = documentSessionPids.ContainsKey(absolutePath) ? documentSessionPids[absolutePath] : "Unknown";
+                string docName = Path.GetFileNameWithoutExtension(absolutePath);
 
                 availableDocuments.Add(new Dictionary<string, object>
                 {
                     ["document name"] = docName,
                     ["last opened"] = lastAccess.ToString("yyyy-MM-dd HH:mm:ss"),
                     ["session"] = sessionPid,
-                    ["absolute path"] = documentPath ?? "Unknown",
+                    ["absolute path"] = documentPath,
                     ["DocumentName"] = docName,
                     ["DocumentPath"] = documentPath,
                     ["LastAccessed"] = lastAccess,

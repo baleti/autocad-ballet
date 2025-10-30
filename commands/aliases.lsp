@@ -4,6 +4,7 @@
 (defun c:qq` () (command "invoke-last-addin-command") (princ))
 (defun c:ww () (command "switch-view") (princ))
 (defun c:wwl () (command "switch-layout") (princ))
+(defun c:wd () (command "switch-document") (princ))
 (defun c:wwd () (command "switch-document") (princ))
 (defun c:we () (command "switch-view-last") (princ))
 (defun c:wwr () (command "switch-view-recent") (princ))
@@ -55,6 +56,7 @@
 (defun c:sfd () (command "select-by-selection-filters-in-document") (princ))
 (defun c:sfs () (command "select-by-selection-filters-in-session") (princ))
 (defun c:sptv () (command "select-by-tags-of-selected-in-view") (princ))
+(defun c:spt () (command "select-by-tags-of-selected-in-view") (princ))
 (defun c:sstv () (command "select-by-same-tags-of-selected-in-view") (princ))
 (defun c:sst () (command "select-by-same-tags-of-selected-in-view") (princ))
 

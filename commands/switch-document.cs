@@ -72,7 +72,7 @@ namespace AutoCADBallet
                                 string currentLayout = LayoutManager.Current.CurrentLayout;
                                 if (!string.IsNullOrEmpty(currentLayout))
                                 {
-                                    SwitchViewLogging.LogLayoutChange(projectName, currentLayout, true);
+                                    SwitchViewLogging.LogLayoutChange(projectName, chosenDoc.Name, currentLayout, true);
                                 }
                             }
                             catch (System.Exception)
