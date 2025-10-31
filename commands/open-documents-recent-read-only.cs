@@ -28,25 +28,6 @@ namespace AutoCADBallet
             }
         }
 
-        // Diagnostic logging to track crashes
-        private void LogDiagnostic(string message)
-        {
-            try
-            {
-                string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string diagPath = Path.Combine(appDataPath, "autocad-ballet", "diagnostics");
-                Directory.CreateDirectory(diagPath);
-
-                string logFile = Path.Combine(diagPath, $"open-docs-diagnostics_{DateTime.Now:yyyy-MM-dd}.log");
-                string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-                File.AppendAllText(logFile, $"[{timestamp}] {message}\n");
-            }
-            catch
-            {
-                // Silently fail if we can't write diagnostics
-            }
-        }
-
         [CommandMethod("open-documents-recent-read-only", CommandFlags.Session)]
         public void OpenDocumentsRecentReadOnly()
         {
@@ -296,10 +277,6 @@ namespace AutoCADBallet
 
                 if (chosen != null && chosen.Count > 0)
                 {
-                    LogDiagnostic($"=== START: Opening {chosen.Count} documents ===");
-                    LogDiagnostic($"Current active document: {activeDoc.Name}");
-                    LogDiagnostic($"Current document count: {docs.Count}");
-
                     Document lastOpenedDoc = null;
                     int successCount = 0;
                     int failCount = 0;
@@ -310,14 +287,10 @@ namespace AutoCADBallet
                         string docName = selectedDoc["DocumentName"].ToString();
                         string docPath = selectedDoc["DocumentPath"] as string;
 
-                        LogDiagnostic($"--- Document {i+1}/{chosen.Count}: {docName} ---");
-                        LogDiagnostic($"Path: {docPath}");
-
                         try
                         {
                             if (string.IsNullOrEmpty(docPath))
                             {
-                                LogDiagnostic($"SKIP: Empty path");
                                 SafeWriteMessage($"\nCould not open document {docName}: No file path available\n");
                                 failCount++;
                                 continue;
@@ -326,13 +299,10 @@ namespace AutoCADBallet
                             // Verify the file exists before attempting to open it
                             if (!File.Exists(docPath))
                             {
-                                LogDiagnostic($"SKIP: File not found");
                                 SafeWriteMessage($"\nCould not open document {docName}: File not found at {docPath}\n");
                                 failCount++;
                                 continue;
                             }
-
-                            LogDiagnostic($"File exists, checking if already open...");
 
                             // Check if document is already open (race condition protection)
                             bool alreadyOpen = false;
@@ -345,26 +315,20 @@ namespace AutoCADBallet
                                     if (string.Equals(Path.GetFullPath(existingDoc.Name), Path.GetFullPath(docPath), StringComparison.OrdinalIgnoreCase))
                                     {
                                         alreadyOpen = true;
-                                        LogDiagnostic($"Already open (found in position {openDocCount})");
                                         SafeWriteMessage($"\nDocument already open: {docName}\n");
                                         break;
                                     }
                                 }
                                 catch (System.Exception checkEx)
                                 {
-                                    LogDiagnostic($"Error checking document {openDocCount}: {checkEx.Message}");
+                                    // Error checking document
                                 }
                             }
-
-                            LogDiagnostic($"Total open documents checked: {openDocCount}");
 
                             if (alreadyOpen)
                             {
                                 continue;
                             }
-
-                            LogDiagnostic($"BEFORE docs.Open() - Active doc: {AcadApp.DocumentManager.MdiActiveDocument?.Name ?? "NULL"}");
-                            LogDiagnostic($"BEFORE docs.Open() - Doc count: {docs.Count}");
 
                             // Try to open the document in read-only mode with additional safety
                             Document openedDoc = null;
@@ -372,12 +336,9 @@ namespace AutoCADBallet
                             {
                                 // docs.Open is synchronous and blocks until document is loaded
                                 openedDoc = docs.Open(docPath, true); // true = read-only
-
-                                LogDiagnostic($"AFTER docs.Open() - Returned: {(openedDoc != null ? openedDoc.Name : "NULL")}");
                             }
                             catch (Autodesk.AutoCAD.Runtime.Exception acEx)
                             {
-                                LogDiagnostic($"AutoCAD exception during open: {acEx.ErrorStatus} - {acEx.Message}");
                                 SafeWriteMessage($"\nAutoCAD error opening {docName}: {acEx.ErrorStatus}\n");
                                 failCount++;
                                 continue;
@@ -385,10 +346,6 @@ namespace AutoCADBallet
 
                             if (openedDoc != null)
                             {
-                                LogDiagnostic($"SUCCESS: Opened {openedDoc.Name}");
-                                LogDiagnostic($"AFTER open - Active doc: {AcadApp.DocumentManager.MdiActiveDocument?.Name ?? "NULL"}");
-                                LogDiagnostic($"AFTER open - Doc count: {docs.Count}");
-
                                 SafeWriteMessage($"\nOpened document in read-only mode: {docName}\n");
                                 lastOpenedDoc = openedDoc;
                                 successCount++;
@@ -396,61 +353,48 @@ namespace AutoCADBallet
                                 // Add delay and cleanup between document opens
                                 if (i < chosen.Count - 1) // Don't delay after last document
                                 {
-                                    LogDiagnostic($"Forcing garbage collection...");
                                     // Force garbage collection to free memory
                                     GC.Collect();
                                     GC.WaitForPendingFinalizers();
                                     GC.Collect();
-                                    LogDiagnostic($"GC complete");
 
                                     // Allow Windows message pump to process - critical for UI stability
-                                    LogDiagnostic($"Processing Windows messages...");
                                     System.Windows.Forms.Application.DoEvents();
-                                    LogDiagnostic($"DoEvents complete");
 
                                     // Delay to let AutoCAD stabilize
                                     int delayMs = 500; // Fixed 500ms delay
-                                    LogDiagnostic($"Sleeping {delayMs}ms before next document...");
                                     System.Threading.Thread.Sleep(delayMs);
-                                    LogDiagnostic($"Sleep complete");
                                 }
                             }
                             else
                             {
-                                LogDiagnostic($"FAIL: docs.Open returned null");
                                 SafeWriteMessage($"\nFailed to open document: {docName}\n");
                                 failCount++;
                             }
                         }
                         catch (System.Runtime.InteropServices.SEHException sehEx)
                         {
-                            LogDiagnostic($"SEH EXCEPTION: {sehEx.Message}");
                             SafeWriteMessage($"\nCritical error opening {docName}. Stopping to prevent crash.\n");
                             break;
                         }
                         catch (System.AccessViolationException avEx)
                         {
-                            LogDiagnostic($"ACCESS VIOLATION: {avEx.Message}");
                             SafeWriteMessage($"\nMemory access error opening {docName}. Stopping to prevent crash.\n");
                             break;
                         }
                         catch (System.Exception ex)
                         {
-                            LogDiagnostic($"EXCEPTION: {ex.GetType().Name} - {ex.Message}");
                             SafeWriteMessage($"\nError opening document {docName}: {ex.Message}\n");
                             failCount++;
 
                             // If we get multiple failures in a row, stop to prevent cascade failures
                             if (failCount >= 3 && successCount == 0)
                             {
-                                LogDiagnostic($"STOPPING: 3 consecutive failures");
                                 SafeWriteMessage($"\nStopping after {failCount} consecutive failures to prevent further issues.\n");
                                 break;
                             }
                         }
                     }
-
-                    LogDiagnostic($"=== END: Success={successCount}, Fail={failCount} ===");
 
                     // Set the last successfully opened document as active
                     if (lastOpenedDoc != null)
