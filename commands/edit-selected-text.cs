@@ -391,8 +391,27 @@ namespace AutoCADCommands
             if (!string.IsNullOrEmpty(editForm.FindText))
             {
                 string beforeReplace = result;
-                result = result.Replace(editForm.FindText, editForm.ReplaceText ?? "");
-                ed.WriteMessage($"\n    After Find/Replace ('{editForm.FindText}' -> '{editForm.ReplaceText ?? ""}'): '{beforeReplace}' -> '{result}'");
+                if (editForm.IsRegexMode)
+                {
+                    try
+                    {
+                        // Use regex mode for find/replace
+                        result = System.Text.RegularExpressions.Regex.Replace(result, editForm.FindText, editForm.ReplaceText ?? "");
+                        ed.WriteMessage($"\n    After Regex Find/Replace ('{editForm.FindText}' -> '{editForm.ReplaceText ?? ""}'): '{beforeReplace}' -> '{result}'");
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        // Invalid regex pattern - fallback to literal replacement
+                        result = result.Replace(editForm.FindText, editForm.ReplaceText ?? "");
+                        ed.WriteMessage($"\n    Regex error ({ex.Message}), using literal Find/Replace ('{editForm.FindText}' -> '{editForm.ReplaceText ?? ""}'): '{beforeReplace}' -> '{result}'");
+                    }
+                }
+                else
+                {
+                    // Use simple string replacement
+                    result = result.Replace(editForm.FindText, editForm.ReplaceText ?? "");
+                    ed.WriteMessage($"\n    After Find/Replace ('{editForm.FindText}' -> '{editForm.ReplaceText ?? ""}'): '{beforeReplace}' -> '{result}'");
+                }
             }
 
             // 3. Math transformation (takes precedence - applied to result of pattern + find/replace)

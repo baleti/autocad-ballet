@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using WinForms = System.Windows.Forms;
 using Drawing = System.Drawing;
 
@@ -21,6 +22,11 @@ namespace AutoCADCommands
         private WinForms.TextBox _txtMath;
         private WinForms.RichTextBox _rtbBefore;
         private WinForms.RichTextBox _rtbAfter;
+        private WinForms.Button _btnRegexToggle;
+        private WinForms.Panel _findBorderPanel;
+        private WinForms.Panel _findInnerPanel;
+        private WinForms.ToolTip _toolTip;
+        private bool _isRegexMode = false;
 
         #region Exposed properties
 
@@ -28,6 +34,7 @@ namespace AutoCADCommands
         public string FindText => _txtFind.Text;
         public string ReplaceText => _txtReplace.Text;
         public string MathOperationText => _txtMath.Text;
+        public bool IsRegexMode => _isRegexMode;
 
         #endregion
 
@@ -57,6 +64,14 @@ namespace AutoCADCommands
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == WinForms.Keys.Escape) Close(); };
 
+            // Initialize tooltip
+            _toolTip = new WinForms.ToolTip
+            {
+                AutoPopDelay = 5000,
+                InitialDelay = 500,
+                ReshowDelay = 100
+            };
+
             // === layout ========================================================================
             var grid = new WinForms.TableLayoutPanel
             {
@@ -79,24 +94,90 @@ namespace AutoCADCommands
 
             // Pattern (moved to top)
             grid.Controls.Add(MakeLabel("Pattern:"), 0, 0);
-            _txtPattern = MakeTextBox("{}");   // default
-            grid.Controls.Add(_txtPattern, 1, 0);
+            var patternBorderPanel = MakeBorderedTextBox(out _txtPattern, "{}");
+            grid.Controls.Add(patternBorderPanel, 1, 0);
 
             grid.Controls.Add(MakeHint("Use {} for current value. Use $\"Column Name\" or $ColumnName to reference other columns."), 1, 1);
 
             // Find / Replace
             grid.Controls.Add(MakeLabel("Find:"), 0, 2);
-            _txtFind = MakeTextBox();
-            grid.Controls.Add(_txtFind, 1, 2);
+
+            // Create a container for Find field with regex toggle button
+            var findContainer = new WinForms.Panel
+            {
+                Dock = WinForms.DockStyle.Fill,
+                Padding = new WinForms.Padding(0)
+            };
+
+            // Create a border panel for custom focus border effect
+            _findBorderPanel = new WinForms.Panel
+            {
+                Dock = WinForms.DockStyle.Fill,
+                Padding = new WinForms.Padding(1),
+                BackColor = Drawing.SystemColors.ControlDark
+            };
+
+            _txtFind = new WinForms.TextBox
+            {
+                Dock = WinForms.DockStyle.Fill,
+                BorderStyle = WinForms.BorderStyle.None,
+                Font = new Drawing.Font("Segoe UI", 9)
+            };
+            _txtFind.KeyDown += OnFindKeyDown;
+            _txtFind.Enter += OnFindEnter;
+            _txtFind.Leave += OnFindLeave;
+
+            // Inner panel for TextBox to add padding
+            _findInnerPanel = new WinForms.Panel
+            {
+                Dock = WinForms.DockStyle.Fill,
+                Padding = new WinForms.Padding(3, 2, 3, 2),
+                BackColor = Drawing.SystemColors.Window
+            };
+            _findInnerPanel.Controls.Add(_txtFind);
+            _findBorderPanel.Controls.Add(_findInnerPanel);
+
+            _btnRegexToggle = new WinForms.Button
+            {
+                Text = ".*",
+                Width = 26,
+                Height = 18,
+                Dock = WinForms.DockStyle.Right,
+                FlatStyle = WinForms.FlatStyle.Flat,
+                BackColor = Drawing.Color.FromArgb(240, 240, 240),
+                ForeColor = Drawing.Color.Gray,
+                Font = new Drawing.Font("Consolas", 8, Drawing.FontStyle.Bold),
+                Cursor = WinForms.Cursors.Hand,
+                TabStop = false,
+                Margin = new WinForms.Padding(4, 0, 0, 0)
+            };
+            _btnRegexToggle.FlatAppearance.BorderColor = Drawing.Color.FromArgb(200, 200, 200);
+            _btnRegexToggle.Click += OnRegexToggleClick;
+
+            // Set tooltip for regex button
+            _toolTip.SetToolTip(_btnRegexToggle, "Toggle regex mode (Ctrl+R)\nWhen enabled, Find field uses regular expressions");
+
+            // Add spacing panel between find field and button
+            var spacingPanel = new WinForms.Panel
+            {
+                Width = 4,
+                Dock = WinForms.DockStyle.Right
+            };
+
+            findContainer.Controls.Add(_findBorderPanel);
+            findContainer.Controls.Add(spacingPanel);
+            findContainer.Controls.Add(_btnRegexToggle);
+
+            grid.Controls.Add(findContainer, 1, 2);
 
             grid.Controls.Add(MakeLabel("Replace:"), 0, 3);
-            _txtReplace = MakeTextBox();
-            grid.Controls.Add(_txtReplace, 1, 3);
+            var replaceBorderPanel = MakeBorderedTextBox(out _txtReplace);
+            grid.Controls.Add(replaceBorderPanel, 1, 3);
 
             // Math
             grid.Controls.Add(MakeLabel("Math:"), 0, 4);
-            _txtMath = MakeTextBox();
-            grid.Controls.Add(_txtMath, 1, 4);
+            var mathBorderPanel = MakeBorderedTextBox(out _txtMath);
+            grid.Controls.Add(mathBorderPanel, 1, 4);
 
             grid.Controls.Add(MakeHint("Use x to represent current value (e.g. 2x, x/2, x+3, -x)."), 1, 5);
 
@@ -151,6 +232,44 @@ namespace AutoCADCommands
         private static WinForms.TextBox MakeTextBox(string initial = "") =>
             new WinForms.TextBox { Text = initial, Dock = WinForms.DockStyle.Fill };
 
+        /// <summary>Create a bordered textbox with custom focus border effect</summary>
+        private WinForms.Panel MakeBorderedTextBox(out WinForms.TextBox textBox, string initial = "")
+        {
+            // Create border panel
+            var borderPanel = new WinForms.Panel
+            {
+                Dock = WinForms.DockStyle.Fill,
+                Padding = new WinForms.Padding(1),
+                BackColor = Drawing.SystemColors.ControlDark
+            };
+
+            // Create textbox
+            textBox = new WinForms.TextBox
+            {
+                Text = initial,
+                Dock = WinForms.DockStyle.Fill,
+                BorderStyle = WinForms.BorderStyle.None,
+                Font = new Drawing.Font("Segoe UI", 9)
+            };
+
+            // Inner panel for padding
+            var innerPanel = new WinForms.Panel
+            {
+                Dock = WinForms.DockStyle.Fill,
+                Padding = new WinForms.Padding(3, 2, 3, 2),
+                BackColor = Drawing.SystemColors.Window
+            };
+
+            // Wire up focus events
+            textBox.Enter += (s, e) => borderPanel.BackColor = Drawing.Color.FromArgb(0, 120, 215); // Blue focus
+            textBox.Leave += (s, e) => borderPanel.BackColor = Drawing.SystemColors.ControlDark; // Gray unfocused
+
+            innerPanel.Controls.Add(textBox);
+            borderPanel.Controls.Add(innerPanel);
+
+            return borderPanel;
+        }
+
         private static WinForms.Label MakeHint(string txt) =>
             new WinForms.Label
             {
@@ -159,6 +278,72 @@ namespace AutoCADCommands
                 ForeColor = Drawing.Color.Gray,
                 Font = new Drawing.Font("Segoe UI", 8, Drawing.FontStyle.Italic)
             };
+
+        private void OnFindKeyDown(object sender, WinForms.KeyEventArgs e)
+        {
+            // Toggle regex mode with Ctrl+R
+            if (e.Control && e.KeyCode == WinForms.Keys.R)
+            {
+                ToggleRegexMode();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        private void OnFindEnter(object sender, EventArgs e)
+        {
+            UpdateFindBorderColor(true);
+        }
+
+        private void OnFindLeave(object sender, EventArgs e)
+        {
+            UpdateFindBorderColor(false);
+        }
+
+        private void OnRegexToggleClick(object sender, EventArgs e)
+        {
+            ToggleRegexMode();
+        }
+
+        private void ToggleRegexMode()
+        {
+            _isRegexMode = !_isRegexMode;
+            UpdateRegexButtonAppearance();
+            UpdateFindBorderColor(_txtFind.Focused);
+            RefreshPreview();
+        }
+
+        private void UpdateRegexButtonAppearance()
+        {
+            if (_isRegexMode)
+            {
+                _btnRegexToggle.BackColor = Drawing.Color.FromArgb(147, 112, 219); // Medium purple
+                _btnRegexToggle.ForeColor = Drawing.Color.White;
+                _findInnerPanel.BackColor = Drawing.Color.FromArgb(252, 250, 255); // Very subtle purple hue
+            }
+            else
+            {
+                _btnRegexToggle.BackColor = Drawing.Color.FromArgb(240, 240, 240);
+                _btnRegexToggle.ForeColor = Drawing.Color.Gray;
+                _findInnerPanel.BackColor = Drawing.SystemColors.Window; // White (default)
+            }
+        }
+
+        private void UpdateFindBorderColor(bool hasFocus)
+        {
+            if (hasFocus)
+            {
+                // Purple border when in regex mode and focused, blue otherwise
+                _findBorderPanel.BackColor = _isRegexMode
+                    ? Drawing.Color.FromArgb(147, 112, 219)  // Medium purple
+                    : Drawing.Color.FromArgb(0, 120, 215);   // Blue (Windows accent)
+            }
+            else
+            {
+                // Gray border when not focused
+                _findBorderPanel.BackColor = Drawing.SystemColors.ControlDark;
+            }
+        }
 
         private void LoadCurrentValues()
         {
@@ -256,7 +441,25 @@ namespace AutoCADCommands
             {
                 string findText = UnescapeFromDisplay(_txtFind.Text);
                 string replaceText = UnescapeFromDisplay(_txtReplace.Text ?? "");
-                result = result.Replace(findText, replaceText);
+
+                if (_isRegexMode)
+                {
+                    try
+                    {
+                        // Use regex mode for find/replace
+                        result = Regex.Replace(result, findText, replaceText);
+                    }
+                    catch (ArgumentException)
+                    {
+                        // Invalid regex pattern - fallback to literal replacement
+                        result = result.Replace(findText, replaceText);
+                    }
+                }
+                else
+                {
+                    // Use simple string replacement
+                    result = result.Replace(findText, replaceText);
+                }
             }
 
             // 3. Math transformation (takes precedence - applied to result of pattern + find/replace)

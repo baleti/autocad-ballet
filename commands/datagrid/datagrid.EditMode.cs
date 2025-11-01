@@ -246,7 +246,26 @@ public partial class CustomGUIs
         // 1. Find/Replace
         string value = originalValue ?? string.Empty;
         if (!string.IsNullOrEmpty(dialog.FindText))
-            value = value.Replace(dialog.FindText, dialog.ReplaceText ?? string.Empty);
+        {
+            if (dialog.IsRegexMode)
+            {
+                try
+                {
+                    // Use regex mode for find/replace
+                    value = Regex.Replace(value, dialog.FindText, dialog.ReplaceText ?? string.Empty);
+                }
+                catch (ArgumentException)
+                {
+                    // Invalid regex pattern - fallback to literal replacement
+                    value = value.Replace(dialog.FindText, dialog.ReplaceText ?? string.Empty);
+                }
+            }
+            else
+            {
+                // Use simple string replacement
+                value = value.Replace(dialog.FindText, dialog.ReplaceText ?? string.Empty);
+            }
+        }
         else if (!string.IsNullOrEmpty(dialog.ReplaceText))
             value = dialog.ReplaceText;
 

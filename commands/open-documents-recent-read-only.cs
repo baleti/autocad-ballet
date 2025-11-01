@@ -319,7 +319,7 @@ namespace AutoCADBallet
                                         break;
                                     }
                                 }
-                                catch (System.Exception checkEx)
+                                catch (System.Exception)
                                 {
                                     // Error checking document
                                 }
@@ -372,12 +372,12 @@ namespace AutoCADBallet
                                 failCount++;
                             }
                         }
-                        catch (System.Runtime.InteropServices.SEHException sehEx)
+                        catch (System.Runtime.InteropServices.SEHException)
                         {
                             SafeWriteMessage($"\nCritical error opening {docName}. Stopping to prevent crash.\n");
                             break;
                         }
-                        catch (System.AccessViolationException avEx)
+                        catch (System.AccessViolationException)
                         {
                             SafeWriteMessage($"\nMemory access error opening {docName}. Stopping to prevent crash.\n");
                             break;
