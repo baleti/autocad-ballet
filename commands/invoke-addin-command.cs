@@ -26,6 +26,7 @@ namespace AutocadBallet
         public string ModifiedName { get; set; }
         public string TypeFullName { get; set; }
         public string MethodName { get; set; }
+        public bool LoadedFromFile { get; set; }
     }
 
     public class InvokeAddinCommand
@@ -185,7 +186,11 @@ namespace AutocadBallet
                     {
                         // Rewrite ONLY the selected command with unique name and load
                         ed.WriteMessage($"\nRewriting and loading command: {selectedCommandName}...");
-                        cachedCommand = RewriteAndLoadSingleCommand(dllPath, selectedCommandName, ed, sessionAssemblies);
+
+                        // Check if this command needs special handling (e.g., start-roslyn-server)
+                        bool needsFileLocation = IsCommandRequiringFileLocation(selectedCommandName);
+
+                        cachedCommand = RewriteAndLoadSingleCommand(dllPath, selectedCommandName, ed, sessionAssemblies, needsFileLocation);
 
                         // Cache the command info
                         loadedCommandCache[commandCacheKey] = cachedCommand;
@@ -267,7 +272,14 @@ namespace AutocadBallet
             return commandNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
-        public static CachedCommandInfo RewriteAndLoadSingleCommand(string assemblyPath, string targetCommandName, Editor ed, Dictionary<string, Assembly> sessionAssemblies)
+        private static bool IsCommandRequiringFileLocation(string commandName)
+        {
+            // Commands that need assembly Location property (e.g., for Roslyn server)
+            // Add more commands here as needed
+            return commandName == "start-roslyn-server";
+        }
+
+        public static CachedCommandInfo RewriteAndLoadSingleCommand(string assemblyPath, string targetCommandName, Editor ed, Dictionary<string, Assembly> sessionAssemblies, bool loadFromFile = false)
         {
             // Generate unique suffix for the target command to avoid registration conflicts
             string uniqueSuffix = "-" + DateTime.Now.Ticks.ToString();
@@ -371,16 +383,26 @@ namespace AutocadBallet
                 }
             }
 
-            // Write modified assembly to temp file
-            var tempDir = Path.Combine(Path.GetDirectoryName(assemblyPath), "temp", Guid.NewGuid().ToString("N").Substring(0, 32));
-            Directory.CreateDirectory(tempDir);
-            var tempAssemblyPath = Path.Combine(tempDir, Path.GetFileName(assemblyPath));
-            File.WriteAllBytes(tempAssemblyPath, modifiedAssemblyBytes);
+            Assembly assembly;
 
-            // Load from temp file so assembly has Location property
-            // This ensures type identity consistency with Roslyn server
-            // AutoCAD will register commands from the loaded assembly
-            Assembly assembly = Assembly.LoadFrom(tempAssemblyPath);
+            if (loadFromFile)
+            {
+                // Write modified assembly to temp file and load from it
+                // This gives the assembly a Location property (needed for Roslyn server)
+                var tempDir = Path.Combine(Path.GetDirectoryName(assemblyPath), "temp", Guid.NewGuid().ToString("N").Substring(0, 32));
+                Directory.CreateDirectory(tempDir);
+                var tempAssemblyPath = Path.Combine(tempDir, Path.GetFileName(assemblyPath));
+                File.WriteAllBytes(tempAssemblyPath, modifiedAssemblyBytes);
+
+                assembly = Assembly.LoadFrom(tempAssemblyPath);
+            }
+            else
+            {
+                // Load from bytes - AutoCAD automatically registers commands
+                // This allows commands to work through SendStringToExecute
+                assembly = Assembly.Load(modifiedAssemblyBytes);
+            }
+
             sessionAssemblies[assemblyName] = assembly;
 
             return new CachedCommandInfo
@@ -389,7 +411,8 @@ namespace AutocadBallet
                 OriginalName = targetCommandName,
                 ModifiedName = modifiedCommandName,
                 TypeFullName = typeFullName,
-                MethodName = methodName
+                MethodName = methodName,
+                LoadedFromFile = loadFromFile
             };
         }
 
@@ -613,37 +636,78 @@ namespace AutocadBallet
                     throw new InvalidOperationException("No active document");
                 }
 
-                // Restore pickfirst selection if provided
-                if (pickfirstSelection != null && pickfirstSelection.Length > 0)
+                if (commandInfo.LoadedFromFile)
                 {
-                    ed.SetImpliedSelection(pickfirstSelection);
-                }
+                    // Command loaded from file (e.g., start-roslyn-server)
+                    // Must invoke via reflection since it's not registered in AutoCAD's command table
 
-                // Invoke the command method directly via reflection
-                // since dynamically loaded assemblies aren't registered in AutoCAD's command table
-                var type = commandInfo.Assembly.GetType(commandInfo.TypeFullName);
-                if (type == null)
+                    // Restore pickfirst selection if provided
+                    if (pickfirstSelection != null && pickfirstSelection.Length > 0)
+                    {
+                        ed.SetImpliedSelection(pickfirstSelection);
+                    }
+
+                    var type = commandInfo.Assembly.GetType(commandInfo.TypeFullName);
+                    if (type == null)
+                    {
+                        throw new InvalidOperationException($"Type not found: {commandInfo.TypeFullName}");
+                    }
+
+                    var method = type.GetMethod(commandInfo.MethodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                    if (method == null)
+                    {
+                        throw new InvalidOperationException($"Method not found: {commandInfo.MethodName}");
+                    }
+
+                    // Create instance if method is not static
+                    object instance = null;
+                    if (!method.IsStatic)
+                    {
+                        instance = Activator.CreateInstance(type);
+                    }
+
+                    // Invoke the method
+                    method.Invoke(instance, null);
+
+                    ed.WriteMessage($"\nCommand completed: {commandInfo.OriginalName}");
+                }
+                else
                 {
-                    throw new InvalidOperationException($"Type not found: {commandInfo.TypeFullName}");
+                    // Command loaded from bytes - registered with AutoCAD
+                    // Invoke through AutoCAD's command pipeline to preserve command context
+
+                    string commandString;
+
+                    // Restore pickfirst selection using LISP before invoking the command
+                    // This ensures selection survives and the command can modify it
+                    if (pickfirstSelection != null && pickfirstSelection.Length > 0)
+                    {
+                        var db = doc.Database;
+                        var handles = new StringBuilder();
+                        handles.Append("(progn (setq _tmp_ss (ssadd))");
+
+                        using (var tr = db.TransactionManager.StartTransaction())
+                        {
+                            foreach (var id in pickfirstSelection)
+                            {
+                                var ent = tr.GetObject(id, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                                var handle = ent.Handle.ToString();
+                                handles.Append($" (ssadd (handent \"{handle}\") _tmp_ss)");
+                            }
+                            tr.Commit();
+                        }
+
+                        handles.Append($" (sssetfirst nil _tmp_ss) (command \"{commandInfo.ModifiedName}\") (princ)) ");
+                        commandString = handles.ToString();
+                    }
+                    else
+                    {
+                        commandString = commandInfo.ModifiedName + "\n";
+                    }
+
+                    // Use SendStringToExecute to invoke through AutoCAD's command pipeline
+                    doc.SendStringToExecute(commandString, true, false, false);
                 }
-
-                var method = type.GetMethod(commandInfo.MethodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-                if (method == null)
-                {
-                    throw new InvalidOperationException($"Method not found: {commandInfo.MethodName}");
-                }
-
-                // Create instance if method is not static
-                object instance = null;
-                if (!method.IsStatic)
-                {
-                    instance = Activator.CreateInstance(type);
-                }
-
-                // Invoke the method
-                method.Invoke(instance, null);
-
-                ed.WriteMessage($"\nCommand completed: {commandInfo.OriginalName}");
             }
             catch (System.Exception ex)
             {

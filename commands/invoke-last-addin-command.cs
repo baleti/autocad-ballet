@@ -86,8 +86,11 @@ namespace AutocadBallet
                 // Use shared code from InvokeAddinCommand
                 var sessionAssemblies = new System.Collections.Generic.Dictionary<string, System.Reflection.Assembly>();
 
+                // Check if this command needs special handling
+                bool needsFileLocation = commandName == "start-roslyn-server";
+
                 // Rewrite and load the command
-                var cachedCommand = InvokeAddinCommand.RewriteAndLoadSingleCommand(dllPath, commandName, ed, sessionAssemblies);
+                var cachedCommand = InvokeAddinCommand.RewriteAndLoadSingleCommand(dllPath, commandName, ed, sessionAssemblies, needsFileLocation);
 
                 ed.WriteMessage($"\nLoaded command: {commandName}");
 
