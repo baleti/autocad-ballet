@@ -113,6 +113,151 @@ AutoCAD Ballet provides a type-safe, extensible attribute storage system for Aut
 - No limit on number of tags per entity or number of unique tags in a document
 - Performance: Tag discovery methods include diagnostic timing information
 
+**Roslyn Server for AI Agents** (`start-roslyn-server.cs`):
+AutoCAD Ballet provides a Roslyn compiler-as-a-service that allows external tools (like Claude Code) to execute C# code within the AutoCAD session context.
+
+*Purpose:*
+- Enable AI agents to query and analyze the current AutoCAD session programmatically
+- Perform validation tasks (layer naming compliance, entity placement checks, etc.)
+- Inspect document state and entity properties dynamically
+- Support automated drawing quality checks and audits
+
+*Architecture:*
+- **HTTP REST API**: Listens on `http://127.0.0.1:23714/` for incoming POST requests
+- **Roslyn Compilation**: Compiles received C# code using Microsoft.CodeAnalysis.CSharp.Scripting
+- **Execution Context**: Provides access to AutoCAD API through `ScriptGlobals` class
+- **Output Capture**: Redirects `Console.WriteLine()` output and returns to client
+- **Error Handling**: Returns compilation errors and warnings back to client
+- **Live Monitoring**: Shows real-time HTTP request/response activity in dialog
+
+*Available Context in Scripts:*
+Scripts executed by the server have access to these globals:
+- `Doc` - Current active AutoCAD document (`Autodesk.AutoCAD.ApplicationServices.Document`)
+- `Db` - Current document's database (`Autodesk.AutoCAD.DatabaseServices.Database`)
+- `Ed` - Current document's editor for user interaction (`Autodesk.AutoCAD.EditorInput.Editor`)
+
+Note: Application-level features can be accessed through the `Autodesk.AutoCAD.ApplicationServices.Core.Application` namespace (pre-imported)
+
+*Pre-imported Namespaces:*
+- `System`, `System.Linq`, `System.Collections.Generic`
+- `Autodesk.AutoCAD.ApplicationServices`
+- `Autodesk.AutoCAD.DatabaseServices`
+- `Autodesk.AutoCAD.EditorInput`
+- `Autodesk.AutoCAD.Geometry`
+
+*Protocol:*
+- **Request**: HTTP POST to `http://127.0.0.1:23714/` with C# code in request body
+- **Response**: JSON object with structure:
+  ```json
+  {
+    "success": true/false,
+    "output": "captured console output",
+    "error": "error message if failed",
+    "diagnostics": ["warning/error messages from compilation"]
+  }
+  ```
+
+*Usage from Command Line (curl):*
+```bash
+# Example: Get all layer names
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+    foreach (ObjectId layerId in layerTable)
+    {
+        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+        Console.WriteLine(layer.Name);
+    }
+    tr.Commit();
+}'
+
+# Example: Get document name
+curl -X POST http://127.0.0.1:23714/ -d 'Console.WriteLine($"Document: {Doc.Name}");'
+
+# Or using a file
+curl -X POST http://127.0.0.1:23714/ -d @script.cs
+
+# Example: Check layer naming compliance
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+    var nonCompliant = new List<string>();
+    foreach (ObjectId layerId in layerTable)
+    {
+        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+        if (!layer.Name.StartsWith("A-") && !layer.Name.StartsWith("S-"))
+        {
+            nonCompliant.Add(layer.Name);
+        }
+    }
+    if (nonCompliant.Count > 0)
+    {
+        Console.WriteLine("Non-compliant layers:");
+        foreach (var name in nonCompliant)
+        {
+            Console.WriteLine("  - " + name);
+        }
+    }
+    else
+    {
+        Console.WriteLine("All layers are compliant");
+    }
+    tr.Commit();
+}'
+
+# Example: Find entities on wrong layers
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
+    var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+    var violations = 0;
+    foreach (ObjectId entId in modelSpace)
+    {
+        var entity = tr.GetObject(entId, OpenMode.ForRead) as Entity;
+        if (entity is BlockReference blockRef)
+        {
+            var blockName = blockRef.Name.ToLower();
+            var layerName = entity.Layer.ToLower();
+            if (blockName.Contains("window") && !layerName.Contains("window"))
+            {
+                Console.WriteLine($"Window block on wrong layer: {blockRef.Name} on {entity.Layer}");
+                violations++;
+            }
+        }
+    }
+    Console.WriteLine($"Total violations: {violations}");
+    tr.Commit();
+}'
+```
+
+*Command:*
+- `start-roslyn-server` - Opens dialog and starts HTTP server on `http://127.0.0.1:23714/`
+  - Press ESC to stop the server and close dialog
+  - Dialog shows connection events and request/response activity in real-time
+  - Server continues accepting connections until stopped
+
+*Security Notes:*
+- Server only listens on localhost (127.0.0.1)
+- Intended for local development and automation only
+- Code execution happens within AutoCAD process with full API access
+- No authentication - relies on localhost-only binding for security
+
+*Future Enhancements:*
+- Vision integration for visual drawing validation
+- Persistent script library for common validation tasks
+- Batch execution support for multiple queries
+- Integration with CI/CD pipelines for drawing validation
+
+*Implementation Details:*
+- Uses `CommandFlags.Session` to work at application level
+- Runs TCP server on background thread with cancellation token
+- Marshals AutoCAD API access appropriately
+- Captures `Console.WriteLine()` output using `StringWriter`
+- Returns both compilation diagnostics and runtime errors
+- Keeps listening even after compilation errors (allows correction)
+
+For detailed usage examples and integration with AI agents, see `AGENTS.md`.
+
 **Command Structure**:
 - C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "delete-selected")
 - **CRITICAL**: Every command class MUST have the assembly-level `[assembly: CommandClass(typeof(YourClassName))]` attribute at the top of the file, outside the namespace declaration
@@ -177,6 +322,7 @@ dotnet build installer/installer.csproj
 - `commands/_edit-dialog.cs` - Shared text editing dialog (internal utility)
 - `commands/_reopen-documents.cs` - Shared implementation for document reopening functionality
 - `commands/_switch-view-logging.cs` - Layout/view switching history logging utilities
+- `commands/start-roslyn-server.cs` - Roslyn compiler-as-a-service for AI agent integration
 - `commands/filter-selection.cs` - Entity filtering with data grid UI (main implementation)
 - `commands/datagrid/` - Modular data grid implementation with separate files for:
   - `datagrid.Main.cs` - Core data grid functionality

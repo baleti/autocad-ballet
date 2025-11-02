@@ -18,6 +18,16 @@ using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace AutocadBallet
 {
+    // Shared command info for both invoke-addin-command and invoke-last-addin-command
+    public class CachedCommandInfo
+    {
+        public Assembly Assembly { get; set; }
+        public string OriginalName { get; set; }
+        public string ModifiedName { get; set; }
+        public string TypeFullName { get; set; }
+        public string MethodName { get; set; }
+    }
+
     public class InvokeAddinCommand
     {
 #if ACAD2017
@@ -51,16 +61,6 @@ namespace AutocadBallet
         private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName, RuntimeFolderName);
         private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
         private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
-
-        // Cached command info - tracks individual commands that have been loaded
-        private class CachedCommandInfo
-        {
-            public Assembly Assembly { get; set; }
-            public string OriginalName { get; set; }
-            public string ModifiedName { get; set; }
-            public string TypeFullName { get; set; }
-            public string MethodName { get; set; }
-        }
 
         // Static dictionary to track loaded commands per DLL version
         // Key format: "dllPath|timestamp|filesize|commandName"
@@ -187,7 +187,7 @@ namespace AutocadBallet
                     {
                         // Rewrite ONLY the selected command with unique name and load
                         ed.WriteMessage($"\nRewriting and loading command: {selectedCommandName}...");
-                        cachedCommand = RewriteAndLoadSingleCommand(dllPath, selectedCommandName, ed);
+                        cachedCommand = RewriteAndLoadSingleCommand(dllPath, selectedCommandName, ed, sessionAssemblies);
 
                         // Cache the command info
                         loadedCommandCache[commandCacheKey] = cachedCommand;
@@ -269,7 +269,7 @@ namespace AutocadBallet
             return commandNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
-        private CachedCommandInfo RewriteAndLoadSingleCommand(string assemblyPath, string targetCommandName, Editor ed)
+        public static CachedCommandInfo RewriteAndLoadSingleCommand(string assemblyPath, string targetCommandName, Editor ed, Dictionary<string, Assembly> sessionAssemblies)
         {
             // Generate unique suffix for the target command to avoid registration conflicts
             string uniqueSuffix = "-" + DateTime.Now.Ticks.ToString();
@@ -355,8 +355,8 @@ namespace AutocadBallet
                     {
                         try
                         {
-                            byte[] dllBytes = File.ReadAllBytes(dllFile);
-                            Assembly dllAssembly = Assembly.Load(dllBytes);
+                            // Load from file path to ensure assembly has .Location property
+                            Assembly dllAssembly = Assembly.LoadFrom(dllFile);
                             sessionAssemblies[dllName] = dllAssembly;
                         }
                         catch (BadImageFormatException)
@@ -373,7 +373,15 @@ namespace AutocadBallet
                 }
             }
 
-            // Load the modified assembly
+            // Write modified assembly to temp file for Roslyn reference
+            // but load from bytes so AutoCAD registers commands automatically
+            var tempDir = Path.Combine(Path.GetDirectoryName(assemblyPath), "temp", Guid.NewGuid().ToString("N").Substring(0, 32));
+            Directory.CreateDirectory(tempDir);
+            var tempAssemblyPath = Path.Combine(tempDir, Path.GetFileName(assemblyPath));
+            File.WriteAllBytes(tempAssemblyPath, modifiedAssemblyBytes);
+
+            // Load from bytes so AutoCAD can register commands
+            // The temp file is available for Roslyn server to reference
             Assembly assembly = Assembly.Load(modifiedAssemblyBytes);
             sessionAssemblies[assemblyName] = assembly;
 
@@ -408,9 +416,8 @@ namespace AutocadBallet
                     {
                         try
                         {
-                            byte[] dllBytes = File.ReadAllBytes(dllFile);
-                            // Use LoadFile or Load without triggering AutoCAD registration
-                            Assembly dllAssembly = Assembly.Load(dllBytes);
+                            // Load from file path to ensure assembly has .Location property
+                            Assembly dllAssembly = Assembly.LoadFrom(dllFile);
                             sessionAssemblies[dllName] = dllAssembly;
                         }
                         catch (BadImageFormatException)
@@ -431,23 +438,15 @@ namespace AutocadBallet
             // The key is to NOT let AutoCAD's extension loader process it
             Assembly assembly = null;
 
-            // Try to load in a way that bypasses AutoCAD's automatic processing
+            // Load from file path to ensure assembly has .Location property
+            // This is critical for Roslyn scripting support
             try
             {
-                // Method 1: Load from bytes (this usually works but sometimes AutoCAD still hooks it)
-                assembly = Assembly.Load(assemblyBytes);
+                assembly = Assembly.LoadFrom(assemblyPath);
             }
             catch
             {
-                // Method 2: If that fails, load directly from file
-                try
-                {
-                    assembly = Assembly.LoadFrom(assemblyPath);
-                }
-                catch
-                {
-                    throw new InvalidOperationException($"Failed to load assembly: {assemblyPath}");
-                }
+                throw new InvalidOperationException($"Failed to load assembly: {assemblyPath}");
             }
 
             sessionAssemblies[assemblyName] = assembly;
@@ -485,8 +484,8 @@ namespace AutocadBallet
             {
                 try
                 {
-                    byte[] bytes = File.ReadAllBytes(assemblyPath);
-                    Assembly assembly = Assembly.Load(bytes);
+                    // Load from file path to ensure assembly has .Location property
+                    Assembly assembly = Assembly.LoadFrom(assemblyPath);
                     sessionAssemblies[shortName] = assembly;
                     return assembly;
                 }
@@ -604,7 +603,7 @@ namespace AutocadBallet
             return null;
         }
 
-        private void InvokeCommandMethod(CachedCommandInfo commandInfo, Editor ed, Autodesk.AutoCAD.DatabaseServices.ObjectId[] pickfirstSelection)
+        public static void InvokeCommandMethod(CachedCommandInfo commandInfo, Editor ed, Autodesk.AutoCAD.DatabaseServices.ObjectId[] pickfirstSelection)
         {
             try
             {
@@ -616,11 +615,14 @@ namespace AutocadBallet
                     throw new InvalidOperationException("No active document");
                 }
 
+                // The command was rewritten with a unique suffix (ModifiedName) to avoid conflicts
+                // We need to invoke it through AutoCAD's command pipeline to preserve command context
+                // and allow the command to modify the pickfirst selection properly
+
                 string commandString;
 
                 // Restore pickfirst selection using LISP before invoking the command
-                // This ensures selection survives the async SendStringToExecute call
-                // We use LISP because (sssetfirst) and (command) execute atomically in the same context
+                // This ensures selection survives and the command can modify it
                 if (pickfirstSelection != null && pickfirstSelection.Length > 0)
                 {
                     var db = doc.Database;
@@ -647,6 +649,7 @@ namespace AutocadBallet
                 }
 
                 // Use SendStringToExecute to invoke through AutoCAD's command pipeline
+                // LoadFrom should have registered the command with AutoCAD automatically
                 doc.SendStringToExecute(commandString, true, false, false);
             }
             catch (System.Exception ex)
@@ -667,11 +670,8 @@ namespace AutocadBallet
                     Directory.CreateDirectory(ConfigFolderPath);
                 }
 
-                // Save the DLL path
-                File.WriteAllText(ConfigFilePath, dllPath);
-
-                // Save the user-friendly ORIGINAL command name
-                File.WriteAllText(LastCommandFilePath, commandInfo.OriginalName);
+                // Save both DLL path and command name in the history file (two lines)
+                File.WriteAllText(LastCommandFilePath, dllPath + "\n" + commandInfo.OriginalName);
             }
             catch (System.Exception ex)
             {

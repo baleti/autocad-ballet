@@ -175,3 +175,339 @@ var selectedTags = CustomGUIs.DataGrid(entries, new List<string> { "TagName", "U
 - For cross-document operations, use session scope commands
 - Tags are case-insensitive but preserve original casing on first use
 - Empty/whitespace tags are automatically filtered out
+
+## Roslyn Server for AI Agent Integration
+
+AutoCAD Ballet provides a Roslyn compiler-as-a-service that enables AI agents (like Claude Code) to execute C# code within the AutoCAD session context. This allows for dynamic inspection, validation, and automation of AutoCAD workflows.
+
+### Quick Start
+
+#### 1. Start the Server
+
+In AutoCAD, run the command:
+```
+start-roslyn-server
+```
+
+This will:
+- Open a monitoring dialog showing server activity
+- Start HTTP server on `http://127.0.0.1:23714/`
+- Display HTTP request/response activity in real-time
+- Continue running until you press ESC
+
+#### 2. Send Queries
+
+From your terminal or AI agent, send C# code via HTTP POST:
+
+```bash
+# Simple query
+curl -X POST http://127.0.0.1:23714/ -d 'Console.WriteLine("Hello from AutoCAD!");'
+
+# Multi-line code with proper quoting
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+    Console.WriteLine($"Total layers: {layerTable.Cast<ObjectId>().Count()}");
+    tr.Commit();
+}'
+
+# From a file
+curl -X POST http://127.0.0.1:23714/ -d @script.cs
+```
+
+#### 3. Parse Response
+
+The server returns JSON with this structure:
+
+```json
+{
+  "success": true,
+  "output": "Hello from AutoCAD!\n",
+  "error": "",
+  "diagnostics": []
+}
+```
+
+### Available Context
+
+Scripts have access to these global variables:
+
+- **`Doc`** - Current active AutoCAD document
+- **`Db`** - Current document's database
+- **`Ed`** - Current document's editor
+
+Pre-imported namespaces:
+- `System`, `System.Linq`, `System.Collections.Generic`
+- `Autodesk.AutoCAD.ApplicationServices`
+- `Autodesk.AutoCAD.DatabaseServices`
+- `Autodesk.AutoCAD.EditorInput`
+- `Autodesk.AutoCAD.Geometry`
+
+### Common Query Patterns
+
+#### Listing Information
+
+**Get All Layer Names:**
+```bash
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+    foreach (ObjectId layerId in layerTable)
+    {
+        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+        Console.WriteLine(layer.Name);
+    }
+    tr.Commit();
+}'
+```
+
+**Count Entities by Type:**
+```bash
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
+    var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+    var typeCounts = new Dictionary<string, int>();
+
+    foreach (ObjectId entId in modelSpace)
+    {
+        var entity = tr.GetObject(entId, OpenMode.ForRead) as Entity;
+        var typeName = entity.GetType().Name;
+        if (!typeCounts.ContainsKey(typeName))
+            typeCounts[typeName] = 0;
+        typeCounts[typeName]++;
+    }
+
+    foreach (var kvp in typeCounts.OrderByDescending(x => x.Value))
+    {
+        Console.WriteLine($"{kvp.Key}: {kvp.Value}");
+    }
+    tr.Commit();
+}'
+```
+
+#### Validation Queries
+
+**Check Layer Naming Compliance:**
+```bash
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+    var nonCompliant = new List<string>();
+
+    // Check for AIA CAD Layer Guidelines (layers should start with discipline code)
+    var validPrefixes = new[] { "A-", "S-", "E-", "M-", "P-", "FP-", "C-", "L-", "I-" };
+
+    foreach (ObjectId layerId in layerTable)
+    {
+        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+        var layerName = layer.Name;
+
+        if (!validPrefixes.Any(prefix => layerName.StartsWith(prefix)))
+        {
+            nonCompliant.Add(layerName);
+        }
+    }
+
+    if (nonCompliant.Count > 0)
+    {
+        Console.WriteLine($"Found {nonCompliant.Count} non-compliant layers:");
+        foreach (var name in nonCompliant)
+        {
+            Console.WriteLine($"  - {name}");
+        }
+    }
+    else
+    {
+        Console.WriteLine("All layers follow naming conventions!");
+    }
+    tr.Commit();
+}'
+```
+
+**Find Window Blocks on Wrong Layers:**
+```bash
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
+    var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+    var violations = 0;
+
+    foreach (ObjectId entId in modelSpace)
+    {
+        var entity = tr.GetObject(entId, OpenMode.ForRead) as Entity;
+        if (entity is BlockReference blockRef)
+        {
+            var blockName = blockRef.Name.ToLower();
+            var layerName = entity.Layer.ToLower();
+
+            if ((blockName.Contains("window") || blockName.Contains("wndw")) &&
+                !layerName.Contains("window") && !layerName.Contains("wndw") && !layerName.StartsWith("a-glaz"))
+            {
+                Console.WriteLine($"Window block \"{blockRef.Name}\" on layer \"{entity.Layer}\"");
+                violations++;
+            }
+        }
+    }
+
+    Console.WriteLine($"\nTotal violations: {violations}");
+    tr.Commit();
+}'
+```
+
+**Check for Entities on Layer 0:**
+```bash
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
+    var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+    var count = 0;
+
+    foreach (ObjectId entId in modelSpace)
+    {
+        var entity = tr.GetObject(entId, OpenMode.ForRead) as Entity;
+        if (entity.Layer == "0")
+        {
+            var extents = entity.GeometricExtents;
+            Console.WriteLine($"{entity.GetType().Name} at ({extents.MinPoint.X:F2}, {extents.MinPoint.Y:F2})");
+            count++;
+        }
+    }
+
+    if (count > 0)
+    {
+        Console.WriteLine($"\nWarning: {count} entities found on Layer 0");
+    }
+    else
+    {
+        Console.WriteLine("No entities on Layer 0");
+    }
+    tr.Commit();
+}'
+```
+
+#### Statistical Queries
+
+**Get Drawing Statistics:**
+```bash
+curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
+    var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+
+    Console.WriteLine("Drawing Statistics:");
+    Console.WriteLine($"  Total Layers: {layerTable.Cast<ObjectId>().Count()}");
+    Console.WriteLine($"  Total Blocks: {blockTable.Cast<ObjectId>().Count(id => !((BlockTableRecord)tr.GetObject(id, OpenMode.ForRead)).IsLayout)}");
+    Console.WriteLine($"  Model Space Entities: {modelSpace.Cast<ObjectId>().Count()}");
+
+    var layoutDict = (DBDictionary)tr.GetObject(Db.LayoutDictionaryId, OpenMode.ForRead);
+    var layoutCount = layoutDict.Cast<DBDictionaryEntry>().Count(e => ((Layout)tr.GetObject(e.Value, OpenMode.ForRead)).LayoutName != "Model");
+    Console.WriteLine($"  Paper Space Layouts: {layoutCount}");
+
+    tr.Commit();
+}'
+```
+
+### Error Handling
+
+#### Compilation Errors
+
+If your code has syntax errors, the server returns them:
+
+```json
+{
+  "success": false,
+  "output": "",
+  "error": "Compilation failed",
+  "diagnostics": [
+    "(1,23): error CS1002: ; expected"
+  ]
+}
+```
+
+The server **continues listening** after errors, so you can send corrected code.
+
+#### Runtime Errors
+
+If code compiles but fails during execution:
+
+```json
+{
+  "success": false,
+  "output": "Any output before the error\n",
+  "error": "System.NullReferenceException: Object reference not set...",
+  "diagnostics": []
+}
+```
+
+### Best Practices for Roslyn Server
+
+1. **Always Use Transactions**: AutoCAD database access requires transactions
+   ```csharp
+   using (var tr = Db.TransactionManager.StartTransaction())
+   {
+       // Your code here
+       tr.Commit();
+   }
+   ```
+
+2. **Use Console.WriteLine for Output**: All output should go through `Console.WriteLine()`
+
+3. **Handle Null Values**: Always check for null when working with AutoCAD objects
+
+4. **Format Output Consistently**: Make output easy to parse programmatically
+   ```csharp
+   Console.WriteLine($"LAYER|{layer.Name}|{layer.Color.ColorIndex}");
+   ```
+
+5. **Return Values**: Scripts can return values that will be appended to output
+   ```csharp
+   return layerTable.Cast<ObjectId>().Count();
+   ```
+
+### Integration with Claude Code
+
+When Claude Code needs to query the AutoCAD session:
+
+1. **Verify server is running**: Check if port 23714 is listening
+2. **Construct query**: Build appropriate C# code based on task
+3. **Send request**: Use curl or equivalent HTTP client
+4. **Parse JSON response**: Extract `success`, `output`, `error`, and `diagnostics`
+5. **Iterate if needed**: If compilation fails, fix errors and retry
+
+Example workflow:
+```bash
+# Check if server is running
+if ! curl -s --connect-timeout 1 http://127.0.0.1:23714 > /dev/null 2>&1; then
+    echo "Roslyn server not running. Run 'start-roslyn-server' in AutoCAD."
+    exit 1
+fi
+
+# Send query and parse response (requires jq for JSON parsing)
+RESPONSE=$(curl -s -X POST http://127.0.0.1:23714/ -d 'Console.WriteLine("Test");')
+SUCCESS=$(echo $RESPONSE | jq -r '.success')
+OUTPUT=$(echo $RESPONSE | jq -r '.output')
+
+if [ "$SUCCESS" == "true" ]; then
+    echo "Success: $OUTPUT"
+fi
+```
+
+### Security Considerations
+
+- Server only listens on **localhost (127.0.0.1)** - not accessible from network
+- No authentication - relies on localhost-only binding
+- Code executes with **full AutoCAD API access**
+- Intended for **local development and automation only**
+- Do not expose this service to untrusted networks
+
+### Future Capabilities
+
+The Roslyn server will eventually support:
+- **Vision Integration**: Send screenshots for visual validation
+- **Persistent Scripts**: Save commonly-used validation scripts
+- **Batch Execution**: Run multiple queries in one request
+- **CI/CD Integration**: Automated drawing validation in build pipelines
+
+For more implementation details, see the "Roslyn Server for AI Agents" section in `CLAUDE.md`.
