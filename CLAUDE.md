@@ -21,13 +21,12 @@ AutoCAD Ballet is a collection of custom commands for AutoCAD that provides enha
   - `runtime/selection-logs/` - Selection change history logs
   - `runtime/selection-filters` - Saved selection filter queries with names and source documents
   - `runtime/document-open-times.txt` - Document open/close timestamps
-  - `runtime/InvokeAddinCommand-history` - Command invocation history
-  - `runtime/InvokeAddinCommand-last-dll-path` - Last used DLL path
+  - `runtime/invoke-addin-command-last` - Last invoked addin command (DLL path and command name)
 
 **Debugging Workflow**: When investigating issues:
 1. Check the most recent files in `runtime/switch-view-logs/` to verify logging behavior
 2. Examine selection storage in `runtime/selection/` to confirm cross-document selection is working
-3. Review command history in `runtime/InvokeAddinCommand-history` to trace command executions
+3. Review last command invocation in `runtime/invoke-addin-command-last` to trace command executions
 4. Use `ls -lt runtime/switch-view-logs/ | head` to find recently modified log files for active documents
 
 ## Architecture

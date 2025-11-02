@@ -11,9 +11,33 @@ namespace AutocadBallet
 {
     public class InvokeLastAddinCommand
     {
+#if ACAD2017
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2017\autocad-ballet.dll";
+#elif ACAD2018
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2018\autocad-ballet.dll";
+#elif ACAD2019
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2019\autocad-ballet.dll";
+#elif ACAD2020
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2020\autocad-ballet.dll";
+#elif ACAD2021
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2021\autocad-ballet.dll";
+#elif ACAD2022
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2022\autocad-ballet.dll";
+#elif ACAD2023
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2023\autocad-ballet.dll";
+#elif ACAD2024
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2024\autocad-ballet.dll";
+#elif ACAD2025
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2025\autocad-ballet.dll";
+#elif ACAD2026
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll";
+#else
+        private const string TargetDllPath = @"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll"; // Default
+#endif
+
         private const string FolderName = "autocad-ballet";
         private const string RuntimeFolderName = "runtime";
-        private const string LastCommandFileName = "InvokeAddinCommand-history";
+        private const string LastCommandFileName = "invoke-addin-command-last";
         private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName, RuntimeFolderName);
         private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
 
@@ -33,22 +57,23 @@ namespace AutocadBallet
 
             try
             {
-                // Read last command info from file
+                // Read last command name from file
                 if (!File.Exists(LastCommandFilePath))
                 {
                     ed.WriteMessage("\nNo command history found. Use invoke-addin-command first.\n");
                     return;
                 }
 
-                var lines = File.ReadAllLines(LastCommandFilePath);
-                if (lines.Length < 2)
+                string commandName = File.ReadAllText(LastCommandFilePath).Trim();
+
+                if (string.IsNullOrWhiteSpace(commandName))
                 {
                     ed.WriteMessage("\nInvalid command history file.\n");
                     return;
                 }
 
-                string dllPath = Environment.ExpandEnvironmentVariables(lines[0]);
-                string commandName = lines[1];
+                // Use hardcoded DLL path
+                string dllPath = Environment.ExpandEnvironmentVariables(TargetDllPath);
 
                 if (!File.Exists(dllPath))
                 {
@@ -57,7 +82,6 @@ namespace AutocadBallet
                 }
 
                 ed.WriteMessage($"\nRe-invoking last command: {commandName}");
-                ed.WriteMessage($"\nFrom: {dllPath}");
 
                 // Use shared code from InvokeAddinCommand
                 var sessionAssemblies = new System.Collections.Generic.Dictionary<string, System.Reflection.Assembly>();

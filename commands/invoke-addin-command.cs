@@ -56,10 +56,8 @@ namespace AutocadBallet
 
         private const string FolderName = "autocad-ballet";
         private const string RuntimeFolderName = "runtime";
-        private const string ConfigFileName = "InvokeAddinCommand-last-dll-path";
-        private const string LastCommandFileName = "InvokeAddinCommand-history";
+        private const string LastCommandFileName = "invoke-addin-command-last";
         private static readonly string ConfigFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), FolderName, RuntimeFolderName);
-        private static readonly string ConfigFilePath = Path.Combine(ConfigFolderPath, ConfigFileName);
         private static readonly string LastCommandFilePath = Path.Combine(ConfigFolderPath, LastCommandFileName);
 
         // Static dictionary to track loaded commands per DLL version
@@ -670,8 +668,8 @@ namespace AutocadBallet
                     Directory.CreateDirectory(ConfigFolderPath);
                 }
 
-                // Save both DLL path and command name in the history file (two lines)
-                File.WriteAllText(LastCommandFilePath, dllPath + "\n" + commandInfo.OriginalName);
+                // Save only the command name (DLL path is hardcoded via TargetDllPath)
+                File.WriteAllText(LastCommandFilePath, commandInfo.OriginalName);
             }
             catch (System.Exception ex)
             {

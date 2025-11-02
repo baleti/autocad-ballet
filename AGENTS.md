@@ -40,7 +40,7 @@
     - `runtime/switch-view-logs/` — Layout switching history (use `ls -lt runtime/switch-view-logs/ | head` for recent activity)
     - `runtime/selection/` — Per-document selection persistence
     - `runtime/selection-logs/` — Selection change history
-    - `runtime/InvokeAddinCommand-history` — Command invocation history
+    - `runtime/invoke-addin-command-last` — Last invoked addin command
   - NETLOAD checks across targeted AutoCAD years (2017-2026).
 - For bug fixes, include repro steps and expected vs. actual results in the PR.
 

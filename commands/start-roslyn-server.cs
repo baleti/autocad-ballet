@@ -180,10 +180,7 @@ namespace AutoCADBallet
                 isRunning = true;
 
                 UpdateStatus($"Listening on http://127.0.0.1:{StartRoslynServer.PORT}/");
-                LogMessage($"[{DateTime.Now:HH:mm:ss}] HTTP server started successfully");
-                LogMessage($"[{DateTime.Now:HH:mm:ss}] URL: http://127.0.0.1:{StartRoslynServer.PORT}/");
                 LogMessage($"[{DateTime.Now:HH:mm:ss}] Press ESC to stop the server");
-                LogMessage("");
 
                 Task.Run(() => AcceptRequestsLoop(cancellationTokenSource.Token));
             }
@@ -196,8 +193,6 @@ namespace AutoCADBallet
 
         private async Task AcceptRequestsLoop(CancellationToken cancellationToken)
         {
-            LogMessage($"[{DateTime.Now:HH:mm:ss}] Accept loop started");
-
             while (!cancellationToken.IsCancellationRequested && isRunning)
             {
                 try
@@ -207,8 +202,6 @@ namespace AutoCADBallet
                     {
                         var client = await listener.AcceptTcpClientAsync();
                         var clientEndpoint = client.Client.RemoteEndPoint.ToString();
-
-                        LogMessage($"[{DateTime.Now:HH:mm:ss}] TCP connection from {clientEndpoint}");
 
                         // Handle request in background
                         _ = Task.Run(async () => await HandleHttpRequest(client, clientEndpoint, cancellationToken));
@@ -221,7 +214,6 @@ namespace AutoCADBallet
                 }
                 catch (OperationCanceledException)
                 {
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Accept loop cancelled");
                     break;
                 }
                 catch (System.Exception ex)
@@ -229,8 +221,6 @@ namespace AutoCADBallet
                     LogMessage($"[{DateTime.Now:HH:mm:ss}] Error accepting request: {ex.Message}");
                 }
             }
-
-            LogMessage($"[{DateTime.Now:HH:mm:ss}] Accept loop ended");
         }
 
         private async Task HandleHttpRequest(TcpClient client, string clientEndpoint, CancellationToken cancellationToken)
@@ -241,11 +231,8 @@ namespace AutoCADBallet
                 using (var stream = client.GetStream())
                 using (var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true))
                 {
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Parsing HTTP request from {clientEndpoint}...");
-
                     // Read HTTP request line and headers
                     var requestLine = await reader.ReadLineAsync();
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Request: {requestLine}");
 
                     var headers = new Dictionary<string, string>();
                     string line;
@@ -259,8 +246,6 @@ namespace AutoCADBallet
                             headers[key] = value;
                         }
                     }
-
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Headers parsed, reading body...");
 
                     // Read body based on Content-Length
                     string code = "";
@@ -284,7 +269,6 @@ namespace AutoCADBallet
 
                     if (string.IsNullOrWhiteSpace(code))
                     {
-                        LogMessage($"[{DateTime.Now:HH:mm:ss}] Empty request body");
                         var emptyResponse = new ScriptResponse
                         {
                             Success = false,
@@ -301,31 +285,20 @@ namespace AutoCADBallet
 
                     LogMessage($"[{DateTime.Now:HH:mm:ss}] Execution completed - Success: {scriptResponse.Success}");
 
-                    if (!scriptResponse.Success)
+                    if (scriptResponse.Success && !string.IsNullOrEmpty(scriptResponse.Output))
                     {
-                        LogMessage($"[{DateTime.Now:HH:mm:ss}] Error: {scriptResponse.Error}");
-                        if (scriptResponse.Diagnostics.Count > 0)
+                        var firstLine = scriptResponse.Output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+                        var preview = firstLine.Length > 100
+                            ? firstLine.Substring(0, 100) + "..."
+                            : firstLine;
+                        if (!string.IsNullOrEmpty(preview))
                         {
-                            LogMessage($"[{DateTime.Now:HH:mm:ss}] Diagnostics:");
-                            foreach (var diag in scriptResponse.Diagnostics)
-                            {
-                                LogMessage($"  - {diag}");
-                            }
+                            LogMessage($"[{DateTime.Now:HH:mm:ss}] Output preview: {preview}");
                         }
-                    }
-                    else if (!string.IsNullOrEmpty(scriptResponse.Output))
-                    {
-                        var preview = scriptResponse.Output.Length > 100
-                            ? scriptResponse.Output.Substring(0, 100) + "..."
-                            : scriptResponse.Output;
-                        LogMessage($"[{DateTime.Now:HH:mm:ss}] Output preview: {preview}");
                     }
 
                     // Send HTTP response
                     await SendHttpResponse(stream, scriptResponse);
-
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Response sent");
-                    LogMessage("");
                 }
             }
             catch (System.Exception ex)
@@ -388,66 +361,12 @@ namespace AutoCADBallet
                 // Configure script options with necessary references
                 var scriptOptions = ScriptOptions.Default;
 
-                // Add reference to autocad-ballet.dll (for ScriptGlobals)
+                // Add reference to the currently loaded autocad-ballet.dll assembly
+                // This works whether the assembly was loaded from file or from bytes
+                // Using the same assembly instance ensures type identity consistency
                 var scriptGlobalsAsm = typeof(ScriptGlobals).Assembly;
-                string assemblyPath = null;
-
-                if (!string.IsNullOrEmpty(scriptGlobalsAsm.Location))
-                {
-                    // Normal case: Assembly loaded from file
-                    assemblyPath = scriptGlobalsAsm.Location;
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Using assembly location: '{assemblyPath}'");
-                }
-                else
-                {
-                    // Assembly loaded from byte array (invoke-addin-command)
-                    // Look for the temp file that invoke-addin-command created
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Assembly loaded from byte array - searching for temp file");
-
-                    try
-                    {
-                        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                        var tempBaseDir = Path.Combine(appData, "autocad-ballet", "commands", "bin", "temp");
-
-                        if (Directory.Exists(tempBaseDir))
-                        {
-                            // Find the most recent temp directory with autocad-ballet.dll
-                            var tempDirs = Directory.GetDirectories(tempBaseDir)
-                                .Where(dir => File.Exists(Path.Combine(dir, "autocad-ballet.dll")))
-                                .OrderByDescending(dir => Directory.GetCreationTime(dir))
-                                .ToList();
-
-                            if (tempDirs.Any())
-                            {
-                                assemblyPath = Path.Combine(tempDirs.First(), "autocad-ballet.dll");
-                                LogMessage($"[{DateTime.Now:HH:mm:ss}] Found temp DLL: '{assemblyPath}'");
-                            }
-                        }
-
-                        if (assemblyPath == null)
-                        {
-                            LogMessage($"[{DateTime.Now:HH:mm:ss}] WARNING: No temp DLL found - globals may not work with invoke-addin-command");
-                        }
-                    }
-                    catch (System.Exception ex)
-                    {
-                        LogMessage($"[{DateTime.Now:HH:mm:ss}] ERROR searching for temp: {ex.Message}");
-                    }
-                }
-
-                if (assemblyPath != null)
-                {
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] Adding assembly reference: '{assemblyPath}'");
-                    scriptOptions = scriptOptions.AddReferences(
-                        Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(assemblyPath)
-                    );
-                }
-                else
-                {
-                    LogMessage($"[{DateTime.Now:HH:mm:ss}] WARNING: Could not resolve assembly path - globals may not work");
-                }
-
                 scriptOptions = scriptOptions
+                    .AddReferences(scriptGlobalsAsm)
                     .AddReferences(typeof(Document).Assembly)        // Autodesk.AutoCAD.ApplicationServices
                     .AddReferences(typeof(Database).Assembly)        // Autodesk.AutoCAD.DatabaseServices
                     .AddReferences(typeof(Editor).Assembly)          // Autodesk.AutoCAD.EditorInput
