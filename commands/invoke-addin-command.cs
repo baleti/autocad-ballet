@@ -95,13 +95,12 @@ namespace AutocadBallet
             if (ed == null) return;
 
             // Capture pickfirst selection at the start to preserve it
+            // AutoCAD will clear it when the modal DataGrid shows, but we'll restore it via LISP
             Autodesk.AutoCAD.DatabaseServices.ObjectId[] pickfirstSelection = null;
             var selResult = ed.SelectImplied();
             if (selResult.Status == PromptStatus.OK)
             {
                 pickfirstSelection = selResult.Value.GetObjectIds();
-                // Clear it so the DataGrid doesn't interfere
-                ed.SetImpliedSelection(new Autodesk.AutoCAD.DatabaseServices.ObjectId[0]);
             }
 
             // Resolve the path
@@ -617,17 +616,38 @@ namespace AutocadBallet
                     throw new InvalidOperationException("No active document");
                 }
 
-                // Restore pickfirst selection before invoking the command
+                string commandString;
+
+                // Restore pickfirst selection using LISP before invoking the command
+                // This ensures selection survives the async SendStringToExecute call
+                // We use LISP because (sssetfirst) and (command) execute atomically in the same context
                 if (pickfirstSelection != null && pickfirstSelection.Length > 0)
                 {
-                    ed.SetImpliedSelection(pickfirstSelection);
+                    var db = doc.Database;
+                    var handles = new StringBuilder();
+                    handles.Append("(progn (setq _tmp_ss (ssadd))");
+
+                    using (var tr = db.TransactionManager.StartTransaction())
+                    {
+                        foreach (var id in pickfirstSelection)
+                        {
+                            var ent = tr.GetObject(id, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                            var handle = ent.Handle.ToString();
+                            handles.Append($" (ssadd (handent \"{handle}\") _tmp_ss)");
+                        }
+                        tr.Commit();
+                    }
+
+                    handles.Append($" (sssetfirst nil _tmp_ss) (command \"{commandInfo.ModifiedName}\") (princ)) ");
+                    commandString = handles.ToString();
+                }
+                else
+                {
+                    commandString = commandInfo.ModifiedName + "\n";
                 }
 
                 // Use SendStringToExecute to invoke through AutoCAD's command pipeline
-                // Use the MODIFIED name that was actually registered with AutoCAD
-                // This ensures proper command context and selection handling
-                // The 'true' parameters: activate document, send from command line, echo command
-                doc.SendStringToExecute(commandInfo.ModifiedName + "\n", true, false, true);
+                doc.SendStringToExecute(commandString, true, false, false);
             }
             catch (System.Exception ex)
             {
