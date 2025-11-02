@@ -371,16 +371,16 @@ namespace AutocadBallet
                 }
             }
 
-            // Write modified assembly to temp file for Roslyn reference
-            // but load from bytes so AutoCAD registers commands automatically
+            // Write modified assembly to temp file
             var tempDir = Path.Combine(Path.GetDirectoryName(assemblyPath), "temp", Guid.NewGuid().ToString("N").Substring(0, 32));
             Directory.CreateDirectory(tempDir);
             var tempAssemblyPath = Path.Combine(tempDir, Path.GetFileName(assemblyPath));
             File.WriteAllBytes(tempAssemblyPath, modifiedAssemblyBytes);
 
-            // Load from bytes so AutoCAD can register commands
-            // The temp file is available for Roslyn server to reference
-            Assembly assembly = Assembly.Load(modifiedAssemblyBytes);
+            // Load from temp file so assembly has Location property
+            // This ensures type identity consistency with Roslyn server
+            // AutoCAD will register commands from the loaded assembly
+            Assembly assembly = Assembly.LoadFrom(tempAssemblyPath);
             sessionAssemblies[assemblyName] = assembly;
 
             return new CachedCommandInfo
@@ -613,42 +613,37 @@ namespace AutocadBallet
                     throw new InvalidOperationException("No active document");
                 }
 
-                // The command was rewritten with a unique suffix (ModifiedName) to avoid conflicts
-                // We need to invoke it through AutoCAD's command pipeline to preserve command context
-                // and allow the command to modify the pickfirst selection properly
-
-                string commandString;
-
-                // Restore pickfirst selection using LISP before invoking the command
-                // This ensures selection survives and the command can modify it
+                // Restore pickfirst selection if provided
                 if (pickfirstSelection != null && pickfirstSelection.Length > 0)
                 {
-                    var db = doc.Database;
-                    var handles = new StringBuilder();
-                    handles.Append("(progn (setq _tmp_ss (ssadd))");
-
-                    using (var tr = db.TransactionManager.StartTransaction())
-                    {
-                        foreach (var id in pickfirstSelection)
-                        {
-                            var ent = tr.GetObject(id, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-                            var handle = ent.Handle.ToString();
-                            handles.Append($" (ssadd (handent \"{handle}\") _tmp_ss)");
-                        }
-                        tr.Commit();
-                    }
-
-                    handles.Append($" (sssetfirst nil _tmp_ss) (command \"{commandInfo.ModifiedName}\") (princ)) ");
-                    commandString = handles.ToString();
+                    ed.SetImpliedSelection(pickfirstSelection);
                 }
-                else
+
+                // Invoke the command method directly via reflection
+                // since dynamically loaded assemblies aren't registered in AutoCAD's command table
+                var type = commandInfo.Assembly.GetType(commandInfo.TypeFullName);
+                if (type == null)
                 {
-                    commandString = commandInfo.ModifiedName + "\n";
+                    throw new InvalidOperationException($"Type not found: {commandInfo.TypeFullName}");
                 }
 
-                // Use SendStringToExecute to invoke through AutoCAD's command pipeline
-                // LoadFrom should have registered the command with AutoCAD automatically
-                doc.SendStringToExecute(commandString, true, false, false);
+                var method = type.GetMethod(commandInfo.MethodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                if (method == null)
+                {
+                    throw new InvalidOperationException($"Method not found: {commandInfo.MethodName}");
+                }
+
+                // Create instance if method is not static
+                object instance = null;
+                if (!method.IsStatic)
+                {
+                    instance = Activator.CreateInstance(type);
+                }
+
+                // Invoke the method
+                method.Invoke(instance, null);
+
+                ed.WriteMessage($"\nCommand completed: {commandInfo.OriginalName}");
             }
             catch (System.Exception ex)
             {

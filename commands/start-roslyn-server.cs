@@ -361,10 +361,16 @@ namespace AutoCADBallet
                 // Configure script options with necessary references
                 var scriptOptions = ScriptOptions.Default;
 
-                // Add reference to the currently loaded autocad-ballet.dll assembly
-                // This works whether the assembly was loaded from file or from bytes
-                // Using the same assembly instance ensures type identity consistency
+                // Add reference to autocad-ballet.dll for ScriptGlobals
                 var scriptGlobalsAsm = typeof(ScriptGlobals).Assembly;
+
+                if (string.IsNullOrEmpty(scriptGlobalsAsm.Location))
+                {
+                    response.Success = false;
+                    response.Error = $"Cannot reference assembly without location. Assembly: {scriptGlobalsAsm.FullName}";
+                    return response;
+                }
+
                 scriptOptions = scriptOptions
                     .AddReferences(scriptGlobalsAsm)
                     .AddReferences(typeof(Document).Assembly)        // Autodesk.AutoCAD.ApplicationServices
