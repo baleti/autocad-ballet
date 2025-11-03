@@ -545,7 +545,7 @@ namespace AutoCADCommands
 
         /// <summary>
         /// Escape newlines and other special characters for display in text fields
-        /// Skip escaping if text contains AutoCAD MText formatting codes
+        /// Skip escaping if text contains AutoCAD MText formatting codes or file paths
         /// </summary>
         private static string EscapeForDisplay(string text)
         {
@@ -554,6 +554,10 @@ namespace AutoCADCommands
 
             // If text contains AutoCAD MText formatting codes, don't escape - show as-is
             if (text.Contains("\\P") || text.Contains("\\p"))
+                return text;
+
+            // If text looks like a file path (contains drive letter or UNC path or relative path), don't escape backslashes
+            if (IsFilePath(text))
                 return text;
 
             return text
@@ -565,8 +569,46 @@ namespace AutoCADCommands
         }
 
         /// <summary>
+        /// Check if the text looks like a file path
+        /// </summary>
+        private static bool IsFilePath(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return false;
+
+            // Check for common file path patterns:
+            // - Drive letter: C:\, D:\, etc.
+            // - UNC path: \\server\share
+            // - Relative path with backslashes: ..\folder, .\file
+            // - File extensions: .dwg, .txt, etc.
+
+            // Drive letter pattern (e.g., C:\)
+            if (text.Length >= 3 && char.IsLetter(text[0]) && text[1] == ':' && text[2] == '\\')
+                return true;
+
+            // UNC path pattern (e.g., \\server\)
+            if (text.StartsWith("\\\\"))
+                return true;
+
+            // Relative path pattern (e.g., ..\, .\)
+            if (text.StartsWith("..\\") || text.StartsWith(".\\"))
+                return true;
+
+            // Check for common file extensions with backslashes in path
+            if (text.Contains("\\") && (
+                text.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase) ||
+                text.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase) ||
+                text.EndsWith(".dwf", StringComparison.OrdinalIgnoreCase) ||
+                text.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ||
+                text.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
         /// Unescape display characters back to actual characters
-        /// Skip unescaping if text contains AutoCAD MText formatting codes
+        /// Skip unescaping if text contains AutoCAD MText formatting codes or file paths
         /// </summary>
         private static string UnescapeFromDisplay(string text)
         {
@@ -575,6 +617,10 @@ namespace AutoCADCommands
 
             // If text contains AutoCAD MText formatting codes, don't unescape - use as-is
             if (text.Contains("\\P") || text.Contains("\\p"))
+                return text;
+
+            // If text looks like a file path, don't unescape - use as-is
+            if (IsFilePath(text))
                 return text;
 
             // Process in specific order to handle escaped sequences properly

@@ -74,6 +74,7 @@ public partial class CustomGUIs
             case "widthfactor":
             case "query":
             case "tags":
+            case "xrefpath":
                 return true;
         }
         if (lowerName.StartsWith("attr_")) return true;

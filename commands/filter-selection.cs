@@ -439,7 +439,8 @@ public static class FilterEntityDataHelper
             ["Id"] = entity.ObjectId.Handle.Value,
             ["IsExternal"] = false,
             ["ObjectId"] = entity.ObjectId, // Store for selection
-            ["DynamicBlockName"] = "" // Will be populated for dynamic blocks
+            ["DynamicBlockName"] = "", // Will be populated for dynamic blocks
+            ["XrefPath"] = "" // Will be populated for xrefs
         };
 
         data["DisplayName"] = !string.IsNullOrEmpty(entityName) ? entityName : data["Category"].ToString();
@@ -456,6 +457,14 @@ public static class FilterEntityDataHelper
                     var dynamicBtr = tr.GetObject(dynamicBlockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
                     data["DynamicBlockName"] = dynamicBtr?.Name ?? "";
                 }
+
+                // For xrefs, also store the xref path
+                var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                if (btr != null && btr.IsFromExternalReference)
+                {
+                    data["XrefPath"] = btr.PathName ?? "";
+                }
+
                 tr.Commit();
             }
         }

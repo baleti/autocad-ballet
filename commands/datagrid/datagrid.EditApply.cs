@@ -411,6 +411,12 @@ public partial class CustomGUIs
                     if (dbObject is Entity externalGeometryEntity)
                         ApplyGeometryPropertyEdit(externalGeometryEntity, columnName, newValue, tr);
                     break;
+                case "xrefpath":
+                    if (dbObject is BlockReference xrefBlockRefExt)
+                    {
+                        ApplyXrefPathEdit(xrefBlockRefExt, newValue, tr);
+                    }
+                    break;
                 default:
                     if (columnName.StartsWith("attr_"))
                     {
@@ -577,6 +583,12 @@ public partial class CustomGUIs
                     break;
                 case "centerx": case "centery": case "centerz": case "scalex": case "scaley": case "scalez": case "rotation": case "width": case "height": case "radius": case "textheight": case "widthfactor":
                     if (dbObject is Entity geometryEntity) ApplyGeometryPropertyEdit(geometryEntity, columnName, newValue, tr);
+                    break;
+                case "xrefpath":
+                    if (dbObject is BlockReference xrefBlockRef)
+                    {
+                        ApplyXrefPathEdit(xrefBlockRef, newValue, tr);
+                    }
                     break;
                 default:
                     if (columnName.StartsWith("attr_")) { if (dbObject is Entity e4) ApplyBlockAttributeEdit(e4, columnName, newValue, tr); }
@@ -905,6 +917,73 @@ public partial class CustomGUIs
         catch (System.Exception ex)
         {
             ed.WriteMessage($"\n  >> ERROR in ApplyViewportGeometryEdit: {ex.Message}");
+            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+        }
+    }
+
+    private static void ApplyXrefPathEdit(BlockReference blockRef, string newPath, Transaction tr)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+        var db = blockRef.Database;
+
+        ed.WriteMessage($"\n  >> ApplyXrefPathEdit: BlockReference={blockRef.Name}, NewPath='{newPath}'");
+
+        try
+        {
+            // Get the BlockTableRecord for this block reference
+            var btr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
+
+            if (btr == null)
+            {
+                ed.WriteMessage("\n  >> ERROR: Could not get BlockTableRecord");
+                return;
+            }
+
+            // Check if this is actually an xref
+            if (!btr.IsFromExternalReference)
+            {
+                ed.WriteMessage("\n  >> WARNING: Block is not an external reference (xref). Skipping path change.");
+                return;
+            }
+
+            ed.WriteMessage($"\n  >> Current xref path: '{btr.PathName}'");
+
+            // Validate the new path
+            if (string.IsNullOrWhiteSpace(newPath))
+            {
+                ed.WriteMessage("\n  >> ERROR: New path cannot be empty");
+                return;
+            }
+
+            // Only process DWG files for xrefs
+            string extension = System.IO.Path.GetExtension(newPath).ToLowerInvariant();
+            if (extension != ".dwg")
+            {
+                ed.WriteMessage($"\n  >> ERROR: XRef path must point to a .dwg file (got '{extension}')");
+                return;
+            }
+
+            // Enable xref editing on the database
+            bool wasXrefEditEnabled = db.XrefEditEnabled;
+            db.XrefEditEnabled = true;
+
+            try
+            {
+                // Set the new path
+                btr.PathName = newPath;
+                ed.WriteMessage($"\n  >> Successfully changed xref path to: '{newPath}'");
+                ed.WriteMessage("\n  >> NOTE: You may need to reload the xref for changes to take effect.");
+            }
+            finally
+            {
+                // Restore original XrefEditEnabled state
+                db.XrefEditEnabled = wasXrefEditEnabled;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in ApplyXrefPathEdit: {ex.Message}");
             ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
         }
     }
