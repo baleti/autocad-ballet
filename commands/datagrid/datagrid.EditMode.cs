@@ -413,8 +413,10 @@ public partial class CustomGUIs
         int newCol = currentCol + direction;
         while (newCol >= 0 && newCol < grid.Columns.Count)
         {
-            string columnName = grid.Columns[newCol].Name;
-            if (IsColumnEditable(columnName)) return newCol;
+            DataGridViewColumn column = grid.Columns[newCol];
+            string columnName = column.Name;
+            // Check both if column is editable AND visible (important when columns are filtered)
+            if (IsColumnEditable(columnName) && column.Visible) return newCol;
             newCol += direction;
         }
         return currentCol;
