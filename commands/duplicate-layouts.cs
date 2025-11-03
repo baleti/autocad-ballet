@@ -2,28 +2,136 @@ using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.PlottingServices;
-using Autodesk.AutoCAD.Runtime;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Windows.Forms;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
-
-[assembly: CommandClass(typeof(AutoCADBallet.DuplicateLayoutsCommand))]
 
 namespace AutoCADBallet
 {
-    public class DuplicateLayoutsCommand
+    public static class DuplicateLayouts
     {
-        [CommandMethod("duplicate-layouts", CommandFlags.Session)]
-        public void DuplicateLayouts()
+        public static void ExecuteDocumentScope(Editor ed)
+        {
+            Document activeDoc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (activeDoc == null) return;
+
+            Database db = activeDoc.Database;
+            string currentLayoutName = LayoutManager.Current.CurrentLayout;
+
+            var allLayouts = new List<Dictionary<string, object>>();
+            int currentViewIndex = -1;
+
+            try
+            {
+                using (DocumentLock docLock = activeDoc.LockDocument())
+                {
+                    using (Transaction tr = db.TransactionManager.StartTransaction())
+                    {
+                        DBDictionary layoutDict = tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead) as DBDictionary;
+
+                        int viewIndex = 0;
+                        foreach (DictionaryEntry entry in layoutDict)
+                        {
+                            Layout layout = tr.GetObject((ObjectId)entry.Value, OpenMode.ForRead) as Layout;
+                            if (layout != null && !layout.ModelType)
+                            {
+                                bool isCurrentView = layout.LayoutName == currentLayoutName;
+
+                                if (isCurrentView)
+                                {
+                                    currentViewIndex = viewIndex;
+                                }
+
+                                allLayouts.Add(new Dictionary<string, object>
+                                {
+                                    ["layout"] = layout.LayoutName,
+                                    ["tab order"] = layout.TabOrder,
+                                    ["LayoutName"] = layout.LayoutName,
+                                    ["TabOrder"] = layout.TabOrder,
+                                    ["IsActive"] = isCurrentView,
+                                    ["ObjectId"] = (ObjectId)entry.Value,
+                                    ["Handle"] = layout.Handle.ToString()
+                                });
+
+                                viewIndex++;
+                            }
+                        }
+
+                        tr.Commit();
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError reading layouts: {ex.Message}");
+                return;
+            }
+
+            if (allLayouts.Count == 0)
+            {
+                ed.WriteMessage("\nNo paper space layouts found to duplicate.");
+                return;
+            }
+
+            // Sort by tab order
+            allLayouts = allLayouts.OrderBy(v =>
+            {
+                if (v["TabOrder"] == null) return int.MaxValue;
+                if (int.TryParse(v["TabOrder"].ToString(), out int tabOrder))
+                {
+                    return tabOrder;
+                }
+                return int.MaxValue;
+            }).ToList();
+
+            // Update currentViewIndex after sorting
+            currentViewIndex = allLayouts.FindIndex(v => (bool)v["IsActive"]);
+
+            var propertyNames = new List<string> { "layout", "tab order" };
+            var initialSelectionIndices = currentViewIndex >= 0
+                                            ? new List<int> { currentViewIndex }
+                                            : new List<int>();
+
+            try
+            {
+                List<Dictionary<string, object>> chosen = CustomGUIs.DataGrid(allLayouts, propertyNames, false, initialSelectionIndices);
+
+                if (chosen != null && chosen.Count > 0)
+                {
+                    // Prompt for number of duplicates
+                    int duplicateCount = PromptForDuplicateCount();
+                    if (duplicateCount <= 0)
+                    {
+                        ed.WriteMessage("\nOperation cancelled or invalid count.");
+                        return;
+                    }
+
+                    int totalDuplicated = ProcessLayoutsInDocument(chosen, activeDoc, db, ed, duplicateCount);
+
+                    ed.WriteMessage($"\nTotal: {totalDuplicated} layout(s) duplicated successfully.");
+
+                    if (totalDuplicated > 0)
+                    {
+                        activeDoc.SendStringToExecute("_.REGENALL ", true, false, false);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError in duplicate-layouts-in-document command: {ex.Message}");
+            }
+        }
+
+        public static void ExecuteApplicationScope(Editor ed)
         {
             DocumentCollection docs = AcadApp.DocumentManager;
             Document activeDoc = docs.MdiActiveDocument;
             if (activeDoc == null) return;
 
-            Editor ed = activeDoc.Editor;
             string currentLayoutName = LayoutManager.Current.CurrentLayout;
 
             // Generate session identifier for this AutoCAD process
@@ -42,12 +150,10 @@ namespace AutoCADBallet
                 string docFullPath = doc.Name;
                 bool isActiveDoc = (doc == activeDoc);
 
-                // Get layouts from this document
                 Database db = doc.Database;
 
                 try
                 {
-                    // For non-active documents, we might need to lock the document
                     using (DocumentLock docLock = doc.LockDocument())
                     {
                         using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -59,20 +165,15 @@ namespace AutoCADBallet
                             foreach (DictionaryEntry entry in layoutDict)
                             {
                                 Layout layout = tr.GetObject((ObjectId)entry.Value, OpenMode.ForRead) as Layout;
-                                if (layout != null)
+                                if (layout != null && !layout.ModelType)
                                 {
-                                    // Exclude model space layouts (Model tab)
-                                    if (!layout.ModelType)
+                                    layoutsInDoc.Add(new Dictionary<string, object>
                                     {
-                                        layoutsInDoc.Add(new Dictionary<string, object>
-                                        {
-                                            ["LayoutName"] = layout.LayoutName,
-                                            ["TabOrder"] = layout.TabOrder,
-                                            ["LayoutObject"] = layout,
-                                            ["ObjectId"] = (ObjectId)entry.Value,
-                                            ["Handle"] = layout.Handle.ToString()
-                                        });
-                                    }
+                                        ["LayoutName"] = layout.LayoutName,
+                                        ["TabOrder"] = layout.TabOrder,
+                                        ["ObjectId"] = (ObjectId)entry.Value,
+                                        ["Handle"] = layout.Handle.ToString()
+                                    });
                                 }
                             }
 
@@ -156,6 +257,14 @@ namespace AutoCADBallet
 
                 if (chosen != null && chosen.Count > 0)
                 {
+                    // Prompt for number of duplicates
+                    int duplicateCount = PromptForDuplicateCount();
+                    if (duplicateCount <= 0)
+                    {
+                        ed.WriteMessage("\nOperation cancelled or invalid count.");
+                        return;
+                    }
+
                     // Group selected layouts by document
                     var layoutsByDocument = chosen.GroupBy(l => l["DocumentObject"] as Document);
 
@@ -165,9 +274,9 @@ namespace AutoCADBallet
                     foreach (var docGroup in layoutsByDocument)
                     {
                         Document targetDoc = docGroup.Key;
-                        int duplicatedInDoc = ProcessLayoutsWithCloning(docGroup, targetDoc, ed);
+                        int duplicatedInDoc = ProcessLayoutsWithCloning(docGroup, targetDoc, ed, duplicateCount);
                         totalDuplicated += duplicatedInDoc;
-                        
+
                         string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
                         if (duplicatedInDoc > 0)
                         {
@@ -176,7 +285,7 @@ namespace AutoCADBallet
                     }
 
                     ed.WriteMessage($"\n\nTotal: {totalDuplicated} layout(s) duplicated successfully.");
-                    
+
                     // Request regen for the active document only if layouts were duplicated there
                     if (layoutsByDocument.Any(g => g.Key == activeDoc))
                     {
@@ -186,12 +295,137 @@ namespace AutoCADBallet
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nError in duplicate-layouts command: {ex.Message}");
+                ed.WriteMessage($"\nError in duplicate-layouts-in-session command: {ex.Message}");
             }
         }
 
-        private int ProcessLayoutsWithCloning(IGrouping<Document, Dictionary<string, object>> docGroup, 
-            Document targetDoc, Editor ed)
+        private static int PromptForDuplicateCount()
+        {
+            int count = 0;
+            System.Windows.Forms.Application.EnableVisualStyles();
+
+            using (Form form = new Form())
+            {
+                form.Text = "Duplicate Layouts";
+                form.Size = new System.Drawing.Size(300, 150);
+                form.StartPosition = FormStartPosition.CenterScreen;
+                form.FormBorderStyle = FormBorderStyle.FixedDialog;
+                form.MaximizeBox = false;
+                form.MinimizeBox = false;
+
+                Label label = new Label();
+                label.Text = "Number of duplicates:";
+                label.Location = new System.Drawing.Point(20, 20);
+                label.AutoSize = true;
+
+                TextBox textBox = new TextBox();
+                textBox.Location = new System.Drawing.Point(20, 45);
+                textBox.Size = new System.Drawing.Size(240, 20);
+                textBox.Text = "1";
+
+                Button okButton = new Button();
+                okButton.Text = "OK";
+                okButton.Location = new System.Drawing.Point(105, 75);
+                okButton.Size = new System.Drawing.Size(75, 23);
+                okButton.DialogResult = DialogResult.OK;
+
+                Button cancelButton = new Button();
+                cancelButton.Text = "Cancel";
+                cancelButton.Location = new System.Drawing.Point(185, 75);
+                cancelButton.Size = new System.Drawing.Size(75, 23);
+                cancelButton.DialogResult = DialogResult.Cancel;
+
+                form.Controls.Add(label);
+                form.Controls.Add(textBox);
+                form.Controls.Add(okButton);
+                form.Controls.Add(cancelButton);
+                form.AcceptButton = okButton;
+                form.CancelButton = cancelButton;
+
+                // Select the text when form loads
+                form.Shown += (sender, e) => {
+                    textBox.Focus();
+                    textBox.SelectAll();
+                };
+
+                if (form.ShowDialog() == DialogResult.OK)
+                {
+                    if (int.TryParse(textBox.Text, out int parsedValue) && parsedValue > 0 && parsedValue <= 100)
+                    {
+                        count = parsedValue;
+                    }
+                }
+            }
+
+            return count;
+        }
+
+        private static int ProcessLayoutsInDocument(List<Dictionary<string, object>> selectedLayouts,
+            Document targetDoc, Database targetDb, Editor ed, int duplicateCount)
+        {
+            int duplicatedCount = 0;
+
+            try
+            {
+                using (DocumentLock docLock = targetDoc.LockDocument())
+                {
+                    using (Transaction tr = targetDb.TransactionManager.StartTransaction())
+                    {
+                        DBDictionary layoutDict = tr.GetObject(targetDb.LayoutDictionaryId, OpenMode.ForWrite) as DBDictionary;
+                        BlockTable bt = tr.GetObject(targetDb.BlockTableId, OpenMode.ForWrite) as BlockTable;
+
+                        // Process selected layouts in reverse tab order to maintain proper positioning
+                        var sortedLayouts = selectedLayouts.OrderByDescending(l =>
+                        {
+                            if (l["TabOrder"] == null) return int.MinValue;
+                            if (int.TryParse(l["TabOrder"].ToString(), out int tabOrder)) return tabOrder;
+                            return int.MinValue;
+                        }).ToList();
+
+                        foreach (var selectedLayout in sortedLayouts)
+                        {
+                            try
+                            {
+                                string originalName = selectedLayout["LayoutName"].ToString();
+                                ObjectId sourceLayoutId = (ObjectId)selectedLayout["ObjectId"];
+
+                                // Create multiple duplicates
+                                for (int i = 1; i <= duplicateCount; i++)
+                                {
+                                    string baseName = $"{originalName} - Copy {i}";
+                                    string newName = GenerateUniqueName(baseName, layoutDict);
+
+                                    ObjectId newLayoutId = CloneLayoutInSameDocument(
+                                        sourceLayoutId, newName, layoutDict, bt, tr);
+
+                                    if (newLayoutId != ObjectId.Null)
+                                    {
+                                        duplicatedCount++;
+                                        ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}'");
+                                    }
+                                }
+                            }
+                            catch (System.Exception ex)
+                            {
+                                ed.WriteMessage($"\nError duplicating layout '{selectedLayout["LayoutName"]}': {ex.Message}");
+                            }
+                        }
+
+                        tr.Commit();
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                string docName = Path.GetFileNameWithoutExtension(targetDoc.Name);
+                ed.WriteMessage($"\nError processing document '{docName}': {ex.Message}");
+            }
+
+            return duplicatedCount;
+        }
+
+        private static int ProcessLayoutsWithCloning(IGrouping<Document, Dictionary<string, object>> docGroup,
+            Document targetDoc, Editor ed, int duplicateCount)
         {
             int duplicatedCount = 0;
             Database targetDb = targetDoc.Database;
@@ -221,31 +455,37 @@ namespace AutoCADBallet
                                 ObjectId sourceLayoutId = (ObjectId)selectedLayout["ObjectId"];
                                 Document sourceDoc = selectedLayout["DocumentObject"] as Document;
 
-                                // Generate unique name
-                                string newName = GenerateUniqueName(originalName + " - Copy", layoutDict);
-
-                                if (sourceDoc == targetDoc)
+                                // Create multiple duplicates
+                                for (int i = 1; i <= duplicateCount; i++)
                                 {
-                                    // Same document - clone within same transaction
-                                    ObjectId newLayoutId = CloneLayoutInSameDocument(
-                                        sourceLayoutId, newName, layoutDict, bt, tr);
+                                    string baseName = $"{originalName} - Copy {i}";
+                                    string newName = GenerateUniqueName(baseName, layoutDict);
 
-                                    if (newLayoutId != ObjectId.Null)
+                                    ObjectId newLayoutId;
+                                    if (sourceDoc == targetDoc)
                                     {
-                                        duplicatedCount++;
-                                        ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}'");
+                                        // Same document - clone within same transaction
+                                        newLayoutId = CloneLayoutInSameDocument(
+                                            sourceLayoutId, newName, layoutDict, bt, tr);
                                     }
-                                }
-                                else
-                                {
-                                    // Cross-document - need to handle with separate transaction
-                                    ObjectId newLayoutId = CloneLayoutCrossDocument(
-                                        sourceDoc, sourceLayoutId, targetDoc, newName, tr);
+                                    else
+                                    {
+                                        // Cross-document - need to handle with separate transaction
+                                        newLayoutId = CloneLayoutCrossDocument(
+                                            sourceDoc, sourceLayoutId, targetDoc, newName, tr);
+                                    }
 
                                     if (newLayoutId != ObjectId.Null)
                                     {
                                         duplicatedCount++;
-                                        ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}' from '{Path.GetFileNameWithoutExtension(sourceDoc.Name)}'");
+                                        if (sourceDoc == targetDoc)
+                                        {
+                                            ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}'");
+                                        }
+                                        else
+                                        {
+                                            ed.WriteMessage($"\nDuplicated layout '{originalName}' as '{newName}' from '{Path.GetFileNameWithoutExtension(sourceDoc.Name)}'");
+                                        }
                                     }
                                 }
                             }
@@ -268,7 +508,7 @@ namespace AutoCADBallet
             return duplicatedCount;
         }
 
-        private ObjectId CloneLayoutInSameDocument(ObjectId sourceLayoutId, string newName, 
+        private static ObjectId CloneLayoutInSameDocument(ObjectId sourceLayoutId, string newName,
             DBDictionary layoutDict, BlockTable bt, Transaction tr)
         {
             try
@@ -281,7 +521,7 @@ namespace AutoCADBallet
                 // Create new block table record for the new layout's paper space
                 BlockTableRecord newBtr = new BlockTableRecord();
                 newBtr.Name = "*Paper_Space" + GetNextPaperSpaceIndex(bt, tr);
-                
+
                 ObjectId newBtrId = bt.Add(newBtr);
                 tr.AddNewlyCreatedDBObject(newBtr, true);
 
@@ -305,7 +545,7 @@ namespace AutoCADBallet
 
                 // Copy properties from source layout using CopyFrom method
                 newLayout.CopyFrom(sourceLayout);
-                
+
                 // Ensure the layout name and BTR link survive CopyFrom
                 newLayout.LayoutName = newName;
                 newLayout.BlockTableRecordId = newBtrId;
@@ -332,7 +572,7 @@ namespace AutoCADBallet
             }
         }
 
-        private ObjectId CloneLayoutCrossDocument(Document sourceDoc, ObjectId sourceLayoutId, 
+        private static ObjectId CloneLayoutCrossDocument(Document sourceDoc, ObjectId sourceLayoutId,
             Document targetDoc, string newName, Transaction targetTr)
         {
             try
@@ -347,18 +587,18 @@ namespace AutoCADBallet
                         Layout sourceLayout = sourceTr.GetObject(sourceLayoutId, OpenMode.ForRead) as Layout;
                         if (sourceLayout == null) return ObjectId.Null;
 
-                        BlockTableRecord sourceBtr = sourceTr.GetObject(sourceLayout.BlockTableRecordId, 
+                        BlockTableRecord sourceBtr = sourceTr.GetObject(sourceLayout.BlockTableRecordId,
                             OpenMode.ForRead) as BlockTableRecord;
 
                         // Get target database objects
-                        DBDictionary layoutDict = targetTr.GetObject(targetDb.LayoutDictionaryId, 
+                        DBDictionary layoutDict = targetTr.GetObject(targetDb.LayoutDictionaryId,
                             OpenMode.ForWrite) as DBDictionary;
                         BlockTable bt = targetTr.GetObject(targetDb.BlockTableId, OpenMode.ForWrite) as BlockTable;
 
                         // Create new block table record for the new layout's paper space
                         BlockTableRecord newBtr = new BlockTableRecord();
                         newBtr.Name = "*Paper_Space" + GetNextPaperSpaceIndex(bt, targetTr);
-                        
+
                         ObjectId newBtrId = bt.Add(newBtr);
                         targetTr.AddNewlyCreatedDBObject(newBtr, true);
 
@@ -372,7 +612,7 @@ namespace AutoCADBallet
                         if (entityIds.Count > 0)
                         {
                             IdMapping idMap = new IdMapping();
-                            sourceDb.WblockCloneObjects(entityIds, newBtrId, idMap, 
+                            sourceDb.WblockCloneObjects(entityIds, newBtrId, idMap,
                                 DuplicateRecordCloning.Replace, false);
                         }
 
@@ -406,7 +646,7 @@ namespace AutoCADBallet
             }
         }
 
-        private void CopyPlotSettings(Layout source, Layout target, Database targetDb)
+        private static void CopyPlotSettings(Layout source, Layout target, Database targetDb)
         {
             try
             {
@@ -429,7 +669,7 @@ namespace AutoCADBallet
                     {
                         if (!string.IsNullOrEmpty(source.PlotConfigurationName))
                         {
-                            psv.SetPlotConfigurationName(target, source.PlotConfigurationName, 
+                            psv.SetPlotConfigurationName(target, source.PlotConfigurationName,
                                 source.CanonicalMediaName);
                         }
                     }
@@ -439,7 +679,7 @@ namespace AutoCADBallet
                     try
                     {
                         psv.SetPlotType(target, source.PlotType);
-                        
+
                         if (source.PlotType == Autodesk.AutoCAD.DatabaseServices.PlotType.Window)
                         {
                             psv.SetPlotWindowArea(target, source.PlotWindowArea);
@@ -499,7 +739,7 @@ namespace AutoCADBallet
             }
         }
 
-        private void CopyViewports(BlockTableRecord sourceBtr, BlockTableRecord targetBtr, Transaction tr)
+        private static void CopyViewports(BlockTableRecord sourceBtr, BlockTableRecord targetBtr, Transaction tr)
         {
             try
             {
@@ -530,9 +770,9 @@ namespace AutoCADBallet
                 {
                     Viewport sourceVp = sourceViewports[i];
                     Viewport targetVp = targetViewports[i];
-                    
+
                     targetVp.UpgradeOpen();
-                    
+
                     // Copy viewport properties
                     targetVp.ViewCenter = sourceVp.ViewCenter;
                     targetVp.ViewHeight = sourceVp.ViewHeight;
@@ -541,14 +781,14 @@ namespace AutoCADBallet
                     targetVp.TwistAngle = sourceVp.TwistAngle;
                     targetVp.Locked = sourceVp.Locked;
                     targetVp.On = sourceVp.On;
-                    
+
                     if (!sourceVp.NonRectClipOn)
                     {
                         targetVp.Width = sourceVp.Width;
                         targetVp.Height = sourceVp.Height;
                         targetVp.CenterPoint = sourceVp.CenterPoint;
                     }
-                    
+
                     // Copy frozen layers in viewport
                     try
                     {
@@ -571,7 +811,7 @@ namespace AutoCADBallet
             }
         }
 
-        private string GenerateUniqueName(string baseName, DBDictionary layoutDict)
+        private static string GenerateUniqueName(string baseName, DBDictionary layoutDict)
         {
             string newName = baseName;
             int counter = 1;
@@ -585,21 +825,21 @@ namespace AutoCADBallet
             return newName;
         }
 
-        private string GetNextPaperSpaceIndex(BlockTable bt, Transaction tr)
+        private static string GetNextPaperSpaceIndex(BlockTable bt, Transaction tr)
         {
             int index = 0;
             string baseName = "*Paper_Space";
-            
+
             // Find the next available index
             while (bt.Has(baseName + index))
             {
                 index++;
             }
-            
+
             return index.ToString();
         }
 
-        private void AdjustTabOrders(DBDictionary layoutDict, int originalTabOrder, 
+        private static void AdjustTabOrders(DBDictionary layoutDict, int originalTabOrder,
             Layout newLayout, Transaction tr)
         {
             int targetTabOrder = originalTabOrder + 1;
