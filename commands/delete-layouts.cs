@@ -47,7 +47,6 @@ namespace AutoCADBallet
                                 allLayouts.Add(new Dictionary<string, object>
                                 {
                                     ["layout"] = layout.LayoutName,
-                                    ["tab order"] = layout.TabOrder,
                                     ["LayoutName"] = layout.LayoutName,
                                     ["TabOrder"] = layout.TabOrder,
                                     ["IsActive"] = isCurrentView,
@@ -89,7 +88,7 @@ namespace AutoCADBallet
             // Update currentViewIndex after sorting
             currentViewIndex = allLayouts.FindIndex(v => (bool)v["IsActive"]);
 
-            var propertyNames = new List<string> { "layout", "tab order" };
+            var propertyNames = new List<string> { "layout" };
             var initialSelectionIndices = new List<int>();
 
             try
