@@ -92,3 +92,4 @@
 (defun c:lu () (command "layulk") (princ))
 (defun c:hgb () (command "hatchgenerateboundary") (princ))
 (defun c:ug () (command "ungroup") (princ))
+(defun c:xrr () (command "xrefreload") (princ))

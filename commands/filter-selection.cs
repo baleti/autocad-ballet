@@ -1491,6 +1491,12 @@ public abstract class FilterElementsBase
     public abstract bool IncludeProperties { get; }
     public abstract SelectionScope Scope { get; }
 
+    // Virtual method to get command name for search history
+    public virtual string GetCommandName()
+    {
+        return $"filter-selection-in-{Scope.ToString().ToLowerInvariant()}";
+    }
+
     public virtual void Execute()
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
@@ -1574,7 +1580,7 @@ public abstract class FilterElementsBase
             ed.WriteMessage($"[DIAG] Total before DataGrid: {totalTimer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
-            var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
+            var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null, null, false, GetCommandName());
             timer.Stop();
             ed.WriteMessage($"[DIAG] DataGrid display: {timer.ElapsedMilliseconds}ms\n");
 

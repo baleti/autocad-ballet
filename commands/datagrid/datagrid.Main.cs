@@ -32,7 +32,8 @@ public partial class CustomGUIs
         bool spanAllScreens,
         List<int> initialSelectionIndices = null,
         Func<List<Dictionary<string, object>>, bool> onDeleteEntries = null,
-        bool allowCreateFromSearch = false)
+        bool allowCreateFromSearch = false,
+        string commandName = null)
     {
         if (entries == null || propertyNames == null || propertyNames.Count == 0)
             return new List<Dictionary<string, object>>();
@@ -107,8 +108,52 @@ public partial class CustomGUIs
             grid.Columns.Add(column);
         }
 
-        // Search box - keep original appearance
-        TextBox searchBox = new TextBox { Dock = DockStyle.Top };
+        // Search box with dropdown button container
+        Panel searchPanel = new Panel { Dock = DockStyle.Top, Height = 21 };
+
+        TextBox searchBox = new TextBox
+        {
+            Dock = DockStyle.Fill,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        // Dropdown button for search history
+        Button dropdownButton = new Button
+        {
+            Dock = DockStyle.Right,
+            Width = 20,
+            Height = 21,
+            Text = "▾",
+            FlatStyle = FlatStyle.Flat,
+            TabStop = false,
+            Cursor = Cursors.Hand,
+            ForeColor = Color.DimGray,
+            BackColor = Color.White,
+            Font = new Font("Arial", 9, FontStyle.Regular),
+            Margin = new Padding(2, 0, 0, 0)
+        };
+
+        dropdownButton.FlatAppearance.BorderSize = 1;
+        dropdownButton.FlatAppearance.BorderColor = SystemColors.ControlDark;
+
+        // Add tooltip to dropdown button
+        ToolTip dropdownTooltip = new ToolTip();
+        dropdownTooltip.SetToolTip(dropdownButton, "Show search history (F4)");
+
+        // Only show dropdown button if commandName is provided
+        if (!string.IsNullOrWhiteSpace(commandName))
+        {
+            searchPanel.Controls.Add(searchBox);
+            searchPanel.Controls.Add(dropdownButton);
+        }
+        else
+        {
+            // No command name, just use searchBox without button
+            searchBox.Dock = DockStyle.Top;
+        }
+
+        // Track last search text for history recording
+        string lastSearchTextForHistory = "";
 
         // Set up virtual mode cell value handler
         grid.CellValueNeeded += (s, e) =>
@@ -225,6 +270,27 @@ public partial class CustomGUIs
             }
         };
 
+        // Record search query when focus leaves searchBox (user is done typing)
+        searchBox.LostFocus += delegate
+        {
+            if (!string.IsNullOrWhiteSpace(commandName) &&
+                !string.IsNullOrWhiteSpace(searchBox.Text) &&
+                searchBox.Text.Trim() != lastSearchTextForHistory)
+            {
+                SearchQueryHistory.RecordQuery(commandName, searchBox.Text.Trim());
+                lastSearchTextForHistory = searchBox.Text.Trim();
+            }
+        };
+
+        // Dropdown button click - show search history
+        if (!string.IsNullOrWhiteSpace(commandName))
+        {
+            dropdownButton.Click += delegate
+            {
+                ShowSearchHistoryDropdown(searchBox, commandName);
+            };
+        }
+
         // Column header click for sorting
         grid.ColumnHeaderMouseClick += (s, e) =>
         {
@@ -289,7 +355,13 @@ public partial class CustomGUIs
         // Key handling - restore original behavior
         Action<KeyEventArgs, Control> HandleKeyDown = (e, sender) =>
         {
-            if (e.KeyCode == Keys.F2)
+            if (e.KeyCode == Keys.F4 && sender == searchBox && !string.IsNullOrWhiteSpace(commandName))
+            {
+                // Show search history dropdown
+                ShowSearchHistoryDropdown(searchBox, commandName);
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.F2)
             {
                 if (_isEditMode && _selectedEditCells.Count > 0)
                 {
@@ -647,7 +719,14 @@ public partial class CustomGUIs
 
         // Add controls and show
         form.Controls.Add(grid);
-        form.Controls.Add(searchBox);
+        if (!string.IsNullOrWhiteSpace(commandName))
+        {
+            form.Controls.Add(searchPanel);
+        }
+        else
+        {
+            form.Controls.Add(searchBox);
+        }
         searchBox.Select();
         form.ShowDialog();
 
@@ -714,6 +793,98 @@ public partial class CustomGUIs
         }
 
         return result.ToString();
+    }
+
+    private static void ShowSearchHistoryDropdown(TextBox searchBox, string commandName)
+    {
+        // Get search history for this command
+        var history = SearchQueryHistory.GetQueryHistory(commandName);
+
+        if (history.Count == 0)
+        {
+            // No history to show
+            return;
+        }
+
+        // Reverse to show most recent first
+        history.Reverse();
+
+        // Create a ListBox to show history
+        ListBox historyList = new ListBox
+        {
+            Width = searchBox.Width,
+            Height = Math.Min(history.Count * 20 + 4, 200), // Limit height
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = searchBox.Font
+        };
+
+        // Add items to list
+        foreach (string query in history)
+        {
+            historyList.Items.Add(query);
+        }
+
+        // Create a form to host the listbox (acts as dropdown)
+        Form dropdown = new Form
+        {
+            FormBorderStyle = FormBorderStyle.None,
+            StartPosition = FormStartPosition.Manual,
+            ShowInTaskbar = false,
+            TopMost = true,
+            Width = historyList.Width,
+            Height = historyList.Height
+        };
+
+        dropdown.Controls.Add(historyList);
+        historyList.Dock = DockStyle.Fill;
+
+        // Position below search box
+        var searchBoxLocation = searchBox.PointToScreen(new Point(0, searchBox.Height));
+        dropdown.Location = searchBoxLocation;
+
+        // Handle selection
+        historyList.Click += (s, e) =>
+        {
+            if (historyList.SelectedIndex >= 0)
+            {
+                searchBox.Text = historyList.SelectedItem.ToString();
+                searchBox.SelectionStart = searchBox.Text.Length;
+                dropdown.Close();
+                searchBox.Focus();
+            }
+        };
+
+        // Handle keyboard navigation
+        historyList.KeyDown += (s, e) =>
+        {
+            if (e.KeyCode == Keys.Enter && historyList.SelectedIndex >= 0)
+            {
+                searchBox.Text = historyList.SelectedItem.ToString();
+                searchBox.SelectionStart = searchBox.Text.Length;
+                dropdown.Close();
+                searchBox.Focus();
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                dropdown.Close();
+                searchBox.Focus();
+                e.Handled = true;
+            }
+        };
+
+        // Close when focus is lost
+        dropdown.Deactivate += (s, e) => dropdown.Close();
+
+        // Select first item by default
+        if (historyList.Items.Count > 0)
+        {
+            historyList.SelectedIndex = 0;
+        }
+
+        // Show dropdown
+        dropdown.Show();
+        historyList.Focus();
     }
 
     private static void CycleScreenExpansion(Form form)

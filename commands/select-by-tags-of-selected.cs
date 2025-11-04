@@ -85,7 +85,7 @@ namespace AutoCADBallet
             ed.WriteMessage($"\nSelect tags to find entities with...\n");
 
             var selectedTags = CustomGUIs.DataGrid(entries, propertyNames, spanAllScreens: false,
-                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false);
+                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false, commandName: "select-by-tags-of-selected-in-view");
 
             if (selectedTags == null || selectedTags.Count == 0)
             {
@@ -232,7 +232,7 @@ namespace AutoCADBallet
             ed.WriteMessage($"\nSelect tags to find entities with...\n");
 
             var selectedTags = CustomGUIs.DataGrid(entries, propertyNames, spanAllScreens: false,
-                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false);
+                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false, commandName: "select-by-tags-of-selected-in-document");
 
             if (selectedTags == null || selectedTags.Count == 0)
             {
@@ -397,7 +397,7 @@ namespace AutoCADBallet
             ed.WriteMessage($"\nSelect tags to find entities with...\n");
 
             var selectedTags = CustomGUIs.DataGrid(entries, propertyNames, spanAllScreens: false,
-                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false);
+                initialSelectionIndices: null, onDeleteEntries: null, allowCreateFromSearch: false, commandName: "select-by-tags-of-selected-in-session");
 
             if (selectedTags == null || selectedTags.Count == 0)
             {
