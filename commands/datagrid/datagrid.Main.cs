@@ -66,7 +66,7 @@ public partial class CustomGUIs
         Form form = new Form
         {
             StartPosition = FormStartPosition.CenterScreen,
-            Text = "Total Entries: " + entries.Count,
+            Text = "Selected: 0, Filtered: " + entries.Count + ", Total: " + entries.Count,
             BackColor = Color.White,
             ShowIcon = false
         };
@@ -181,6 +181,16 @@ public partial class CustomGUIs
             return -1;
         };
 
+        // Helper to update form title
+        Action UpdateFormTitle = () =>
+        {
+            int selectedCount = grid.SelectedRows.Count;
+            int filteredCount = workingSet.Count;
+            int totalCount = entries.Count;
+            string editModeIndicator = _isEditMode ? " [EDIT MODE]" : "";
+            form.Text = "Selected: " + selectedCount + ", Filtered: " + filteredCount + ", Total: " + totalCount + editModeIndicator;
+        };
+
         // Helper to update filtered grid
         Action UpdateFilteredGrid = () =>
         {
@@ -200,7 +210,7 @@ public partial class CustomGUIs
             grid.RowCount = workingSet.Count;
 
             // Update form title
-            form.Text = "Total Entries: " + workingSet.Count + " / " + entries.Count;
+            UpdateFormTitle();
 
             // Auto-resize columns and form width only on initial load
             if (!_initialSizingDone)
@@ -378,8 +388,7 @@ public partial class CustomGUIs
                     var doc = AcadApp.DocumentManager.MdiActiveDocument;
                     var ed = doc.Editor;
                     ed.WriteMessage($"\nToggled edit mode. Now in {(_isEditMode ? "EDIT" : "NORMAL")} mode");
-                    form.Text = "Total Entries: " + workingSet.Count + " / " + entries.Count +
-                               (_isEditMode ? " [EDIT MODE]" : "");
+                    UpdateFormTitle();
                 }
                 e.Handled = true;
             }
@@ -392,7 +401,7 @@ public partial class CustomGUIs
                     var doc = AcadApp.DocumentManager.MdiActiveDocument;
                     var ed = doc.Editor;
                     ed.WriteMessage($"\nExited edit mode. Now in NORMAL mode");
-                    form.Text = "Total Entries: " + workingSet.Count + " / " + entries.Count;
+                    UpdateFormTitle();
                     e.Handled = true;
                 }
                 else
@@ -660,6 +669,9 @@ public partial class CustomGUIs
                     }
                 }
             }
+
+            // Update title to reflect current selection count
+            UpdateFormTitle();
         };
 
         // Handle mouse clicks to set selection anchor in edit mode
