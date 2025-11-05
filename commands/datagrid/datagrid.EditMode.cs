@@ -92,6 +92,7 @@ public partial class CustomGUIs
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             grid.MultiSelect = true;
             _selectedEditCells.Clear();
+            _selectionAnchor = null;
             UpdateColumnEditableStyles(grid, false);
         }
         else
@@ -100,7 +101,14 @@ public partial class CustomGUIs
             grid.SelectionMode = DataGridViewSelectionMode.CellSelect;
             grid.MultiSelect = true;
             grid.ClearSelection();
+            _selectionAnchor = null; // Reset anchor when entering edit mode
             UpdateColumnEditableStyles(grid, true);
+
+            // Set initial anchor to current cell if one exists
+            if (grid.CurrentCell != null && IsColumnEditable(grid.Columns[grid.CurrentCell.ColumnIndex].Name))
+            {
+                _selectionAnchor = grid.CurrentCell;
+            }
         }
     }
 
@@ -368,6 +376,7 @@ public partial class CustomGUIs
             {
                 grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
                 grid.Rows[newRow].Cells[newCol].Selected = true;
+                // Reset anchor when moving without Shift (Excel behavior)
                 _selectionAnchor = grid.Rows[newRow].Cells[newCol];
             }
             catch (System.Exception) { }
@@ -394,15 +403,25 @@ public partial class CustomGUIs
             {
                 if (isShiftKey)
                 {
+                    // Excel-like Shift+Arrow: Keep anchor fixed, extend/shrink selection to new position
                     if (_selectionAnchor == null) _selectionAnchor = grid.CurrentCell;
+
+                    // Important: Set CurrentCell FIRST before clearing selection
+                    // This prevents the CurrentCell from being automatically reset
+                    grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
+
+                    // Now clear and rebuild selection
                     grid.ClearSelection();
                     SelectRectangularArea(grid, _selectionAnchor.RowIndex, _selectionAnchor.ColumnIndex, newRow, newCol);
-                    grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
+
+                    // Don't update anchor - it stays fixed during Shift+Arrow operations
                 }
                 else
                 {
+                    // Ctrl+Arrow (original multi-select behavior): Add to selection without anchor
                     grid.Rows[newRow].Cells[newCol].Selected = true;
                     grid.CurrentCell = grid.Rows[newRow].Cells[newCol];
+                    _selectionAnchor = grid.Rows[newRow].Cells[newCol];
                 }
             }
             catch (System.Exception) { }

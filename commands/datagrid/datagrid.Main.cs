@@ -161,7 +161,8 @@ public partial class CustomGUIs
             StartPosition = FormStartPosition.CenterScreen,
             Text = "Selected: 0, Filtered: " + entries.Count + ", Total: " + entries.Count,
             BackColor = Color.White,
-            ShowIcon = false
+            ShowIcon = false,
+            KeyPreview = true  // Allow form to intercept keys before controls
         };
 
         // Create DataGridView with virtual mode
@@ -178,7 +179,8 @@ public partial class CustomGUIs
             BackgroundColor = Color.White,
             RowTemplate = { Height = 18 },
             VirtualMode = true,
-            ScrollBars = ScrollBars.Both
+            ScrollBars = ScrollBars.Both,
+            StandardTab = true  // Allow Tab key to be handled by form instead of DataGridView
         };
 
         // Disable built-in sorting
@@ -745,8 +747,33 @@ public partial class CustomGUIs
             }
         };
 
+        // PreviewKeyDown to mark arrow keys as input keys in edit mode
+        grid.PreviewKeyDown += (s, e) =>
+        {
+            if (_isEditMode && e.Shift && (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.Left || e.KeyCode == Keys.Right))
+            {
+                e.IsInputKey = true;  // Mark as input key so it reaches KeyDown handler
+            }
+        };
+
         grid.KeyDown += (s, e) => HandleKeyDown(e, grid);
         searchBox.KeyDown += (s, e) => HandleKeyDown(e, searchBox);
+
+        // Form-level key handling to intercept Shift+Arrow in edit mode before DataGridView processes it
+        form.KeyDown += (s, e) =>
+        {
+            // Only handle when grid has focus and we're in edit mode
+            if (_isEditMode && grid.Focused && grid.CurrentCell != null)
+            {
+                if ((e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.Left || e.KeyCode == Keys.Right) && e.Shift)
+                {
+                    // Shift+Arrow: Extend selection (Excel-like)
+                    ExtendSelectionWithArrows(grid, e.KeyCode, true);
+                    e.Handled = true;
+                    e.SuppressKeyPress = true;  // Prevent further processing
+                }
+            }
+        };
 
         // Handle cell selection changes in edit mode
         grid.SelectionChanged += (s, e) =>
