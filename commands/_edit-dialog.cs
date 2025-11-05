@@ -364,7 +364,8 @@ namespace AutoCADCommands
             if (_originalValues.Count <= 1 || _originalValues.All(v => v == _originalValues[0]))
             {
                 // All values are the same, replace {} with the actual value
-                string actualValue = _originalValues.Count > 0 ? EscapeForDisplay(_originalValues[0]) : "";
+                // Don't escape - use the value as-is so MText codes remain intact
+                string actualValue = _originalValues.Count > 0 ? _originalValues[0] : "";
                 _txtPattern.Text = _txtPattern.Text.Replace("{}", actualValue);
 
                 // Set focus to pattern field since it's first in the list
@@ -553,7 +554,7 @@ namespace AutoCADCommands
                 return text;
 
             // If text contains AutoCAD MText formatting codes, don't escape - show as-is
-            if (text.Contains("\\P") || text.Contains("\\p"))
+            if (IsMTextFormatted(text))
                 return text;
 
             // If text looks like a file path (contains drive letter or UNC path or relative path), don't escape backslashes
@@ -566,6 +567,35 @@ namespace AutoCADCommands
                 .Replace("\n", "\\n")   // Then convert remaining \n
                 .Replace("\r", "\\n")   // Convert standalone \r to \n
                 .Replace("\t", "\\t");
+        }
+
+        /// <summary>
+        /// Check if the text contains AutoCAD MText formatting codes
+        /// MText codes start with backslash followed by a letter or special character
+        /// Common codes: \P (paragraph), \f (font), \H (height), \W (width factor), \C (color), etc.
+        /// </summary>
+        private static bool IsMTextFormatted(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return false;
+
+            // Check for common MText formatting codes
+            // Pattern: backslash followed by a letter (case-insensitive) or special characters
+            // Common codes: \P, \p, \f, \F, \H, \h, \W, \w, \C, \c, \T, \t, \Q, \q, \A, \a, \L, \l, \O, \o, \K, \k, \S, \s, \~, \\, \{, \}
+            for (int i = 0; i < text.Length - 1; i++)
+            {
+                if (text[i] == '\\')
+                {
+                    char nextChar = text[i + 1];
+                    // Check if it's a valid MText formatting code
+                    if (char.IsLetter(nextChar) || nextChar == '~' || nextChar == '\\' || nextChar == '{' || nextChar == '}')
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -616,7 +646,7 @@ namespace AutoCADCommands
                 return text;
 
             // If text contains AutoCAD MText formatting codes, don't unescape - use as-is
-            if (text.Contains("\\P") || text.Contains("\\p"))
+            if (IsMTextFormatted(text))
                 return text;
 
             // If text looks like a file path, don't unescape - use as-is
