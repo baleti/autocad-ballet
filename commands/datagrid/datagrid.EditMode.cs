@@ -49,6 +49,7 @@ public partial class CustomGUIs
         {
             case "name":
             case "contents":
+            case "value":
             case "layer":
             case "color":
             case "linetype":
