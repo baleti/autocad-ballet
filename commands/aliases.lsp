@@ -33,7 +33,7 @@
 (defun c:etv () (command "edit-selected-text-in-view") (princ))
 (defun c:ets () (command "edit-selected-text-in-session") (princ))
 (defun c:zs () (c:zoom-selected))
-(defun c:saf () (c:save-all-force))
+(defun c:saf () (command "save-all-force"))
 (defun c:wc () (command "close" "y") (princ))
 (defun c:wcc () (command "kill-current-process"))
 (defun c:ih () (command "isolate-hide-on-new-layer") (princ))

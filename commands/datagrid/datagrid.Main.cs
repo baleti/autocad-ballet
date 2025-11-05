@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using System.IO;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -21,6 +23,91 @@ public partial class CustomGUIs
     //  DataGrid sizing state tracking
     // ──────────────────────────────────────────────────────────────
     private static bool _initialSizingDone = false;
+
+    // ──────────────────────────────────────────────────────────────
+    //  Command name inference from call stack
+    // ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Infers the AutoCAD command name from the call stack by looking for methods
+    /// with [CommandMethod] attributes or recognizable command patterns.
+    /// </summary>
+    private static string InferCommandNameFromCallStack()
+    {
+        try
+        {
+            var stackTrace = new StackTrace();
+            var frames = stackTrace.GetFrames();
+
+            if (frames == null) return null;
+
+            // Look through the call stack for methods that look like AutoCAD commands
+            for (int i = 0; i < frames.Length; i++)
+            {
+                var method = frames[i].GetMethod();
+                if (method == null) continue;
+
+                var declaringType = method.DeclaringType;
+                if (declaringType == null) continue;
+
+                // Skip our own DataGrid-related methods
+                if (declaringType.Name == "CustomGUIs" ||
+                    declaringType.Name.Contains("DataGrid"))
+                    continue;
+
+                // Look for methods that might be AutoCAD commands:
+                // 1. Class names ending with "Command"
+                // 2. Method names matching common command patterns
+                // 3. Namespace AutoCADBallet
+
+                if (declaringType.Namespace == "AutoCADBallet" ||
+                    declaringType.Name.EndsWith("Command") ||
+                    method.Name.Contains("Execute"))
+                {
+                    // Try to extract command name from class name first
+                    string className = declaringType.Name;
+
+                    // Remove "Command" suffix if present
+                    if (className.EndsWith("Command"))
+                    {
+                        className = className.Substring(0, className.Length - "Command".Length);
+                    }
+
+                    // Convert PascalCase to kebab-case
+                    string commandName = ConvertToKebabCase(className);
+
+                    // If we got a reasonable command name, return it
+                    if (!string.IsNullOrWhiteSpace(commandName) &&
+                        commandName.Length > 2 &&
+                        commandName != "custom-gu-is")
+                    {
+                        return commandName;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // If stack trace inspection fails, silently return null
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Converts PascalCase to kebab-case (e.g., "SwitchView" -> "switch-view")
+    /// </summary>
+    private static string ConvertToKebabCase(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return input;
+
+        // Insert hyphen before uppercase letters (except first character)
+        var kebabCase = Regex.Replace(input, "(?<!^)([A-Z])", "-$1");
+
+        // Convert to lowercase
+        return kebabCase.ToLower();
+    }
 
     // ──────────────────────────────────────────────────────────────
     //  Main DataGrid Method
@@ -41,6 +128,12 @@ public partial class CustomGUIs
         // Allow empty entries when allowCreateFromSearch is enabled (user can type new values)
         if (entries.Count == 0 && !allowCreateFromSearch)
             return new List<Dictionary<string, object>>();
+
+        // Auto-infer command name from call stack if not provided
+        if (string.IsNullOrWhiteSpace(commandName))
+        {
+            commandName = InferCommandNameFromCallStack();
+        }
 
         // Clear any previous cached data
         _cachedOriginalData = entries;
