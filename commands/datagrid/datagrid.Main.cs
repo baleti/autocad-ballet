@@ -466,6 +466,12 @@ public partial class CustomGUIs
                 ShowSearchHistoryDropdown(searchBox, commandName);
                 e.Handled = true;
             }
+            else if (e.KeyCode == Keys.V && e.Control && _isEditMode && sender == grid)
+            {
+                // Ctrl+V in edit mode: Paste clipboard values into selected cells
+                HandleClipboardPaste(grid);
+                e.Handled = true;
+            }
             else if (e.KeyCode == Keys.F2)
             {
                 if (_isEditMode && _selectedEditCells.Count > 0)

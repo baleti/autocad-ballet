@@ -48,6 +48,7 @@ public partial class CustomGUIs
         switch (lowerName)
         {
             case "name":
+            case "dynamicblockname":
             case "contents":
             case "value":
             case "layer":
@@ -221,6 +222,17 @@ public partial class CustomGUIs
                     if (newValue != originalValue)
                     {
                         string columnName = grid.Columns[cell.ColumnIndex].Name;
+
+                        // Validate DynamicBlockName edits before applying
+                        if (columnName.Equals("DynamicBlockName", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!ValidateDynamicBlockNameEdit(newValue, originalValue, dataRow, ed))
+                            {
+                                // Validation failed, skip this edit
+                                continue;
+                            }
+                        }
+
                         string cellKey = GetCellKey(cell.RowIndex, columnName);
                         ed.WriteMessage($"\nCell [{cell.RowIndex}, {columnName}]: '{originalValue}' → '{newValue}'");
                         _pendingCellEdits[cellKey] = newValue;
@@ -470,6 +482,175 @@ public partial class CustomGUIs
 
     public static void SetSelectionAnchor(DataGridViewCell cell) => _selectionAnchor = cell;
 
+    /// <summary>Handle clipboard paste (Ctrl+V) in edit mode - supports multi-cell paste</summary>
+    private static void HandleClipboardPaste(DataGridView grid)
+    {
+        if (!_isEditMode || grid.CurrentCell == null)
+            return;
+
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+
+        try
+        {
+            // Get clipboard text
+            if (!Clipboard.ContainsText())
+            {
+                ed.WriteMessage("\nClipboard does not contain text data.");
+                return;
+            }
+
+            string clipboardText = Clipboard.GetText();
+            if (string.IsNullOrEmpty(clipboardText))
+            {
+                ed.WriteMessage("\nClipboard is empty.");
+                return;
+            }
+
+            // Parse clipboard data into 2D array (tab-separated columns, newline-separated rows)
+            var rows = clipboardText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            var clipboardData = new List<List<string>>();
+
+            foreach (var row in rows)
+            {
+                if (string.IsNullOrEmpty(row) && clipboardData.Count > 0)
+                    continue; // Skip trailing empty lines
+
+                var columns = row.Split('\t');
+                clipboardData.Add(new List<string>(columns));
+            }
+
+            if (clipboardData.Count == 0)
+            {
+                ed.WriteMessage("\nNo data to paste.");
+                return;
+            }
+
+            // Check if clipboard contains a single value (1 row, 1 column)
+            bool isSingleValue = clipboardData.Count == 1 && clipboardData[0].Count == 1;
+
+            int pastedCells = 0;
+            int skippedCells = 0;
+
+            // Special case: Single value pasted to multiple selected cells
+            if (isSingleValue && _selectedEditCells.Count > 1)
+            {
+                string singleValue = clipboardData[0][0];
+
+                // Paste the single value to all selected editable cells
+                foreach (var cell in _selectedEditCells)
+                {
+                    if (!IsColumnEditable(grid.Columns[cell.ColumnIndex].Name))
+                    {
+                        skippedCells++;
+                        continue;
+                    }
+
+                    if (cell.RowIndex < _cachedFilteredData.Count)
+                    {
+                        string columnName = grid.Columns[cell.ColumnIndex].Name;
+                        string cellKey = GetCellKey(cell.RowIndex, columnName);
+                        _pendingCellEdits[cellKey] = singleValue;
+
+                        var entry = _cachedFilteredData[cell.RowIndex];
+                        entry[columnName] = singleValue;
+                        _modifiedEntries.Add(entry);
+
+                        pastedCells++;
+                    }
+                    else
+                    {
+                        skippedCells++;
+                    }
+                }
+            }
+            else
+            {
+                // Multi-cell paste: Use top-left cell of selection as starting point
+                int startRow = grid.CurrentCell.RowIndex;
+                int startCol = grid.CurrentCell.ColumnIndex;
+
+                // If multiple cells are selected, find the top-left cell
+                if (_selectedEditCells.Count > 1)
+                {
+                    startRow = _selectedEditCells.Min(cell => cell.RowIndex);
+                    startCol = _selectedEditCells.Min(cell => cell.ColumnIndex);
+                }
+
+                // Find the first editable column at or after startCol
+                while (startCol < grid.Columns.Count && !IsColumnEditable(grid.Columns[startCol].Name))
+                {
+                    startCol++;
+                }
+
+                if (startCol >= grid.Columns.Count)
+                {
+                    ed.WriteMessage("\nNo editable column found at cursor position.");
+                    return;
+                }
+
+                // Paste data starting from top-left cell
+                for (int clipRow = 0; clipRow < clipboardData.Count; clipRow++)
+                {
+                    int targetRow = startRow + clipRow;
+                    if (targetRow >= grid.Rows.Count)
+                        break; // Don't paste beyond available rows
+
+                    var clipboardRow = clipboardData[clipRow];
+                    int targetCol = startCol;
+
+                    for (int clipCol = 0; clipCol < clipboardRow.Count; clipCol++)
+                    {
+                        // Find next editable column
+                        while (targetCol < grid.Columns.Count && !IsColumnEditable(grid.Columns[targetCol].Name))
+                        {
+                            targetCol++;
+                        }
+
+                        if (targetCol >= grid.Columns.Count)
+                            break; // No more editable columns
+
+                        string columnName = grid.Columns[targetCol].Name;
+                        string newValue = clipboardRow[clipCol];
+
+                        // Apply the paste
+                        if (targetRow < _cachedFilteredData.Count)
+                        {
+                            string cellKey = GetCellKey(targetRow, columnName);
+                            _pendingCellEdits[cellKey] = newValue;
+
+                            var entry = _cachedFilteredData[targetRow];
+                            entry[columnName] = newValue;
+                            _modifiedEntries.Add(entry);
+
+                            pastedCells++;
+                        }
+                        else
+                        {
+                            skippedCells++;
+                        }
+
+                        targetCol++; // Move to next column
+                    }
+                }
+            }
+
+            // Update grid display
+            grid.Invalidate();
+
+            // Report results
+            ed.WriteMessage($"\nPasted {pastedCells} cell(s)");
+            if (skippedCells > 0)
+                ed.WriteMessage($" ({skippedCells} cell(s) skipped - out of range or non-editable)");
+
+            ed.WriteMessage($"\nTotal pending edits: {_pendingCellEdits.Count}");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\nError pasting clipboard data: {ex.Message}");
+        }
+    }
+
     // Integrated rename helpers (used by TransformValue)
     public static class DataRenamerHelper
     {
@@ -538,6 +719,58 @@ public partial class CustomGUIs
             if (!string.IsNullOrEmpty(kv.Key) && kv.Value != null) return kv.Value.ToString();
             return string.Empty;
         }
+    }
+
+    /// <summary>
+    /// Validates DynamicBlockName edits to ensure block exists before allowing the edit.
+    /// Shows warning dialog if block doesn't exist.
+    /// </summary>
+    private static bool ValidateDynamicBlockNameEdit(string newValue, string originalValue, Dictionary<string, object> dataRow, Autodesk.AutoCAD.EditorInput.Editor ed)
+    {
+        if (dataRow == null) return true;
+
+        // Get the entity's category to check if it's a block reference
+        if (!dataRow.TryGetValue("Category", out var categoryObj)) return true;
+        string category = categoryObj?.ToString() ?? "";
+
+        // Only validate for block references
+        if (!category.Contains("Block", StringComparison.OrdinalIgnoreCase)) return true;
+
+        // Check if the new block name exists in the block table
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var db = doc.Database;
+
+        using (var tr = db.TransactionManager.StartTransaction())
+        {
+            var blockTable = (Autodesk.AutoCAD.DatabaseServices.BlockTable)tr.GetObject(db.BlockTableId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+
+            if (!blockTable.Has(newValue))
+            {
+                // Block doesn't exist - show warning dialog
+                tr.Commit();
+
+                System.Windows.Forms.MessageBox.Show(
+                    $"Cannot create new dynamic block '{newValue}'.\n\n" +
+                    $"The DynamicBlockName column only supports swapping to existing block definitions.\n\n" +
+                    $"Current block: {originalValue}\n" +
+                    $"Attempted new name: {newValue}\n\n" +
+                    $"To use this feature:\n" +
+                    $"• Enter the name of an existing block definition in your drawing\n" +
+                    $"• The block reference will swap to that definition\n" +
+                    $"• All matching attributes will be preserved\n\n" +
+                    $"Note: Creating new dynamic blocks requires using the Block Editor in AutoCAD.",
+                    "Dynamic Block Limitation",
+                    System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Warning);
+
+                ed.WriteMessage($"\n  >> Edit rejected: Block '{newValue}' does not exist. Only swapping to existing blocks is supported.");
+                return false;
+            }
+
+            tr.Commit();
+        }
+
+        return true;
     }
 }
 

@@ -76,6 +76,7 @@ public partial class CustomGUIs
         public int RowIndex { get; set; }
         public string ColumnName { get; set; }
         public string NewValue { get; set; }
+        public string OriginalValue { get; set; }  // Store original value before edit
         public Dictionary<string, object> Entry { get; set; }
     }
 
@@ -284,7 +285,6 @@ public partial class CustomGUIs
     {
         var currentDoc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
         var ed = currentDoc.Editor;
-        ed.WriteMessage($"\n  >> ApplyEditToDBObjectInExternalDocument: DBObject={dbObject.GetType().Name}, Column='{columnName}', Value='{newValue}'");
         try
         {
             string lowerColumnName = columnName.ToLowerInvariant();
@@ -359,12 +359,17 @@ public partial class CustomGUIs
                     else if (dbObject is Dimension dimExt) dimExt.DimensionText = newValue;
                     break;
                 case "layout":
-                case "name":
+                    // For Layout entities: rename the layout tab
+                    // For other entities: find and rename the layout that the entity belongs to
                     if (dbObject is Layout layout)
                     {
                         try
                         {
-                            if (string.Equals(layout.LayoutName, "Model", StringComparison.OrdinalIgnoreCase)) return;
+                            if (string.Equals(layout.LayoutName, "Model", StringComparison.OrdinalIgnoreCase))
+                            {
+                                ed.WriteMessage("\n  >> Cannot rename Model layout");
+                                return;
+                            }
                             var layoutDict = (DBDictionary)tr.GetObject(dbObject.Database.LayoutDictionaryId, OpenMode.ForRead);
                             if (layoutDict.Contains(newValue))
                             {
@@ -380,23 +385,83 @@ public partial class CustomGUIs
                             throw;
                         }
                     }
-                    else if (dbObject is MText mtextExt2) mtextExt2.Contents = newValue;
-                    else if (dbObject is DBText textExt2) textExt2.TextString = newValue;
-                    else if (dbObject is BlockReference blockRef)
+                    else if (dbObject is Entity entityForLayoutRename)
                     {
-                        var blockTableRecord = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
-                        if (blockTableRecord != null)
+                        // Rename the layout that this entity belongs to
+                        RenameEntityLayout(entityForLayoutRename, newValue, entry, tr);
+                    }
+                    break;
+                case "name":
+                case "dynamicblockname":
+                    if (dbObject is Layout layout2 && lowerColumnName == "name")
+                    {
+                        try
                         {
-                            var blockTable = (BlockTable)tr.GetObject(dbObject.Database.BlockTableId, OpenMode.ForRead);
-                            if (blockTable.Has(newValue))
+                            if (string.Equals(layout2.LayoutName, "Model", StringComparison.OrdinalIgnoreCase)) return;
+                            var layoutDict = (DBDictionary)tr.GetObject(dbObject.Database.LayoutDictionaryId, OpenMode.ForRead);
+                            if (layoutDict.Contains(newValue))
                             {
                                 int counter = 1; string uniqueName = newValue;
-                                while (blockTable.Has(uniqueName)) uniqueName = $"{newValue}_{counter++}";
+                                while (layoutDict.Contains(uniqueName)) uniqueName = $"{newValue}_{counter++}";
                                 newValue = uniqueName;
                             }
-                            blockTableRecord.Name = newValue;
+                            layout2.LayoutName = newValue;
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+                        {
+                            if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotApplicable) return;
+                            throw;
                         }
                     }
+                    else if (dbObject is MText mtextExt2 && lowerColumnName == "name") mtextExt2.Contents = newValue;
+                    else if (dbObject is DBText textExt2 && lowerColumnName == "name") textExt2.TextString = newValue;
+                    else if (dbObject is BlockReference blockRef)
+                    {
+                        var blockTable = (BlockTable)tr.GetObject(dbObject.Database.BlockTableId, OpenMode.ForRead);
+                        var currentBtr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+
+                        // For dynamic blocks, check the parent block name; for regular blocks, use the current block name
+                        string currentBlockName = currentBtr?.Name ?? "";
+                        if (lowerColumnName == "dynamicblockname" && blockRef.DynamicBlockTableRecord != ObjectId.Null)
+                        {
+                            var dynamicBtr = tr.GetObject(blockRef.DynamicBlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                            currentBlockName = dynamicBtr?.Name ?? "";
+                        }
+
+                        // Check if already using the target block definition (avoid unnecessary swap)
+                        if (!string.IsNullOrEmpty(currentBlockName) && string.Equals(currentBlockName, newValue, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Already using the target block, no action needed
+                            return;
+                        }
+
+                        // Check if the new name matches an existing block definition
+                        if (blockTable.Has(newValue))
+                        {
+                            // Swap to existing block definition and copy matching attributes
+                            SwapBlockReference(blockRef, newValue, tr, ed);
+                        }
+                        else if (lowerColumnName == "name")
+                        {
+                            // For "name" column: rename the current block definition
+                            var blockTableRecord = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
+                            if (blockTableRecord != null)
+                            {
+                                blockTableRecord.Name = newValue;
+                            }
+                        }
+                        else if (lowerColumnName == "dynamicblockname")
+                        {
+                            // For "dynamicblockname" column: this case should not be reached if validation works correctly
+                            // The validation happens earlier in EditMode before pending edits are created
+                            ed.WriteMessage($"\n  >> Unexpected: DynamicBlockName edit reached apply phase for non-existent block '{newValue}'");
+                        }
+                    }
+                    else if (dbObject is LayerTableRecord layerRec && lowerColumnName == "name") layerRec.Name = newValue;
+                    else if (dbObject is TextStyleTableRecord tStyle && lowerColumnName == "name") tStyle.Name = newValue;
+                    else if (dbObject is LinetypeTableRecord ltype && lowerColumnName == "name") ltype.Name = newValue;
+                    else if (dbObject is DimStyleTableRecord dStyle && lowerColumnName == "name") dStyle.Name = newValue;
+                    else if (dbObject is UcsTableRecord ucs && lowerColumnName == "name") ucs.Name = newValue;
                     break;
                 case "papersize":
                 case "plotstyletable":
@@ -435,8 +500,7 @@ public partial class CustomGUIs
         }
         catch (System.Exception ex)
         {
-            ed.WriteMessage($"\n  >> ERROR in ApplyEditToDBObjectInExternalDocument: {ex.Message}");
-            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+            ed.WriteMessage($"\n  >> ERROR: {ex.Message}");
             throw;
         }
     }
@@ -445,7 +509,6 @@ public partial class CustomGUIs
     {
         var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
-        ed.WriteMessage($"\n  >> ApplyEditToDBObject: DBObject={dbObject.GetType().Name}, Column='{columnName}', Value='{newValue}'");
         try
         {
             string lowerColumnName = columnName.ToLowerInvariant();
@@ -529,12 +592,17 @@ public partial class CustomGUIs
                     else if (dbObject is Dimension dimContents) dimContents.DimensionText = newValue;
                     break;
                 case "layout":
-                case "name":
+                    // For Layout entities: rename the layout tab
+                    // For other entities: find and rename the layout that the entity belongs to
                     if (dbObject is Layout layout)
                     {
                         try
                         {
-                            if (string.Equals(layout.LayoutName, "Model", StringComparison.OrdinalIgnoreCase)) return;
+                            if (string.Equals(layout.LayoutName, "Model", StringComparison.OrdinalIgnoreCase))
+                            {
+                                ed.WriteMessage("\n  >> Cannot rename Model layout");
+                                return;
+                            }
                             var layoutDict = (DBDictionary)tr.GetObject(dbObject.Database.LayoutDictionaryId, OpenMode.ForRead);
                             if (layoutDict.Contains(newValue))
                             {
@@ -550,28 +618,83 @@ public partial class CustomGUIs
                             throw;
                         }
                     }
-                    else if (dbObject is MText mtext2) mtext2.Contents = newValue;
-                    else if (dbObject is DBText text2) text2.TextString = newValue;
-                    else if (dbObject is BlockReference br)
+                    else if (dbObject is Entity entityForLayoutRename)
                     {
-                        var btr = tr.GetObject(br.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
-                        if (btr != null)
+                        // Rename the layout that this entity belongs to
+                        RenameEntityLayout(entityForLayoutRename, newValue, entry, tr);
+                    }
+                    break;
+                case "name":
+                case "dynamicblockname":
+                    if (dbObject is Layout layout2 && lowerColumnName == "name")
+                    {
+                        try
                         {
-                            var blockTable = (BlockTable)tr.GetObject(dbObject.Database.BlockTableId, OpenMode.ForRead);
-                            if (blockTable.Has(newValue))
+                            if (string.Equals(layout2.LayoutName, "Model", StringComparison.OrdinalIgnoreCase)) return;
+                            var layoutDict = (DBDictionary)tr.GetObject(dbObject.Database.LayoutDictionaryId, OpenMode.ForRead);
+                            if (layoutDict.Contains(newValue))
                             {
                                 int counter = 1; string uniqueName = newValue;
-                                while (blockTable.Has(uniqueName)) uniqueName = $"{newValue}_{counter++}";
+                                while (layoutDict.Contains(uniqueName)) uniqueName = $"{newValue}_{counter++}";
                                 newValue = uniqueName;
                             }
-                            btr.Name = newValue;
+                            layout2.LayoutName = newValue;
+                        }
+                        catch (Autodesk.AutoCAD.Runtime.Exception acEx)
+                        {
+                            if (acEx.ErrorStatus == Autodesk.AutoCAD.Runtime.ErrorStatus.NotApplicable) return;
+                            throw;
                         }
                     }
-                    else if (dbObject is LayerTableRecord layerRec) layerRec.Name = newValue;
-                    else if (dbObject is TextStyleTableRecord tStyle) tStyle.Name = newValue;
-                    else if (dbObject is LinetypeTableRecord ltype) ltype.Name = newValue;
-                    else if (dbObject is DimStyleTableRecord dStyle) dStyle.Name = newValue;
-                    else if (dbObject is UcsTableRecord ucs) ucs.Name = newValue;
+                    else if (dbObject is MText mtext2 && lowerColumnName == "name") mtext2.Contents = newValue;
+                    else if (dbObject is DBText text2 && lowerColumnName == "name") text2.TextString = newValue;
+                    else if (dbObject is BlockReference br)
+                    {
+                        var blockTable = (BlockTable)tr.GetObject(dbObject.Database.BlockTableId, OpenMode.ForRead);
+                        var currentBtr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+
+                        // For dynamic blocks, check the parent block name; for regular blocks, use the current block name
+                        string currentBlockName = currentBtr?.Name ?? "";
+                        if (lowerColumnName == "dynamicblockname" && br.DynamicBlockTableRecord != ObjectId.Null)
+                        {
+                            var dynamicBtr = tr.GetObject(br.DynamicBlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                            currentBlockName = dynamicBtr?.Name ?? "";
+                        }
+
+                        // Check if already using the target block definition (avoid unnecessary swap)
+                        if (!string.IsNullOrEmpty(currentBlockName) && string.Equals(currentBlockName, newValue, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Already using the target block, no action needed
+                            return;
+                        }
+
+                        // Check if the new name matches an existing block definition
+                        if (blockTable.Has(newValue))
+                        {
+                            // Swap to existing block definition and copy matching attributes
+                            SwapBlockReference(br, newValue, tr, ed);
+                        }
+                        else if (lowerColumnName == "name")
+                        {
+                            // For "name" column: rename the current block definition
+                            var btr = tr.GetObject(br.BlockTableRecord, OpenMode.ForWrite) as BlockTableRecord;
+                            if (btr != null)
+                            {
+                                btr.Name = newValue;
+                            }
+                        }
+                        else if (lowerColumnName == "dynamicblockname")
+                        {
+                            // For "dynamicblockname" column: this case should not be reached if validation works correctly
+                            // The validation happens earlier in EditMode before pending edits are created
+                            ed.WriteMessage($"\n  >> Unexpected: DynamicBlockName edit reached apply phase for non-existent block '{newValue}'");
+                        }
+                    }
+                    else if (dbObject is LayerTableRecord layerRec && lowerColumnName == "name") layerRec.Name = newValue;
+                    else if (dbObject is TextStyleTableRecord tStyle && lowerColumnName == "name") tStyle.Name = newValue;
+                    else if (dbObject is LinetypeTableRecord ltype && lowerColumnName == "name") ltype.Name = newValue;
+                    else if (dbObject is DimStyleTableRecord dStyle && lowerColumnName == "name") dStyle.Name = newValue;
+                    else if (dbObject is UcsTableRecord ucs && lowerColumnName == "name") ucs.Name = newValue;
                     break;
                 case "papersize":
                 case "plotstyletable":
@@ -599,8 +722,7 @@ public partial class CustomGUIs
         }
         catch (System.Exception ex)
         {
-            ed.WriteMessage($"\n  >> ERROR in ApplyEditToDBObject: {ex.Message}");
-            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+            ed.WriteMessage($"\n  >> ERROR: {ex.Message}");
             throw;
         }
     }
@@ -985,6 +1107,263 @@ public partial class CustomGUIs
         {
             ed.WriteMessage($"\n  >> ERROR in ApplyXrefPathEdit: {ex.Message}");
             ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+        }
+    }
+
+    private static void RenameEntityLayout(Entity entity, string newLayoutName, Dictionary<string, object> entry, Transaction tr)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+        var db = entity.Database;
+
+        ed.WriteMessage($"\n  >> RenameEntityLayout: Entity={entity.GetType().Name}, NewLayoutName='{newLayoutName}'");
+
+        try
+        {
+            // Get the ACTUAL current layout name by querying the entity's BlockId
+            // This is more reliable than reading from the entry dictionary which may have been modified
+            string currentLayoutName = "";
+
+            var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+            // Find which layout this entity belongs to by checking its BlockId
+            foreach (DBDictionaryEntry layoutEntry in layoutDict)
+            {
+                var tempLayout = (Layout)tr.GetObject(layoutEntry.Value, OpenMode.ForRead);
+                if (entity.BlockId == tempLayout.BlockTableRecordId)
+                {
+                    currentLayoutName = tempLayout.LayoutName;
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(currentLayoutName))
+            {
+                ed.WriteMessage("\n  >> ERROR: Could not determine current layout name from entity's BlockId");
+                return;
+            }
+
+            ed.WriteMessage($"\n  >> Current layout (from entity BlockId): '{currentLayoutName}'");
+            ed.WriteMessage($"\n  >> New layout name: '{newLayoutName}'");
+
+            // Check if the user is trying to rename to the same name (no-op)
+            if (string.Equals(currentLayoutName, newLayoutName, StringComparison.OrdinalIgnoreCase))
+            {
+                ed.WriteMessage("\n  >> Layout name unchanged, skipping");
+                return;
+            }
+
+            // Cannot rename Model layout
+            if (string.Equals(currentLayoutName, "Model", StringComparison.OrdinalIgnoreCase))
+            {
+                ed.WriteMessage("\n  >> Cannot rename Model layout");
+                return;
+            }
+
+            // Find the layout by name
+            if (!layoutDict.Contains(currentLayoutName))
+            {
+                ed.WriteMessage($"\n  >> ERROR: Layout '{currentLayoutName}' not found in layout dictionary");
+                return;
+            }
+
+            // Get the Layout object
+            var layoutId = layoutDict.GetAt(currentLayoutName);
+            var layout = (Layout)tr.GetObject(layoutId, OpenMode.ForWrite);
+
+            // Check if the new name already exists
+            string finalLayoutName = newLayoutName;
+            if (layoutDict.Contains(newLayoutName))
+            {
+                int counter = 1;
+                string uniqueName = newLayoutName;
+                while (layoutDict.Contains(uniqueName))
+                {
+                    uniqueName = $"{newLayoutName}_{counter++}";
+                }
+                finalLayoutName = uniqueName;
+                ed.WriteMessage($"\n  >> Layout name '{newLayoutName}' already exists, using '{finalLayoutName}' instead");
+            }
+
+            // Rename the layout
+            layout.LayoutName = finalLayoutName;
+            ed.WriteMessage($"\n  >> Successfully renamed layout from '{currentLayoutName}' to '{finalLayoutName}'");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in RenameEntityLayout: {ex.Message}");
+            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+        }
+    }
+
+    private static void MoveEntityToLayout(Entity entity, string layoutName, Transaction tr)
+    {
+        var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
+        var ed = doc.Editor;
+        var db = entity.Database;
+
+        ed.WriteMessage($"\n  >> MoveEntityToLayout: Entity={entity.GetType().Name}, TargetLayout='{layoutName}'");
+
+        try
+        {
+            // Get the layout dictionary
+            var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+            // Check if the target layout exists
+            if (!layoutDict.Contains(layoutName))
+            {
+                ed.WriteMessage($"\n  >> ERROR: Layout '{layoutName}' does not exist");
+                return;
+            }
+
+            // Get the target layout
+            var layoutId = layoutDict.GetAt(layoutName);
+            var targetLayout = (Layout)tr.GetObject(layoutId, OpenMode.ForRead);
+
+            // Get the target layout's block table record
+            var targetBtr = (BlockTableRecord)tr.GetObject(targetLayout.BlockTableRecordId, OpenMode.ForWrite);
+
+            // Get the current block table record that owns this entity
+            var currentBtr = (BlockTableRecord)tr.GetObject(entity.OwnerId, OpenMode.ForWrite);
+
+            // Check if entity is already in the target layout
+            if (entity.OwnerId == targetLayout.BlockTableRecordId)
+            {
+                ed.WriteMessage($"\n  >> Entity is already in layout '{layoutName}'");
+                return;
+            }
+
+            // Clone the entity to the target layout
+            var idCollection = new ObjectIdCollection();
+            idCollection.Add(entity.ObjectId);
+
+            // Use DeepClone to copy the entity to the new layout
+            var idMapping = new IdMapping();
+            currentBtr.Database.DeepCloneObjects(idCollection, targetBtr.ObjectId, idMapping, false);
+
+            // Get the cloned entity's ObjectId
+            IdPair idPair = idMapping[entity.ObjectId];
+            if (idPair.IsCloned)
+            {
+                ed.WriteMessage($"\n  >> Successfully cloned entity to layout '{layoutName}'");
+
+                // Erase the original entity
+                entity.UpgradeOpen();
+                entity.Erase();
+                ed.WriteMessage($"\n  >> Original entity erased");
+            }
+            else
+            {
+                ed.WriteMessage($"\n  >> ERROR: Failed to clone entity to target layout");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in MoveEntityToLayout: {ex.Message}");
+            ed.WriteMessage($"\n  >> Stack trace: {ex.StackTrace}");
+        }
+    }
+
+    private static void SwapBlockReference(BlockReference blockRef, string newBlockName, Transaction tr, Autodesk.AutoCAD.EditorInput.Editor ed)
+    {
+        var db = blockRef.Database;
+
+        try
+        {
+            // Get the block table
+            var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+
+            // Get the new block definition
+            if (!blockTable.Has(newBlockName))
+            {
+                ed.WriteMessage($"\n  >> ERROR: Block '{newBlockName}' not found in block table");
+                return;
+            }
+
+            var newBlockId = blockTable[newBlockName];
+            var newBtr = (BlockTableRecord)tr.GetObject(newBlockId, OpenMode.ForRead);
+
+            // Get old block attributes before swapping
+            var oldAttributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (ObjectId attId in blockRef.AttributeCollection)
+            {
+                var attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
+                if (attRef != null)
+                {
+                    oldAttributes[attRef.Tag] = attRef.TextString;
+                }
+            }
+
+            // Get the old block definition name for logging
+            var oldBtr = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+            string oldBlockName = oldBtr?.Name ?? "Unknown";
+
+            // Upgrade block reference to write mode
+            blockRef.UpgradeOpen();
+
+            // Collect old attribute IDs before changing the block
+            var oldAttributeIds = new List<ObjectId>();
+            foreach (ObjectId attId in blockRef.AttributeCollection)
+            {
+                oldAttributeIds.Add(attId);
+            }
+
+            // Change the block reference to point to the new block definition
+            blockRef.BlockTableRecord = newBlockId;
+
+            // Remove old attributes after changing the block reference
+            foreach (ObjectId attId in oldAttributeIds)
+            {
+                if (!attId.IsErased)
+                {
+                    var attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                    if (attRef != null)
+                    {
+                        attRef.Erase();
+                    }
+                }
+            }
+
+            // Add new attributes from the new block definition
+            int copiedCount = 0;
+            int newCount = 0;
+            foreach (ObjectId defId in newBtr)
+            {
+                var attDef = tr.GetObject(defId, OpenMode.ForRead) as AttributeDefinition;
+                if (attDef != null && !attDef.Constant)
+                {
+                    var attRef = new AttributeReference();
+
+                    // CRITICAL: Set database defaults to associate AttributeReference with correct database
+                    // This prevents eWrongDatabase errors when appending to the block reference
+                    attRef.SetDatabaseDefaults(db);
+
+                    attRef.SetAttributeFromBlock(attDef, blockRef.BlockTransform);
+
+                    // Try to copy value from old attributes if tag matches
+                    if (oldAttributes.TryGetValue(attDef.Tag, out string oldValue))
+                    {
+                        attRef.TextString = oldValue;
+                        copiedCount++;
+                    }
+                    else
+                    {
+                        attRef.TextString = attDef.TextString; // Use default value
+                        newCount++;
+                    }
+
+                    // Add the attribute to the block reference
+                    blockRef.AttributeCollection.AppendAttribute(attRef);
+                    tr.AddNewlyCreatedDBObject(attRef, true);
+                }
+            }
+
+            ed.WriteMessage($"\n  >> Swapped '{oldBlockName}' → '{newBlockName}' ({copiedCount} attrs copied, {newCount} new)");
+        }
+        catch (System.Exception ex)
+        {
+            ed.WriteMessage($"\n  >> ERROR in SwapBlockReference: {ex.Message}");
+            throw;
         }
     }
 }
