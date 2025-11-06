@@ -423,6 +423,15 @@ public static class FilterEntityDataHelper
             // For Layout entities, show the layout name (what appears in AutoCAD tabs)
             entityName = layout.LayoutName;
         }
+        else if (entity is LayerTableRecord layerRecord)
+        {
+            // For Layer entities, show the layer name
+            entityName = layerRecord.Name;
+            // Override the default layer/color/linetype properties with layer-specific values
+            layer = layerRecord.Name;
+            color = layerRecord.Color.ToString();
+            lineType = GetLayerLinetype(layerRecord);
+        }
 
         var data = new Dictionary<string, object>
         {
@@ -511,6 +520,12 @@ public static class FilterEntityDataHelper
         if (entity is Layout layoutEntity)
         {
             AddLayoutPlotSettings(layoutEntity, data);
+        }
+
+        // Add layer-specific properties for Layer entities
+        if (entity is LayerTableRecord layerTableRecord)
+        {
+            AddLayerProperties(layerTableRecord, data);
         }
 
         // Add XData and extension dictionary data
@@ -606,7 +621,11 @@ public static class FilterEntityDataHelper
         // Use the same categorization logic as select-by-categories.cs
         string typeName = entity.GetType().Name;
 
-        if (entity is BlockReference)
+        if (entity is LayerTableRecord)
+            return "Layer";
+        else if (entity is Layout)
+            return "Layout";
+        else if (entity is BlockReference)
         {
             var br = entity as BlockReference;
             using (var tr = br.Database.TransactionManager.StartTransaction())
@@ -1106,6 +1125,117 @@ public static class FilterEntityDataHelper
             data["PlotViewportBorders"] = "";
             data["PlotMargins"] = "";
             data["PlotPaperUnits"] = "";
+        }
+    }
+
+    private static string GetLayerLinetype(LayerTableRecord layer)
+    {
+        try
+        {
+            using (var tr = layer.Database.TransactionManager.StartTransaction())
+            {
+                var linetypeId = layer.LinetypeObjectId;
+                if (linetypeId != ObjectId.Null)
+                {
+                    var linetype = tr.GetObject(linetypeId, OpenMode.ForRead) as LinetypeTableRecord;
+                    if (linetype != null)
+                    {
+                        return linetype.Name;
+                    }
+                }
+                tr.Commit();
+            }
+        }
+        catch
+        {
+            // If we can't read the linetype, return empty string
+        }
+
+        return "";
+    }
+
+    private static void AddLayerProperties(LayerTableRecord layer, Dictionary<string, object> data)
+    {
+        try
+        {
+            // Layer state properties
+            data["IsFrozen"] = layer.IsFrozen.ToString();
+            data["IsLocked"] = layer.IsLocked.ToString();
+            data["IsOff"] = layer.IsOff.ToString();
+            data["IsPlottable"] = layer.IsPlottable.ToString();
+
+            // Lineweight
+            data["LineWeight"] = layer.LineWeight.ToString();
+
+            // Transparency
+            data["Transparency"] = layer.Transparency.ToString();
+
+            // Plot style name (if available)
+            try
+            {
+                data["PlotStyleName"] = layer.PlotStyleName ?? "";
+            }
+            catch
+            {
+                data["PlotStyleName"] = "";
+            }
+
+            // Material (if available)
+            try
+            {
+                if (layer.MaterialId != ObjectId.Null)
+                {
+                    using (var tr = layer.Database.TransactionManager.StartTransaction())
+                    {
+                        var material = tr.GetObject(layer.MaterialId, OpenMode.ForRead) as Material;
+                        if (material != null)
+                        {
+                            data["Material"] = material.Name;
+                        }
+                        else
+                        {
+                            data["Material"] = "";
+                        }
+                        tr.Commit();
+                    }
+                }
+                else
+                {
+                    data["Material"] = "";
+                }
+            }
+            catch
+            {
+                data["Material"] = "";
+            }
+
+            // Description
+            data["Description"] = layer.Description ?? "";
+
+            // ViewportVisibilityDefault
+            data["ViewportVisibilityDefault"] = layer.ViewportVisibilityDefault.ToString();
+
+            // IsInUse (read-only check if layer is used by any entities)
+            data["IsInUse"] = layer.IsUsed.ToString();
+
+            // IsReferenced (for xref layers)
+            data["IsReferenced"] = layer.IsDependent.ToString();
+        }
+        catch
+        {
+            // If we can't read layer properties, add empty values
+            data["IsFrozen"] = "";
+            data["IsLocked"] = "";
+            data["IsOff"] = "";
+            data["IsPlottable"] = "";
+            data["LineWeight"] = "";
+            data["Transparency"] = "";
+            data["PlotStyleName"] = "";
+            data["Material"] = "";
+            data["Description"] = "";
+            data["ViewportVisibilityDefault"] = "";
+            data["IsInUse"] = "";
+            data["IsReferenced"] = "";
         }
     }
 

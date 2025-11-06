@@ -1,0 +1,458 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Windows.Forms;
+using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.DatabaseServices;
+using Autodesk.AutoCAD.EditorInput;
+using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.GraphicsInterface;
+using Autodesk.AutoCAD.Runtime;
+using AcadApp = Autodesk.AutoCAD.ApplicationServices.Core.Application;
+
+[assembly: CommandClass(typeof(AutoCADBallet.OutlineViewports))]
+
+namespace AutoCADBallet
+{
+    public class OutlineViewports
+    {
+        public class ViewportInfo
+        {
+            public string LayoutName { get; set; }
+            public string ViewportHandle { get; set; }
+            public ObjectId ViewportId { get; set; }
+            public Point3d Center { get; set; }
+            public double Width { get; set; }
+            public double Height { get; set; }
+        }
+
+        [CommandMethod("outline-viewports", CommandFlags.Modal)]
+        public void OutlineViewportsCommand()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            // Check if we're NOT in Model Space
+            if (!db.TileMode)
+            {
+                ed.WriteMessage("\nThis command must be run from Model Space (not Paper Space layouts).\n");
+                ed.WriteMessage("Switch to Model tab and run the command again.\n");
+                return;
+            }
+
+            try
+            {
+                // Collect all viewports from all layouts
+                var viewports = CollectAllViewports(db);
+
+                if (viewports.Count == 0)
+                {
+                    ed.WriteMessage("\nNo viewports found in any layouts.\n");
+                    return;
+                }
+
+                // Convert to DataGrid format
+                var gridData = new List<Dictionary<string, object>>();
+                foreach (var vp in viewports)
+                {
+                    gridData.Add(new Dictionary<string, object>
+                    {
+                        ["LayoutName"] = vp.LayoutName,
+                        ["ViewportHandle"] = vp.ViewportHandle,
+                        ["Center"] = $"({vp.Center.X:F2}, {vp.Center.Y:F2})",
+                        ["Width"] = vp.Width,
+                        ["Height"] = vp.Height,
+                        ["ViewportInfo"] = vp // Store the full object for later use
+                    });
+                }
+
+                // Define columns to display
+                var columns = new List<string> { "LayoutName", "ViewportHandle", "Center", "Width", "Height" };
+
+                // Show DataGrid and get user selection
+                var selected = CustomGUIs.DataGrid(gridData, columns, spanAllScreens: false);
+
+                if (selected == null || selected.Count == 0)
+                {
+                    ed.WriteMessage("\nNo viewports selected.\n");
+                    return;
+                }
+
+                // Get document ID for persistent storage
+                var documentId = db.OriginalFileName;
+                if (string.IsNullOrEmpty(documentId))
+                {
+                    documentId = doc.Name;
+                }
+                documentId = Path.GetFileNameWithoutExtension(documentId);
+
+                ed.WriteMessage($"\n[DEBUG] Document ID: {documentId}\n");
+
+                // Load existing groups
+                var existingGroups = TransientGraphicsStorage.LoadGroups(documentId);
+                ed.WriteMessage($"[DEBUG] Loaded {existingGroups.Count} existing groups from storage\n");
+
+                // Track new groups
+                var newGroups = new List<TransientGraphicsGroup>();
+
+                // Outline selected viewports
+                int outlined = 0;
+                foreach (var item in selected)
+                {
+                    var vp = (ViewportInfo)item["ViewportInfo"];
+                    int markerBefore = ViewportTransientManager.Marker;
+
+                    if (OutlineViewport(db, vp))
+                    {
+                        outlined++;
+
+                        // Get the viewport to calculate scale
+                        using (var tr = db.TransactionManager.StartTransaction())
+                        {
+                            var viewport = tr.GetObject(vp.ViewportId, OpenMode.ForRead) as Autodesk.AutoCAD.DatabaseServices.Viewport;
+                            if (viewport != null)
+                            {
+                                var scale = viewport.ViewHeight / viewport.Height;
+                                var scaleText = $"1:{Math.Round(scale, 2)}";
+
+                                // Track which markers were used for this viewport
+                                var markers = new List<int>();
+                                for (int i = markerBefore; i < ViewportTransientManager.Marker; i++)
+                                {
+                                    markers.Add(i);
+                                }
+
+                                // Create description string
+                                var description = $"viewport: {vp.LayoutName}, scale: {scaleText}, marker count: {markers.Count}";
+
+                                newGroups.Add(new TransientGraphicsGroup
+                                {
+                                    Description = description,
+                                    Markers = markers
+                                });
+                            }
+                            tr.Commit();
+                        }
+                    }
+                }
+
+                ed.WriteMessage($"[DEBUG] Created {newGroups.Count} new groups\n");
+
+                // Combine and save all groups
+                var allGroups = existingGroups.Concat(newGroups).ToList();
+                TransientGraphicsStorage.SaveGroups(documentId, allGroups);
+                ed.WriteMessage($"[DEBUG] Saved {allGroups.Count} total groups to storage\n");
+
+                ed.WriteMessage($"\n{outlined} viewport(s) outlined with transient graphics.\n");
+                ed.WriteMessage("Use 'clear-transient-graphics' to selectively remove outlines or 'clear-all-transient-graphics' to remove all.\n");
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nError in outline-viewports: {ex.Message}\n");
+            }
+        }
+
+        private List<ViewportInfo> CollectAllViewports(Database db)
+        {
+            var viewports = new List<ViewportInfo>();
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var layoutDict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+
+                foreach (DBDictionaryEntry entry in layoutDict)
+                {
+                    var layout = (Layout)tr.GetObject(entry.Value, OpenMode.ForRead);
+
+                    // Skip Model Space
+                    if (layout.LayoutName == "Model")
+                        continue;
+
+                    var blockTableRecord = (BlockTableRecord)tr.GetObject(layout.BlockTableRecordId, OpenMode.ForRead);
+
+                    foreach (ObjectId objId in blockTableRecord)
+                    {
+                        var entity = tr.GetObject(objId, OpenMode.ForRead);
+
+                        if (entity is Autodesk.AutoCAD.DatabaseServices.Viewport vp && vp.Number != 1) // Skip the overall viewport (number 1)
+                        {
+                            viewports.Add(new ViewportInfo
+                            {
+                                LayoutName = layout.LayoutName,
+                                ViewportHandle = vp.Handle.ToString(),
+                                ViewportId = objId,
+                                Center = vp.CenterPoint,
+                                Width = vp.Width,
+                                Height = vp.Height
+                            });
+                        }
+                    }
+                }
+
+                tr.Commit();
+            }
+
+            return viewports;
+        }
+
+
+        private bool OutlineViewport(Database db, ViewportInfo vpInfo)
+        {
+            try
+            {
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var viewport = tr.GetObject(vpInfo.ViewportId, OpenMode.ForRead) as Autodesk.AutoCAD.DatabaseServices.Viewport;
+                    if (viewport == null)
+                        return false;
+
+                    // Get viewport boundary in paper space
+                    var boundary = GetViewportBoundary(viewport);
+
+                    // Transform to model space coordinates
+                    var modelSpacePoints = new List<Point3d>();
+                    foreach (var pt in boundary)
+                    {
+                        var transformed = TransformPaperToModel(pt, viewport);
+                        modelSpacePoints.Add(transformed);
+                    }
+
+                    // Create transient graphics entities
+                    var entities = new List<Entity>();
+
+                    // Create polyline outline
+                    using (var polyline = new Autodesk.AutoCAD.DatabaseServices.Polyline())
+                    {
+                        for (int i = 0; i < modelSpacePoints.Count; i++)
+                        {
+                            polyline.AddVertexAt(i, new Point2d(modelSpacePoints[i].X, modelSpacePoints[i].Y), 0, 0, 0);
+                        }
+                        polyline.Closed = true;
+                        polyline.ColorIndex = 1; // Red
+
+                        // Clone the polyline for transient graphics
+                        entities.Add(polyline.Clone() as Entity);
+                    }
+
+                    // Create text labels at top-right corner of viewport bounding box
+                    var minX = modelSpacePoints.Min(p => p.X);
+                    var maxX = modelSpacePoints.Max(p => p.X);
+                    var minY = modelSpacePoints.Min(p => p.Y);
+                    var maxY = modelSpacePoints.Max(p => p.Y);
+                    var boundingWidth = maxX - minX;
+                    var boundingHeight = maxY - minY;
+
+                    // Calculate text height as 5% of the smaller dimension of bounding box
+                    var textHeight = Math.Min(boundingWidth, boundingHeight) * 0.05;
+                    if (textHeight < 1.0) textHeight = 1.0; // Minimum text height
+
+                    // Calculate viewport scale
+                    var scale = viewport.ViewHeight / viewport.Height;
+                    var scaleText = $"1:{Math.Round(scale, 2)}";
+
+                    // Build multi-line text content
+                    var textLines = new List<string>
+                    {
+                        vpInfo.LayoutName,
+                        $"Scale: {scaleText}"
+                    };
+
+                    // Position text to the right of top-right corner, aligned to top
+                    var textStartX = maxX + textHeight * 0.5; // Small offset to the right
+                    var textStartY = maxY - textHeight * 0.6; // Move down to align with outline top
+                    var textStartZ = modelSpacePoints[0].Z;
+
+                    // Create each line of text
+                    for (int i = 0; i < textLines.Count; i++)
+                    {
+                        var linePosition = new Point3d(
+                            textStartX,
+                            textStartY - (i * textHeight * 1.2), // Line spacing: 1.2x text height
+                            textStartZ
+                        );
+
+                        using (var text = new DBText())
+                        {
+                            text.Position = linePosition;
+                            text.TextString = textLines[i];
+                            text.Height = textHeight;
+                            text.ColorIndex = 3; // Green
+                            text.HorizontalMode = TextHorizontalMode.TextLeft;
+                            text.VerticalMode = TextVerticalMode.TextTop;
+                            text.AlignmentPoint = linePosition;
+
+                            entities.Add(text.Clone() as Entity);
+                        }
+                    }
+
+                    // Add transients directly - EXACT pattern from test-transient-clear.cs
+                    foreach (var entity in entities)
+                    {
+                        ViewportTransientManager.TransientMgr.AddTransient(entity, TransientDrawingMode.DirectTopmost, ViewportTransientManager.Marker++, ViewportTransientManager.IntCollection);
+                    }
+
+                    tr.Commit();
+                    return true;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                var ed = AcadApp.DocumentManager.MdiActiveDocument.Editor;
+                ed.WriteMessage($"\nError outlining viewport {vpInfo.LayoutName}: {ex.Message}\n");
+                return false;
+            }
+        }
+
+        private List<Point3d> GetViewportBoundary(Autodesk.AutoCAD.DatabaseServices.Viewport viewport)
+        {
+            var boundary = new List<Point3d>();
+
+            // Check if viewport has a non-rectangular clip boundary
+            // This matches LISP: (cdr (assoc 340 vpt)) - DXF code 340 is the clip entity
+            if (viewport.NonRectClipEntityId != ObjectId.Null)
+            {
+                // Get the clipping boundary polyline
+                using (var tr = viewport.Database.TransactionManager.StartTransaction())
+                {
+                    var clipEntity = tr.GetObject(viewport.NonRectClipEntityId, OpenMode.ForRead);
+
+                    if (clipEntity is Autodesk.AutoCAD.DatabaseServices.Polyline pline)
+                    {
+                        // Extract vertices from the polyline
+                        for (int i = 0; i < pline.NumberOfVertices; i++)
+                        {
+                            var point2d = pline.GetPoint2dAt(i);
+                            boundary.Add(new Point3d(point2d.X, point2d.Y, 0));
+                        }
+                    }
+                    else if (clipEntity is Polyline2d pline2d)
+                    {
+                        // Handle 2D polyline (old-style)
+                        foreach (ObjectId vertexId in pline2d)
+                        {
+                            var vertex = tr.GetObject(vertexId, OpenMode.ForRead) as Vertex2d;
+                            if (vertex != null)
+                            {
+                                var pos = vertex.Position;
+                                boundary.Add(new Point3d(pos.X, pos.Y, 0));
+                            }
+                        }
+                    }
+
+                    tr.Commit();
+                }
+            }
+
+            // If no clip boundary or failed to get vertices, use rectangular boundary
+            if (boundary.Count == 0)
+            {
+                var center = viewport.CenterPoint;
+                var halfWidth = viewport.Width / 2.0;
+                var halfHeight = viewport.Height / 2.0;
+
+                // Create rectangle corners in paper space
+                boundary.Add(new Point3d(center.X - halfWidth, center.Y - halfHeight, 0));
+                boundary.Add(new Point3d(center.X + halfWidth, center.Y - halfHeight, 0));
+                boundary.Add(new Point3d(center.X + halfWidth, center.Y + halfHeight, 0));
+                boundary.Add(new Point3d(center.X - halfWidth, center.Y + halfHeight, 0));
+            }
+
+            return boundary;
+        }
+
+        private Point3d TransformPaperToModel(Point3d paperPoint, Autodesk.AutoCAD.DatabaseServices.Viewport viewport)
+        {
+            // This is a direct port of the LISP PCS2WCS function
+            // Translates PCS (Paper Coordinate System) point to WCS (World Coordinate System)
+
+            // Get DXF properties from viewport
+            var vpCenter = viewport.CenterPoint;           // DXF 10 - viewport center in paper space
+            var viewCenter = viewport.ViewCenter;          // DXF 12 - view center (2D in DCS)
+            var viewTarget = viewport.ViewTarget;          // DXF 17 - view target (3D in WCS)
+            var viewNormal = viewport.ViewDirection;       // DXF 16 - view direction normal
+            var viewHeight = viewport.ViewHeight;          // DXF 45 - view height
+            var vpHeight = viewport.Height;                // DXF 41 - viewport height
+            var twistAngle = viewport.TwistAngle;          // DXF 51 - twist angle
+
+            // Calculate scale (from LISP: scl (/ (cdr (assoc 45 enx)) (cdr (assoc 41 enx))))
+            double scale = viewHeight / vpHeight;
+
+            // LISP step 1: (vxs pnt scl) - multiply point by scale
+            double scaledX = paperPoint.X * scale;
+            double scaledY = paperPoint.Y * scale;
+            double scaledZ = paperPoint.Z * scale;
+
+            // LISP step 2: (vxs (cdr (assoc 10 enx)) (- scl)) - subtract scaled viewport center
+            scaledX -= vpCenter.X * scale;
+            scaledY -= vpCenter.Y * scale;
+            scaledZ -= vpCenter.Z * scale;
+
+            // LISP step 3: Add view center (cdr (assoc 12 enx))
+            scaledX += viewCenter.X;
+            scaledY += viewCenter.Y;
+            // Note: viewCenter is 2D, no Z component to add
+
+            // LISP step 4: Apply rotation matrix for twist angle
+            // ang (- (cdr (assoc 51 enx))) - negative twist angle
+            double angle = -twistAngle;
+            double cosA = Math.Cos(angle);
+            double sinA = Math.Sin(angle);
+
+            // Rotation matrix: [[cos -sin 0], [sin cos 0], [0 0 1]]
+            double rotatedX = scaledX * cosA - scaledY * sinA;
+            double rotatedY = scaledX * sinA + scaledY * cosA;
+            double rotatedZ = scaledZ;
+
+            // LISP step 5: Transform by view normal using matrix multiplication
+            // mat (mxm (trans-identity-to-normal nor) (rotation-matrix ang))
+            // In LISP: (mapcar (function (lambda ( v ) (trans v 0 nor t))) identity-matrix)
+
+            // Create transformation matrix from WCS to DCS based on view normal
+            var normal = viewNormal.GetNormal();
+
+            // Use AutoCAD's trans function equivalent: transform from WCS (0) to view normal coordinate system
+            // This creates the transformation matrix that aligns world axes to the view
+            var xAxisWCS = new Vector3d(1, 0, 0);
+            var yAxisWCS = new Vector3d(0, 1, 0);
+            var zAxisWCS = new Vector3d(0, 0, 1);
+
+            // Transform world axes by view normal (equivalent to LISP trans v 0 nor t)
+            var matrix = Matrix3d.PlaneToWorld(normal);
+            var xAxisDCS = xAxisWCS.TransformBy(matrix);
+            var yAxisDCS = yAxisWCS.TransformBy(matrix);
+            var zAxisDCS = zAxisWCS.TransformBy(matrix);
+
+            // Apply the transformed matrix to rotated point (mxv mat point)
+            var transformedX = rotatedX * xAxisDCS.X + rotatedY * xAxisDCS.Y + rotatedZ * xAxisDCS.Z;
+            var transformedY = rotatedX * yAxisDCS.X + rotatedY * yAxisDCS.Y + rotatedZ * yAxisDCS.Z;
+            var transformedZ = rotatedX * zAxisDCS.X + rotatedY * zAxisDCS.Y + rotatedZ * zAxisDCS.Z;
+
+            // LISP final step: (mapcar '+ transformed-point (cdr (assoc 17 enx)))
+            // Add view target
+            var finalX = transformedX + viewTarget.X;
+            var finalY = transformedY + viewTarget.Y;
+            var finalZ = transformedZ + viewTarget.Z;
+
+            return new Point3d(finalX, finalY, finalZ);
+        }
+
+        private Point3d CalculateCenter(List<Point3d> points)
+        {
+            if (points.Count == 0)
+                return Point3d.Origin;
+
+            double sumX = 0, sumY = 0, sumZ = 0;
+            foreach (var pt in points)
+            {
+                sumX += pt.X;
+                sumY += pt.Y;
+                sumZ += pt.Z;
+            }
+
+            return new Point3d(sumX / points.Count, sumY / points.Count, sumZ / points.Count);
+        }
+
+    }
+}

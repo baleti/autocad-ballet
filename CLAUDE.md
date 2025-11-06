@@ -286,12 +286,101 @@ For detailed usage examples and integration with AI agents, see `AGENTS.md`.
 - This causes "Drawing is busy" errors and prevents documents from closing
 - Example: `(defun c:ww () (command "switch-view") (princ))`
 
-**DataGrid Display Conventions**:
+**DataGrid System** (`commands/datagrid/`):
+AutoCAD Ballet provides a sophisticated, reusable DataGrid UI component for displaying and interacting with tabular data.
+
+*CRITICAL: When instructed to "use datagrid" or "show a datagrid", ALWAYS use the built-in `CustomGUIs.DataGrid()` method - DO NOT create custom Windows Forms DataGridView implementations.*
+
+*Architecture:*
+- Modular implementation split across multiple files:
+  - `datagrid.Main.cs` - Core DataGrid functionality and API
+  - `datagrid.Filtering.cs` - Column filtering and search
+  - `datagrid.Sorting.cs` - Multi-column sorting
+  - `datagrid.Virtualization.cs` - Virtual scrolling for large datasets
+  - `datagrid.EditMode.cs` - In-place cell editing (Excel-like)
+  - `datagrid.EditApply.cs` - Apply edits to AutoCAD entities
+  - `datagrid.CacheIndex.cs` - Search indexing for performance
+  - `datagrid.SearchHistory.cs` - Search query history (F4 dropdown)
+  - `datagrid.Types.cs` - Shared type definitions
+  - `datagrid.Utils.cs` - Utility functions
+
+*API Signature:*
+```csharp
+public static List<Dictionary<string, object>> DataGrid(
+    List<Dictionary<string, object>> entries,        // Data rows
+    List<string> propertyNames,                      // Columns to display
+    bool spanAllScreens,                             // Multi-monitor support
+    List<int> initialSelectionIndices = null,        // Pre-select rows
+    Func<List<Dictionary<string, object>>, bool> onDeleteEntries = null,  // Delete callback
+    bool allowCreateFromSearch = false,              // Allow creating new items from search box
+    string commandName = null)                       // Optional command name (auto-inferred from stack)
+```
+
+*Usage Pattern:*
+```csharp
+// 1. Build data as List<Dictionary<string, object>>
+var data = new List<Dictionary<string, object>>();
+data.Add(new Dictionary<string, object>
+{
+    ["LayoutName"] = "Sheet1",
+    ["ViewportHandle"] = "A3F",
+    ["Width"] = 10.5,
+    ["IsActive"] = true
+});
+
+// 2. Define columns to display
+var columns = new List<string> { "LayoutName", "ViewportHandle", "Width" };
+
+// 3. Show DataGrid and get user selection
+var selected = CustomGUIs.DataGrid(data, columns, spanAllScreens: false);
+
+// 4. Process selected items
+if (selected != null && selected.Count > 0)
+{
+    foreach (var item in selected)
+    {
+        string layoutName = item["LayoutName"].ToString();
+        // ... process selection
+    }
+}
+```
+
+*Key Features:*
+- **Multi-select**: Ctrl+Click, Shift+Click, Ctrl+A for all
+- **Search**: Type in search box to filter (F4 for history dropdown)
+- **Column filtering**: Click column headers, type filter query
+- **Multi-column sorting**: Shift+Click column headers
+- **Edit mode**: F2 to enter Excel-like editing mode
+- **Keyboard navigation**: Arrow keys, Enter to confirm, Escape to cancel
+- **Multi-monitor**: Span across screens with `spanAllScreens: true`
+- **Create from search**: `allowCreateFromSearch: true` lets users type new values
+- **Auto-formatting**: Column headers converted to "lowercase with spaces" automatically
+
+*Display Conventions:*
 - Column headers are automatically formatted to lowercase with spaces between words
 - Example: "DocumentName" becomes "document name", "LayoutType" becomes "layout type"
 - This is handled by the `FormatColumnHeader` method in `datagrid/datagrid.Main.cs`
 - Actual property names remain unchanged (e.g., "DocumentName"), only display headers are formatted
-- DataGrid implementation is modular with separate files for filtering, sorting, virtualization, edit mode, and cache indexing
+
+*Example Commands Using DataGrid:*
+- `switch-view.cs` - Layout switching with multi-document support
+- `filter-selection.cs` - Entity filtering with complex queries
+- `tag-selected-in-view.cs` - Tag selection with create-from-search
+- `select-by-parent-tags-of-selected-in-view.cs` - Tag-based selection
+- `delete-layouts.cs` - Layout deletion with confirmation
+- `list-system-variables.cs` - System variable browsing and editing
+
+*DO NOT:*
+- Create custom Windows Forms with DataGridView manually
+- Implement your own search, filter, or sorting logic
+- Build custom column header formatting
+- Use `ShowDataGrid` or similar custom methods
+
+*DO:*
+- Use `CustomGUIs.DataGrid()` for all tabular data display needs
+- Build data as `List<Dictionary<string, object>>`
+- Store complex objects in dictionary values for later use
+- Let the DataGrid handle all UI interactions automatically
 
 ## Building
 

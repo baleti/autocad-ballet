@@ -52,6 +52,28 @@ namespace AutoCADBallet
                     }
                 }
 
+                // Also gather layers (layers are document-wide, not space-specific)
+                var layerTable = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+                var layerIds = new List<ObjectId>();
+
+                foreach (ObjectId layerId in layerTable)
+                {
+                    try
+                    {
+                        var layer = tr.GetObject(layerId, OpenMode.ForRead);
+                        layerIds.Add(layerId);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+
+                if (layerIds.Count > 0)
+                {
+                    entityGroups["Layer"] = layerIds;
+                }
+
                 tr.Commit();
             }
 
@@ -102,6 +124,33 @@ namespace AutoCADBallet
                     }
                 }
 
+                // Also gather layers (layers are document-wide)
+                var layerTable = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+
+                foreach (ObjectId layerId in layerTable)
+                {
+                    try
+                    {
+                        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+
+                        if (!entityGroups.ContainsKey("Layer"))
+                            entityGroups["Layer"] = new List<CategoryEntityReference>();
+
+                        entityGroups["Layer"].Add(new CategoryEntityReference
+                        {
+                            DocumentPath = doc.Name,
+                            DocumentName = Path.GetFileName(doc.Name),
+                            Handle = layer.Handle.ToString(),
+                            Category = "Layer",
+                            SpaceName = "Document-wide"
+                        });
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+
                 tr.Commit();
             }
 
@@ -134,7 +183,10 @@ namespace AutoCADBallet
                     var layoutRefs = GatherLayoutReferencesFromDocument(openDoc.Database, docPath, docName);
                     allReferences.AddRange(layoutRefs);
 
-                    foreach (var entityRef in refs.Concat(layoutRefs))
+                    var layerRefs = GatherLayerReferencesFromDocument(openDoc.Database, docPath, docName);
+                    allReferences.AddRange(layerRefs);
+
+                    foreach (var entityRef in refs.Concat(layoutRefs).Concat(layerRefs))
                     {
                         if (!categoryGroups.ContainsKey(entityRef.Category))
                             categoryGroups[entityRef.Category] = new List<CategoryEntityReference>();
@@ -491,6 +543,41 @@ namespace AutoCADBallet
             return references;
         }
 
+        private static List<CategoryEntityReference> GatherLayerReferencesFromDocument(Database db, string docPath, string docName)
+        {
+            var references = new List<CategoryEntityReference>();
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var layerTable = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+
+                foreach (ObjectId layerId in layerTable)
+                {
+                    try
+                    {
+                        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+
+                        references.Add(new CategoryEntityReference
+                        {
+                            DocumentPath = docPath,
+                            DocumentName = docName,
+                            Handle = layer.Handle.ToString(),
+                            Category = "Layer",
+                            SpaceName = "Document-wide"
+                        });
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+                }
+
+                tr.Commit();
+            }
+
+            return references;
+        }
+
         private static string GetCurrentSpaceName(Database db)
         {
             try
@@ -518,7 +605,9 @@ namespace AutoCADBallet
         {
             string typeName = entity.GetType().Name;
 
-            if (entity is BlockReference)
+            if (entity is LayerTableRecord)
+                return "Layer";
+            else if (entity is BlockReference)
             {
                 var br = entity as BlockReference;
                 using (var tr = br.Database.TransactionManager.StartTransaction())

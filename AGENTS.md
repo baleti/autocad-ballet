@@ -26,6 +26,49 @@
 - Keep logic small and composable; avoid UI in core command classes.
 - Scope-based commands: Main implementation file with `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()` static methods; separate stub files for each scope (`{command}-in-view.cs`, etc.) delegate to main implementation.
 
+## DataGrid UI Component
+**CRITICAL**: When asked to "use datagrid" or "show a datagrid", ALWAYS use the built-in `CustomGUIs.DataGrid()` method from `commands/datagrid/` — **DO NOT** create custom Windows Forms with DataGridView manually.
+
+**Usage Pattern:**
+```csharp
+// 1. Build data as List<Dictionary<string, object>>
+var data = new List<Dictionary<string, object>>();
+data.Add(new Dictionary<string, object>
+{
+    ["PropertyName"] = value,
+    ["AnotherProperty"] = anotherValue
+});
+
+// 2. Define columns to display
+var columns = new List<string> { "PropertyName", "AnotherProperty" };
+
+// 3. Show DataGrid and get user selection
+var selected = CustomGUIs.DataGrid(data, columns, spanAllScreens: false);
+
+// 4. Process selected items
+if (selected != null && selected.Count > 0)
+{
+    foreach (var item in selected)
+    {
+        var value = item["PropertyName"];
+        // ... process selection
+    }
+}
+```
+
+**Key Features:**
+- Multi-select with Ctrl/Shift+Click, search/filter, column sorting, F2 edit mode
+- Automatic column header formatting (PascalCase → "lowercase with spaces")
+- Supports `allowCreateFromSearch: true` for creating new items from search box
+- Virtual scrolling for large datasets, multi-monitor spanning
+
+**Example Commands:**
+- `switch-view.cs` — Layout switching with DataGrid
+- `filter-selection.cs` — Entity filtering
+- `tag-selected-in-view.cs` — Tag management with create-from-search
+
+See `CLAUDE.md` DataGrid System section for full API documentation.
+
 ## CommandFlags.Session and LISP Integration
 - **Use `CommandFlags.Session`** for commands that open/close/switch documents or modify DocumentCollection.
 - **CRITICAL**: LISP wrappers for Session commands MUST end with `(princ)` to prevent command context leaks.
@@ -52,6 +95,49 @@
 ## Security & Configuration Tips
 - Never hardcode user paths; use `%APPDATA%/autocad-ballet/…` for data and runtime files.
 - Do not commit runtime artifacts; the `runtime/` directory in the repository is gitignored and contains only local development/test data.
+
+## Persistent Storage Best Practices
+
+**CRITICAL**: Do not store persistent data in static fields or class-level variables in plugin code - these values will be lost when the DLL is reloaded via `invoke-addin-command` or hot-reload mechanisms.
+
+**Problem**:
+- Static fields are reset when AutoCAD reloads the plugin DLL
+- Transient graphics and other runtime state persists in AutoCAD's memory but tracking data in static variables is lost
+- This causes commands to fail after reload (e.g., clear commands can't find what to clear)
+
+**Solution**:
+- Store all persistent data in `%APPDATA%/autocad-ballet/runtime/` subdirectories
+- Use file-based storage for tracking information that must survive DLL reloads
+- Examples of proper storage locations:
+  - `runtime/transient-graphics-tracker/` - Transient graphics marker tracking
+  - `runtime/selection/` - Cross-document selection persistence
+  - `runtime/switch-view-logs/` - Layout switching history
+  - `runtime/selection-logs/` - Selection change history
+
+**Example Pattern**:
+```csharp
+// BAD - Data lost on DLL reload
+private static List<int> _markers = new List<int>();
+
+// GOOD - Data persists across reloads
+public static void SaveMarkers(string documentId, List<int> markers)
+{
+    var filePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "autocad-ballet", "runtime", "transient-graphics-tracker", documentId);
+    File.WriteAllLines(filePath, markers.Select(m => m.ToString()));
+}
+```
+
+**When to Use Runtime Storage**:
+- Transient graphics tracking (markers must persist to clear them later)
+- Cross-session data (selection sets, command history)
+- Document-specific state that survives plugin reloads
+- Any data that needs to outlive the current plugin load session
+
+**See Also**:
+- `commands/transient-graphics-storage.cs` - Reference implementation
+- `commands/_selection.cs` - Selection persistence example
 
 ## Entity Attributes and Tagging System
 AutoCAD Ballet provides a type-safe, extensible attribute storage system for entities (`commands/_entity-attributes.cs`).
