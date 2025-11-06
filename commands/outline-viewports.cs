@@ -44,6 +44,9 @@ namespace AutoCADBallet
 
             try
             {
+                // Reset text position tracking for collision detection
+                TextPositionHelper.Reset();
+
                 // Collect all viewports from all layouts
                 var viewports = CollectAllViewports(db);
 
@@ -259,18 +262,23 @@ namespace AutoCADBallet
                         $"Scale: {scaleText}"
                     };
 
-                    // Position text to the right of top-right corner, aligned to top
-                    var textStartX = maxX + textHeight * 0.5; // Small offset to the right
-                    var textStartY = maxY - textHeight * 0.6; // Move down to align with outline top
-                    var textStartZ = modelSpacePoints[0].Z;
+                    // Find non-overlapping position for text (tries right, below, above, left)
+                    var preferredX = maxX + textHeight * 0.5; // Prefer right of top-right corner
+                    var preferredY = maxY - textHeight * 0.6; // Aligned to top
+                    var preferredZ = modelSpacePoints[0].Z;
 
-                    // Create each line of text
+                    double textWidth;
+                    var textPosition = TextPositionHelper.FindNonOverlappingPosition(
+                        preferredX, preferredY, preferredZ,
+                        textHeight, textLines, out textWidth);
+
+                    // Create each line of text at the determined position
                     for (int i = 0; i < textLines.Count; i++)
                     {
                         var linePosition = new Point3d(
-                            textStartX,
-                            textStartY - (i * textHeight * 1.2), // Line spacing: 1.2x text height
-                            textStartZ
+                            textPosition.X,
+                            textPosition.Y - (i * textHeight * 1.2), // Line spacing: 1.2x text height
+                            textPosition.Z
                         );
 
                         using (var text = new DBText())

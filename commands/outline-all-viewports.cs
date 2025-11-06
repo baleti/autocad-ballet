@@ -22,6 +22,83 @@ namespace AutoCADBallet
         public static int Marker = 1000;
     }
 
+    // Helper class for text positioning with collision detection
+    public class TextBounds
+    {
+        public double MinX { get; set; }
+        public double MaxX { get; set; }
+        public double MinY { get; set; }
+        public double MaxY { get; set; }
+
+        public bool Overlaps(TextBounds other)
+        {
+            return !(MaxX < other.MinX || MinX > other.MaxX || MaxY < other.MinY || MinY > other.MaxY);
+        }
+    }
+
+    public static class TextPositionHelper
+    {
+        private static List<TextBounds> _placedTextBounds = new List<TextBounds>();
+
+        public static void Reset()
+        {
+            _placedTextBounds.Clear();
+        }
+
+        public static Autodesk.AutoCAD.Geometry.Point3d FindNonOverlappingPosition(
+            double startX, double startY, double startZ,
+            double textHeight, List<string> textLines,
+            out double finalWidth)
+        {
+            // Calculate text bounds (approximate width based on character count)
+            double maxLineLength = textLines.Max(line => line.Length);
+            double textWidth = maxLineLength * textHeight * 0.6; // Approximate character width
+            double totalHeight = textLines.Count * textHeight * 1.2; // Line spacing: 1.2x
+
+            finalWidth = textWidth;
+
+            // Try positions: right, below, above, left
+            var positions = new[]
+            {
+                new { X = startX + textHeight * 0.5, Y = startY, Label = "right" },
+                new { X = startX, Y = startY - totalHeight - textHeight * 0.5, Label = "below" },
+                new { X = startX, Y = startY + textHeight * 0.5, Label = "above" },
+                new { X = startX - textWidth - textHeight * 0.5, Y = startY, Label = "left" }
+            };
+
+            foreach (var pos in positions)
+            {
+                var bounds = new TextBounds
+                {
+                    MinX = pos.X,
+                    MaxX = pos.X + textWidth,
+                    MinY = pos.Y - totalHeight,
+                    MaxY = pos.Y
+                };
+
+                // Check if this position overlaps with any existing text
+                bool overlaps = _placedTextBounds.Any(existing => existing.Overlaps(bounds));
+                if (!overlaps)
+                {
+                    // Found a non-overlapping position
+                    _placedTextBounds.Add(bounds);
+                    return new Autodesk.AutoCAD.Geometry.Point3d(pos.X, pos.Y, startZ);
+                }
+            }
+
+            // If all positions overlap, use wrapped text at original position
+            _placedTextBounds.Add(new TextBounds
+            {
+                MinX = startX,
+                MaxX = startX + textWidth,
+                MinY = startY - totalHeight,
+                MaxY = startY
+            });
+
+            return new Autodesk.AutoCAD.Geometry.Point3d(startX, startY, startZ);
+        }
+    }
+
     public class OutlineAllViewports
     {
 
@@ -42,6 +119,9 @@ namespace AutoCADBallet
 
             try
             {
+                // Reset text position tracking for collision detection
+                TextPositionHelper.Reset();
+
                 var outlineViewports = new OutlineViewports();
                 var viewports = CollectAllViewports(db);
 
@@ -228,18 +308,23 @@ namespace AutoCADBallet
                         $"Scale: {scaleText}"
                     };
 
-                    // Position text to the right of top-right corner, aligned to top
-                    var textStartX = maxX + textHeight * 0.5; // Small offset to the right
-                    var textStartY = maxY - textHeight * 0.6; // Move down to align with outline top
-                    var textStartZ = modelSpacePoints[0].Z;
+                    // Find non-overlapping position for text (tries right, below, above, left)
+                    var preferredX = maxX + textHeight * 0.5; // Prefer right of top-right corner
+                    var preferredY = maxY - textHeight * 0.6; // Aligned to top
+                    var preferredZ = modelSpacePoints[0].Z;
 
-                    // Create each line of text
+                    double textWidth;
+                    var textPosition = TextPositionHelper.FindNonOverlappingPosition(
+                        preferredX, preferredY, preferredZ,
+                        textHeight, textLines, out textWidth);
+
+                    // Create each line of text at the determined position
                     for (int i = 0; i < textLines.Count; i++)
                     {
                         var linePosition = new Autodesk.AutoCAD.Geometry.Point3d(
-                            textStartX,
-                            textStartY - (i * textHeight * 1.2), // Line spacing: 1.2x text height
-                            textStartZ
+                            textPosition.X,
+                            textPosition.Y - (i * textHeight * 1.2), // Line spacing: 1.2x text height
+                            textPosition.Z
                         );
 
                         using (var text = new DBText())
