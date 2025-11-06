@@ -77,6 +77,14 @@ public partial class CustomGUIs
             case "query":
             case "tags":
             case "xrefpath":
+            // Layer-specific properties
+            case "isfrozen":
+            case "islocked":
+            case "isoff":
+            case "isplottable":
+            case "lineweight":
+            case "transparency":
+            case "description":
                 return true;
         }
         if (lowerName.StartsWith("attr_")) return true;

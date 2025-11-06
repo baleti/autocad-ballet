@@ -457,7 +457,22 @@ public partial class CustomGUIs
                             ed.WriteMessage($"\n  >> Unexpected: DynamicBlockName edit reached apply phase for non-existent block '{newValue}'");
                         }
                     }
-                    else if (dbObject is LayerTableRecord layerRec && lowerColumnName == "name") layerRec.Name = newValue;
+                    else if (dbObject is LayerTableRecord layerRec && lowerColumnName == "name")
+                    {
+                        // Rename layer with validation
+                        if (string.Equals(layerRec.Name, "0", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ed.WriteMessage("\n  >> Cannot rename layer 0");
+                            return;
+                        }
+                        var layerTable = (LayerTable)tr.GetObject(dbObject.Database.LayerTableId, OpenMode.ForRead);
+                        if (layerTable.Has(newValue))
+                        {
+                            ed.WriteMessage($"\n  >> Layer '{newValue}' already exists");
+                            return;
+                        }
+                        layerRec.Name = newValue;
+                    }
                     else if (dbObject is TextStyleTableRecord tStyle && lowerColumnName == "name") tStyle.Name = newValue;
                     else if (dbObject is LinetypeTableRecord ltype && lowerColumnName == "name") ltype.Name = newValue;
                     else if (dbObject is DimStyleTableRecord dStyle && lowerColumnName == "name") dStyle.Name = newValue;
@@ -480,6 +495,154 @@ public partial class CustomGUIs
                     if (dbObject is BlockReference xrefBlockRefExt)
                     {
                         ApplyXrefPathEdit(xrefBlockRefExt, newValue, tr);
+                    }
+                    break;
+                case "layer":
+                    if (dbObject is LayerTableRecord layerForRenameExt)
+                    {
+                        // Renaming the layer itself
+                        if (string.Equals(layerForRenameExt.Name, "0", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ed.WriteMessage("\n  >> Cannot rename layer 0");
+                            return;
+                        }
+                        var layerTableExt = (LayerTable)tr.GetObject(dbObject.Database.LayerTableId, OpenMode.ForRead);
+                        if (layerTableExt.Has(newValue))
+                        {
+                            ed.WriteMessage($"\n  >> Layer '{newValue}' already exists");
+                            return;
+                        }
+                        layerForRenameExt.Name = newValue;
+                    }
+                    else if (dbObject is Entity entityExt)
+                    {
+                        entityExt.Layer = newValue;
+                    }
+                    else
+                    {
+                        ed.WriteMessage("\n  >> Not an Entity or Layer");
+                    }
+                    break;
+                case "color":
+                    if (dbObject is LayerTableRecord layerForColorExt)
+                    {
+                        // Parse color for layer
+                        if (TryParseColor(newValue, out Autodesk.AutoCAD.Colors.Color colorExt))
+                        {
+                            layerForColorExt.Color = colorExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid color value: {newValue}");
+                        }
+                    }
+                    else if (dbObject is Entity entity2Ext && int.TryParse(newValue, out int colorIndexExt))
+                    {
+                        entity2Ext.ColorIndex = colorIndexExt;
+                    }
+                    break;
+                case "linetype":
+                    if (dbObject is LayerTableRecord layerForLinetypeExt)
+                    {
+                        // Set linetype for layer
+                        var linetypeTableExt = (LinetypeTable)tr.GetObject(dbObject.Database.LinetypeTableId, OpenMode.ForRead);
+                        if (linetypeTableExt.Has(newValue))
+                        {
+                            var linetypeIdExt = linetypeTableExt[newValue];
+                            layerForLinetypeExt.LinetypeObjectId = linetypeIdExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Linetype '{newValue}' not found");
+                        }
+                    }
+                    else if (dbObject is Entity entity3Ext)
+                    {
+                        entity3Ext.Linetype = newValue;
+                    }
+                    break;
+                case "isfrozen":
+                    if (dbObject is LayerTableRecord layerForFrozenExt)
+                    {
+                        if (bool.TryParse(newValue, out bool isFrozenExt))
+                        {
+                            layerForFrozenExt.IsFrozen = isFrozenExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "islocked":
+                    if (dbObject is LayerTableRecord layerForLockedExt)
+                    {
+                        if (bool.TryParse(newValue, out bool isLockedExt))
+                        {
+                            layerForLockedExt.IsLocked = isLockedExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "isoff":
+                    if (dbObject is LayerTableRecord layerForOffExt)
+                    {
+                        if (bool.TryParse(newValue, out bool isOffExt))
+                        {
+                            layerForOffExt.IsOff = isOffExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "isplottable":
+                    if (dbObject is LayerTableRecord layerForPlottableExt)
+                    {
+                        if (bool.TryParse(newValue, out bool isPlottableExt))
+                        {
+                            layerForPlottableExt.IsPlottable = isPlottableExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "lineweight":
+                    if (dbObject is LayerTableRecord layerForLineweightExt)
+                    {
+                        if (TryParseLineWeight(newValue, out LineWeight lineWeightExt))
+                        {
+                            layerForLineweightExt.LineWeight = lineWeightExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid lineweight value: {newValue}");
+                        }
+                    }
+                    break;
+                case "transparency":
+                    if (dbObject is LayerTableRecord layerForTransparencyExt)
+                    {
+                        if (TryParseTransparency(newValue, out Autodesk.AutoCAD.Colors.Transparency transparencyExt))
+                        {
+                            layerForTransparencyExt.Transparency = transparencyExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid transparency value: {newValue}");
+                        }
+                    }
+                    break;
+                case "description":
+                    if (dbObject is LayerTableRecord layerForDescriptionExt)
+                    {
+                        layerForDescriptionExt.Description = newValue;
                     }
                     break;
                 default:
@@ -578,13 +741,152 @@ public partial class CustomGUIs
                     }
                     break;
                 case "layer":
-                    if (dbObject is Entity entity) entity.Layer = newValue; else ed.WriteMessage("\n  >> Not an Entity");
+                    if (dbObject is LayerTableRecord layerForRename)
+                    {
+                        // Renaming the layer itself
+                        if (string.Equals(layerForRename.Name, "0", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ed.WriteMessage("\n  >> Cannot rename layer 0");
+                            return;
+                        }
+                        var layerTable = (LayerTable)tr.GetObject(dbObject.Database.LayerTableId, OpenMode.ForRead);
+                        if (layerTable.Has(newValue))
+                        {
+                            ed.WriteMessage($"\n  >> Layer '{newValue}' already exists");
+                            return;
+                        }
+                        layerForRename.Name = newValue;
+                    }
+                    else if (dbObject is Entity entity)
+                    {
+                        entity.Layer = newValue;
+                    }
+                    else
+                    {
+                        ed.WriteMessage("\n  >> Not an Entity or Layer");
+                    }
                     break;
                 case "color":
-                    if (dbObject is Entity entity2 && int.TryParse(newValue, out int colorIndex)) entity2.ColorIndex = colorIndex;
+                    if (dbObject is LayerTableRecord layerForColor)
+                    {
+                        // Parse color for layer
+                        if (TryParseColor(newValue, out Autodesk.AutoCAD.Colors.Color color))
+                        {
+                            layerForColor.Color = color;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid color value: {newValue}");
+                        }
+                    }
+                    else if (dbObject is Entity entity2 && int.TryParse(newValue, out int colorIndex))
+                    {
+                        entity2.ColorIndex = colorIndex;
+                    }
                     break;
                 case "linetype":
-                    if (dbObject is Entity entity3) entity3.Linetype = newValue;
+                    if (dbObject is LayerTableRecord layerForLinetype)
+                    {
+                        // Set linetype for layer
+                        var linetypeTable = (LinetypeTable)tr.GetObject(dbObject.Database.LinetypeTableId, OpenMode.ForRead);
+                        if (linetypeTable.Has(newValue))
+                        {
+                            var linetypeId = linetypeTable[newValue];
+                            layerForLinetype.LinetypeObjectId = linetypeId;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Linetype '{newValue}' not found");
+                        }
+                    }
+                    else if (dbObject is Entity entity3)
+                    {
+                        entity3.Linetype = newValue;
+                    }
+                    break;
+                case "isfrozen":
+                    if (dbObject is LayerTableRecord layerForFrozen)
+                    {
+                        if (bool.TryParse(newValue, out bool isFrozen))
+                        {
+                            layerForFrozen.IsFrozen = isFrozen;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "islocked":
+                    if (dbObject is LayerTableRecord layerForLocked)
+                    {
+                        if (bool.TryParse(newValue, out bool isLocked))
+                        {
+                            layerForLocked.IsLocked = isLocked;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "isoff":
+                    if (dbObject is LayerTableRecord layerForOff)
+                    {
+                        if (bool.TryParse(newValue, out bool isOff))
+                        {
+                            layerForOff.IsOff = isOff;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "isplottable":
+                    if (dbObject is LayerTableRecord layerForPlottable)
+                    {
+                        if (bool.TryParse(newValue, out bool isPlottable))
+                        {
+                            layerForPlottable.IsPlottable = isPlottable;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid boolean value: {newValue}");
+                        }
+                    }
+                    break;
+                case "lineweight":
+                    if (dbObject is LayerTableRecord layerForLineweight)
+                    {
+                        if (TryParseLineWeight(newValue, out LineWeight lineWeight))
+                        {
+                            layerForLineweight.LineWeight = lineWeight;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid lineweight value: {newValue}");
+                        }
+                    }
+                    break;
+                case "transparency":
+                    if (dbObject is LayerTableRecord layerForTransparency)
+                    {
+                        if (TryParseTransparency(newValue, out Autodesk.AutoCAD.Colors.Transparency transparency))
+                        {
+                            layerForTransparency.Transparency = transparency;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid transparency value: {newValue}");
+                        }
+                    }
+                    break;
+                case "description":
+                    if (dbObject is LayerTableRecord layerForDescription)
+                    {
+                        layerForDescription.Description = newValue;
+                    }
                     break;
                 case "contents":
                     if (dbObject is MText mtextContents) mtextContents.Contents = newValue;
@@ -690,7 +992,22 @@ public partial class CustomGUIs
                             ed.WriteMessage($"\n  >> Unexpected: DynamicBlockName edit reached apply phase for non-existent block '{newValue}'");
                         }
                     }
-                    else if (dbObject is LayerTableRecord layerRec && lowerColumnName == "name") layerRec.Name = newValue;
+                    else if (dbObject is LayerTableRecord layerRec && lowerColumnName == "name")
+                    {
+                        // Rename layer with validation
+                        if (string.Equals(layerRec.Name, "0", StringComparison.OrdinalIgnoreCase))
+                        {
+                            ed.WriteMessage("\n  >> Cannot rename layer 0");
+                            return;
+                        }
+                        var layerTable = (LayerTable)tr.GetObject(dbObject.Database.LayerTableId, OpenMode.ForRead);
+                        if (layerTable.Has(newValue))
+                        {
+                            ed.WriteMessage($"\n  >> Layer '{newValue}' already exists");
+                            return;
+                        }
+                        layerRec.Name = newValue;
+                    }
                     else if (dbObject is TextStyleTableRecord tStyle && lowerColumnName == "name") tStyle.Name = newValue;
                     else if (dbObject is LinetypeTableRecord ltype && lowerColumnName == "name") ltype.Name = newValue;
                     else if (dbObject is DimStyleTableRecord dStyle && lowerColumnName == "name") dStyle.Name = newValue;
@@ -1364,6 +1681,142 @@ public partial class CustomGUIs
         {
             ed.WriteMessage($"\n  >> ERROR in SwapBlockReference: {ex.Message}");
             throw;
+        }
+    }
+
+    /// <summary>Try to parse a color string (supports color names and RGB format)</summary>
+    private static bool TryParseColor(string colorString, out Autodesk.AutoCAD.Colors.Color color)
+    {
+        color = null;
+        try
+        {
+            colorString = colorString?.Trim();
+            if (string.IsNullOrEmpty(colorString))
+                return false;
+
+            // Try to parse as color index (e.g., "1", "256")
+            if (int.TryParse(colorString, out int colorIndex))
+            {
+                color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, (short)colorIndex);
+                return true;
+            }
+
+            // Try to parse RGB format like "RGB:255,0,0" or just "255,0,0"
+            string rgbPattern = colorString.Replace("RGB:", "").Replace("rgb:", "");
+            string[] parts = rgbPattern.Split(',');
+            if (parts.Length == 3 &&
+                byte.TryParse(parts[0].Trim(), out byte r) &&
+                byte.TryParse(parts[1].Trim(), out byte g) &&
+                byte.TryParse(parts[2].Trim(), out byte b))
+            {
+                color = Autodesk.AutoCAD.Colors.Color.FromRgb(r, g, b);
+                return true;
+            }
+
+            // Could add color name parsing here if needed (e.g., "Red", "Blue")
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Try to parse a lineweight string</summary>
+    private static bool TryParseLineWeight(string lineWeightString, out LineWeight lineWeight)
+    {
+        lineWeight = LineWeight.ByLayer;
+        try
+        {
+            lineWeightString = lineWeightString?.Trim();
+            if (string.IsNullOrEmpty(lineWeightString))
+                return false;
+
+            // Try parsing as enum name (e.g., "LineWeight000", "LineWeight025")
+            if (Enum.TryParse<LineWeight>(lineWeightString, true, out lineWeight))
+                return true;
+
+            // Try parsing numeric values (e.g., "0", "25", "50")
+            if (int.TryParse(lineWeightString, out int lwValue))
+            {
+                // Map common lineweight values
+                switch (lwValue)
+                {
+                    case 0: lineWeight = LineWeight.LineWeight000; return true;
+                    case 5: lineWeight = LineWeight.LineWeight005; return true;
+                    case 9: lineWeight = LineWeight.LineWeight009; return true;
+                    case 13: lineWeight = LineWeight.LineWeight013; return true;
+                    case 15: lineWeight = LineWeight.LineWeight015; return true;
+                    case 18: lineWeight = LineWeight.LineWeight018; return true;
+                    case 20: lineWeight = LineWeight.LineWeight020; return true;
+                    case 25: lineWeight = LineWeight.LineWeight025; return true;
+                    case 30: lineWeight = LineWeight.LineWeight030; return true;
+                    case 35: lineWeight = LineWeight.LineWeight035; return true;
+                    case 40: lineWeight = LineWeight.LineWeight040; return true;
+                    case 50: lineWeight = LineWeight.LineWeight050; return true;
+                    case 53: lineWeight = LineWeight.LineWeight053; return true;
+                    case 60: lineWeight = LineWeight.LineWeight060; return true;
+                    case 70: lineWeight = LineWeight.LineWeight070; return true;
+                    case 80: lineWeight = LineWeight.LineWeight080; return true;
+                    case 90: lineWeight = LineWeight.LineWeight090; return true;
+                    case 100: lineWeight = LineWeight.LineWeight100; return true;
+                    case 106: lineWeight = LineWeight.LineWeight106; return true;
+                    case 120: lineWeight = LineWeight.LineWeight120; return true;
+                    case 140: lineWeight = LineWeight.LineWeight140; return true;
+                    case 158: lineWeight = LineWeight.LineWeight158; return true;
+                    case 200: lineWeight = LineWeight.LineWeight200; return true;
+                    case 211: lineWeight = LineWeight.LineWeight211; return true;
+                    case -1: lineWeight = LineWeight.ByLayer; return true;
+                    case -2: lineWeight = LineWeight.ByBlock; return true;
+                    case -3: lineWeight = LineWeight.ByLineWeightDefault; return true;
+                    default: return false;
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Try to parse a transparency string</summary>
+    private static bool TryParseTransparency(string transparencyString, out Autodesk.AutoCAD.Colors.Transparency transparency)
+    {
+        transparency = new Autodesk.AutoCAD.Colors.Transparency();
+        try
+        {
+            transparencyString = transparencyString?.Trim();
+            if (string.IsNullOrEmpty(transparencyString))
+                return false;
+
+            // Try parsing as percentage (e.g., "50%")
+            if (transparencyString.EndsWith("%"))
+            {
+                string percentStr = transparencyString.TrimEnd('%');
+                if (int.TryParse(percentStr, out int percent))
+                {
+                    // Convert percentage to alpha value (0-255)
+                    // 0% = opaque (alpha 255), 100% = fully transparent (alpha 0)
+                    byte alpha = (byte)((100 - percent) * 255 / 100);
+                    transparency = new Autodesk.AutoCAD.Colors.Transparency(alpha);
+                    return true;
+                }
+            }
+
+            // Try parsing as alpha value (0-255)
+            if (byte.TryParse(transparencyString, out byte alpha2))
+            {
+                transparency = new Autodesk.AutoCAD.Colors.Transparency(alpha2);
+                return true;
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
         }
     }
 }
