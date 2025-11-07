@@ -59,6 +59,7 @@
 (defun c:spt () (command "select-by-tags-of-selected-in-view") (princ))
 (defun c:sstv () (command "select-by-same-tags-of-selected-in-view") (princ))
 (defun c:sst () (command "select-by-same-tags-of-selected-in-view") (princ))
+(defun c:ctg () (command "copy-tags-from-selection-in-view") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))
