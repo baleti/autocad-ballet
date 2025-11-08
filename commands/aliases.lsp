@@ -60,6 +60,12 @@
 (defun c:sstv () (command "select-by-same-tags-of-selected-in-view") (princ))
 (defun c:sst () (command "select-by-same-tags-of-selected-in-view") (princ))
 (defun c:ctg () (command "copy-tags-from-selection-in-view") (princ))
+(defun c:aat () (command "align-selected-in-view-top") (princ))
+(defun c:aar () (command "align-selected-in-view-right") (princ))
+(defun c:aal () (command "align-selected-in-view-left") (princ))
+(defun c:aab () (command "align-selected-in-view-bottom") (princ))
+(defun c:aach () (command "align-selected-in-view-center-horizontal") (princ))
+(defun c:aacv () (command "align-selected-in-view-center-vertical") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))
