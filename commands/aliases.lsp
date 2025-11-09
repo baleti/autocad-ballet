@@ -66,6 +66,9 @@
 (defun c:aab () (command "align-selected-in-view-bottom") (princ))
 (defun c:aach () (command "align-selected-in-view-center-horizontal") (princ))
 (defun c:aacv () (command "align-selected-in-view-center-vertical") (princ))
+(defun c:dtv () (command "delete-tags-in-view") (princ))
+(defun c:dtd () (command "delete-tags-in-document") (princ))
+(defun c:dts () (command "delete-tags-in-session") (princ))
 
 ;; regular autocad
 (defun c:fss () (command "refclose" "save") (princ))
