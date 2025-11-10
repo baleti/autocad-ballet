@@ -58,53 +58,85 @@ namespace AutoCADBallet
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
-                // Collect entity extents
-                var entityData = new List<EntityExtentData>();
+                // Build group membership map
+                var entityToGroup = BuildEntityToGroupMap(db, tr, selectedObjects);
 
-                foreach (ObjectId objId in selectedObjects)
+                // Group entities by their group membership or individual entities
+                var alignmentUnits = GroupEntitiesForAlignment(selectedObjects, entityToGroup);
+
+                // Collect extents for each alignment unit
+                var unitData = new List<AlignmentUnitData>();
+
+                foreach (var unit in alignmentUnits)
                 {
-                    var entity = tr.GetObject(objId, OpenMode.ForRead) as Entity;
-                    if (entity == null) continue;
+                    Extents3d? combinedExtents = null;
 
-                    try
+                    foreach (ObjectId objId in unit)
                     {
-                        var extents = entity.GeometricExtents;
-                        entityData.Add(new EntityExtentData
+                        var entity = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                        if (entity == null) continue;
+
+                        try
                         {
-                            ObjectId = objId,
-                            Extents = extents
-                        });
+                            var extents = entity.GeometricExtents;
+                            if (combinedExtents == null)
+                            {
+                                combinedExtents = extents;
+                            }
+                            else
+                            {
+                                // Extents3d is a struct, so we need to get the value, modify it, and store it back
+                                var temp = combinedExtents.Value;
+                                temp.AddExtents(extents);
+                                combinedExtents = temp;
+                            }
+                        }
+                        catch
+                        {
+                            // Skip entities without valid extents
+                            continue;
+                        }
                     }
-                    catch
+
+                    if (combinedExtents != null)
                     {
-                        // Skip entities without valid extents
-                        continue;
+                        unitData.Add(new AlignmentUnitData
+                        {
+                            EntityIds = unit,
+                            Extents = combinedExtents.Value
+                        });
                     }
                 }
 
-                if (entityData.Count < 2)
+                if (unitData.Count < 2)
                 {
-                    ed.WriteMessage("\nNeed at least 2 objects with valid extents to align.\n");
+                    ed.WriteMessage("\nNeed at least 2 objects/groups with valid extents to align.\n");
                     tr.Abort();
                     return;
                 }
 
                 // Calculate alignment reference
-                double alignmentValue = CalculateAlignmentReference(entityData, alignmentType);
+                double alignmentValue = CalculateAlignmentReference(unitData, alignmentType);
 
-                // Align entities
+                // Align units (entities or groups)
                 int alignedCount = 0;
-                foreach (var data in entityData)
+                foreach (var data in unitData)
                 {
-                    var entity = tr.GetObject(data.ObjectId, OpenMode.ForWrite) as Entity;
-                    if (entity == null) continue;
-
                     Vector3d displacement = CalculateDisplacement(data.Extents, alignmentValue, alignmentType);
 
                     if (!displacement.IsZeroLength())
                     {
                         Matrix3d transform = Matrix3d.Displacement(displacement);
-                        entity.TransformBy(transform);
+
+                        // Apply transformation to all entities in the unit
+                        foreach (ObjectId objId in data.EntityIds)
+                        {
+                            var entity = tr.GetObject(objId, OpenMode.ForWrite) as Entity;
+                            if (entity != null)
+                            {
+                                entity.TransformBy(transform);
+                            }
+                        }
                         alignedCount++;
                     }
                 }
@@ -112,40 +144,121 @@ namespace AutoCADBallet
                 tr.Commit();
 
                 string alignmentName = GetAlignmentName(alignmentType);
-                ed.WriteMessage($"\nAligned {alignedCount} objects ({alignmentName}).\n");
+                ed.WriteMessage($"\nAligned {alignedCount} objects/groups ({alignmentName}).\n");
             }
         }
 
-        private static double CalculateAlignmentReference(List<EntityExtentData> entityData, AlignmentType alignmentType)
+        private static Dictionary<ObjectId, ObjectId> BuildEntityToGroupMap(Database db, Transaction tr, ObjectId[] selectedObjects)
+        {
+            var entityToGroup = new Dictionary<ObjectId, ObjectId>();
+
+            try
+            {
+                // Access the group dictionary
+                var groupDict = (DBDictionary)tr.GetObject(db.GroupDictionaryId, OpenMode.ForRead);
+
+                foreach (DBDictionaryEntry entry in groupDict)
+                {
+                    var group = tr.GetObject(entry.Value, OpenMode.ForRead) as Group;
+                    if (group == null || !group.Selectable) continue;
+
+                    // Get all entities in this group
+                    var groupEntities = group.GetAllEntityIds();
+
+                    // Map each selected entity to its group
+                    foreach (ObjectId entityId in groupEntities)
+                    {
+                        if (selectedObjects.Contains(entityId))
+                        {
+                            entityToGroup[entityId] = entry.Value;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // If there's any error accessing groups, just return empty map
+            }
+
+            return entityToGroup;
+        }
+
+        private static List<List<ObjectId>> GroupEntitiesForAlignment(ObjectId[] selectedObjects, Dictionary<ObjectId, ObjectId> entityToGroup)
+        {
+            var alignmentUnits = new List<List<ObjectId>>();
+            var processedEntities = new HashSet<ObjectId>();
+            var processedGroups = new HashSet<ObjectId>();
+
+            foreach (ObjectId objId in selectedObjects)
+            {
+                if (processedEntities.Contains(objId))
+                    continue;
+
+                // Check if this entity belongs to a group
+                if (entityToGroup.TryGetValue(objId, out ObjectId groupId))
+                {
+                    // Skip if we've already processed this group
+                    if (processedGroups.Contains(groupId))
+                        continue;
+
+                    // Collect all selected entities that belong to this group
+                    var groupMembers = new List<ObjectId>();
+                    foreach (ObjectId selectedObjId in selectedObjects)
+                    {
+                        if (entityToGroup.TryGetValue(selectedObjId, out ObjectId memberGroupId) && memberGroupId == groupId)
+                        {
+                            groupMembers.Add(selectedObjId);
+                            processedEntities.Add(selectedObjId);
+                        }
+                    }
+
+                    if (groupMembers.Count > 0)
+                    {
+                        alignmentUnits.Add(groupMembers);
+                        processedGroups.Add(groupId);
+                    }
+                }
+                else
+                {
+                    // Entity is not part of a group, treat it individually
+                    alignmentUnits.Add(new List<ObjectId> { objId });
+                    processedEntities.Add(objId);
+                }
+            }
+
+            return alignmentUnits;
+        }
+
+        private static double CalculateAlignmentReference(List<AlignmentUnitData> unitData, AlignmentType alignmentType)
         {
             switch (alignmentType)
             {
                 case AlignmentType.Top:
                     // Align to the highest top edge
-                    return entityData.Max(e => e.Extents.MaxPoint.Y);
+                    return unitData.Max(e => e.Extents.MaxPoint.Y);
 
                 case AlignmentType.Bottom:
                     // Align to the lowest bottom edge
-                    return entityData.Min(e => e.Extents.MinPoint.Y);
+                    return unitData.Min(e => e.Extents.MinPoint.Y);
 
                 case AlignmentType.Left:
                     // Align to the leftmost left edge
-                    return entityData.Min(e => e.Extents.MinPoint.X);
+                    return unitData.Min(e => e.Extents.MinPoint.X);
 
                 case AlignmentType.Right:
                     // Align to the rightmost right edge
-                    return entityData.Max(e => e.Extents.MaxPoint.X);
+                    return unitData.Max(e => e.Extents.MaxPoint.X);
 
                 case AlignmentType.CenterVertically:
                     // Align to the overall vertical center (center on vertical axis)
-                    double minX = entityData.Min(e => e.Extents.MinPoint.X);
-                    double maxX = entityData.Max(e => e.Extents.MaxPoint.X);
+                    double minX = unitData.Min(e => e.Extents.MinPoint.X);
+                    double maxX = unitData.Max(e => e.Extents.MaxPoint.X);
                     return (minX + maxX) / 2.0;
 
                 case AlignmentType.CenterHorizontally:
                     // Align to the overall horizontal center (center on horizontal axis)
-                    double minY = entityData.Min(e => e.Extents.MinPoint.Y);
-                    double maxY = entityData.Max(e => e.Extents.MaxPoint.Y);
+                    double minY = unitData.Min(e => e.Extents.MinPoint.Y);
+                    double maxY = unitData.Max(e => e.Extents.MaxPoint.Y);
                     return (minY + maxY) / 2.0;
 
                 default:
@@ -206,9 +319,9 @@ namespace AutoCADBallet
             }
         }
 
-        private class EntityExtentData
+        private class AlignmentUnitData
         {
-            public ObjectId ObjectId { get; set; }
+            public List<ObjectId> EntityIds { get; set; }
             public Extents3d Extents { get; set; }
         }
     }

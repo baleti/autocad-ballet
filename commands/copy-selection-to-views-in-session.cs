@@ -65,9 +65,27 @@ public class CopySelectionToViewsInSession
             // Show layout selection dialog
             var propertyNames = new List<string> { "layout", "document", "autocad session" };
 
+            // Find current layout index to pre-select it in DataGrid
+            string currentLayoutName = Autodesk.AutoCAD.DatabaseServices.LayoutManager.Current.CurrentLayout;
+            string currentDocPath = activeDoc.Name;
+            List<int> initialSelection = new List<int>();
+
+            for (int i = 0; i < allViews.Count; i++)
+            {
+                var view = allViews[i];
+                Document viewDoc = view["DocumentObject"] as Document;
+                string viewLayout = view["LayoutName"].ToString();
+
+                if (viewDoc == activeDoc && viewLayout == currentLayoutName)
+                {
+                    initialSelection.Add(i);
+                    break;
+                }
+            }
+
             try
             {
-                var chosen = CustomGUIs.DataGrid(allViews, propertyNames, false, null);
+                var chosen = CustomGUIs.DataGrid(allViews, propertyNames, false, initialSelection);
 
                 if (chosen == null || chosen.Count == 0)
                 {
