@@ -65,9 +65,9 @@ public static class FilterEntityDataHelper
                 ed.SetImpliedSelection(new ObjectId[0]);
             }
 
+            // Collect entities from pickfirst selection
             if (selResult.Status == PromptStatus.OK && selResult.Value.Count > 0)
             {
-                // Get current selection
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
                     foreach (var objectId in selResult.Value.GetObjectIds())
@@ -90,12 +90,65 @@ public static class FilterEntityDataHelper
                     }
                     tr.Commit();
                 }
-                return entityData;
             }
-            else
+
+            // ALSO load stored selection references (may include entities in blocks)
+            var docName = Path.GetFileName(doc.Name);
+            var storedSelection = SelectionStorage.LoadSelection(docName);
+
+            if (storedSelection != null && storedSelection.Count > 0)
             {
-                throw new InvalidOperationException("No selection found. Please select entities first when in 'view' scope.");
+                // Filter to current session
+                var currentSessionId = GetCurrentSessionId();
+                storedSelection = storedSelection.Where(item =>
+                    string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
+
+                // Process stored selection items from current document
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    foreach (var item in storedSelection)
+                    {
+                        try
+                        {
+                            // Only process items from current document
+                            if (Path.GetFullPath(item.DocumentPath) == Path.GetFullPath(doc.Name))
+                            {
+                                var handle = Convert.ToInt64(item.Handle, 16);
+                                var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                                if (objectId != ObjectId.Null)
+                                {
+                                    var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                                    if (entity != null)
+                                    {
+                                        // Check if this entity is already in entityData (from pickfirst)
+                                        bool alreadyAdded = entityData.Any(d => d.ContainsKey("ObjectId") && ((ObjectId)d["ObjectId"]) == objectId);
+                                        if (!alreadyAdded)
+                                        {
+                                            var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
+                                            data["ObjectId"] = objectId; // Store for selection
+                                            entityData.Add(data);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Skip problematic entities
+                            continue;
+                        }
+                    }
+                    tr.Commit();
+                }
             }
+
+            if (entityData.Count == 0)
+            {
+                throw new InvalidOperationException("No selection found. Please select entities first or use 'select-by-categories-in-view' to create a stored selection.");
+            }
+
+            return entityData;
         }
 
         if (selectedOnly)
@@ -376,6 +429,210 @@ public static class FilterEntityDataHelper
         return data;
     }
 
+    /// <summary>
+    /// Information about a parent block in the hierarchy
+    /// </summary>
+    private class ParentBlockInfo
+    {
+        public string Name { get; set; }
+        public string Type { get; set; } // "Block Reference", "Dynamic Block", "XRef"
+    }
+
+    /// <summary>
+    /// Gets the parent block hierarchy for an entity.
+    /// Returns list of block info from outermost to innermost (reversed for display).
+    /// Returns empty list if entity is not in a block.
+    /// </summary>
+    private static List<ParentBlockInfo> GetParentBlockHierarchy(Entity entity)
+    {
+        var hierarchy = new List<ParentBlockInfo>();
+
+        try
+        {
+            var db = entity.Database;
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var currentBlockId = entity.BlockId;
+
+                // Walk up the block hierarchy
+                while (currentBlockId != ObjectId.Null)
+                {
+                    var btr = tr.GetObject(currentBlockId, OpenMode.ForRead) as BlockTableRecord;
+                    if (btr == null)
+                        break;
+
+                    // Stop if we reached a layout block (Model or Paper space)
+                    if (btr.IsLayout)
+                        break;
+
+                    // Determine block type and name
+                    string blockName = btr.Name;
+                    string blockType = "Block Reference";
+
+                    if (btr.IsFromExternalReference)
+                    {
+                        blockType = "XRef";
+                    }
+                    else if (btr.IsDynamicBlock)
+                    {
+                        blockType = "Dynamic Block";
+                    }
+                    else if (btr.IsAnonymous)
+                    {
+                        // Anonymous blocks could be from dynamic blocks
+                        // Try to get the original dynamic block name
+                        blockType = "Dynamic Block";
+                    }
+
+                    // Add this block to the hierarchy
+                    hierarchy.Add(new ParentBlockInfo
+                    {
+                        Name = blockName,
+                        Type = blockType
+                    });
+
+                    // Find if this block is itself nested in another block
+                    // Search for a BlockReference that references this block definition and is itself in a block
+                    currentBlockId = FindParentBlockReference(btr, db, tr);
+                }
+
+                tr.Commit();
+            }
+        }
+        catch
+        {
+            // Return empty list on error
+        }
+
+        // Reverse the hierarchy so outermost block is first (ParentBlock1 = main parent)
+        hierarchy.Reverse();
+        return hierarchy;
+    }
+
+    /// <summary>
+    /// Finds if a block definition is referenced by a BlockReference that is itself inside another block.
+    /// Returns the ObjectId of the parent block, or ObjectId.Null if not nested.
+    /// </summary>
+    private static ObjectId FindParentBlockReference(BlockTableRecord btr, Database db, Transaction tr)
+    {
+        try
+        {
+            // Search through all block definitions for references to this block
+            var blockTable = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
+            if (blockTable == null)
+                return ObjectId.Null;
+
+            foreach (ObjectId blockId in blockTable)
+            {
+                var searchBtr = tr.GetObject(blockId, OpenMode.ForRead) as BlockTableRecord;
+                if (searchBtr == null || searchBtr.IsLayout)
+                    continue; // Skip layout blocks (Model, Paper spaces)
+
+                // Look through entities in this block for a reference to our target block
+                foreach (ObjectId entityId in searchBtr)
+                {
+                    var entity = tr.GetObject(entityId, OpenMode.ForRead);
+                    if (entity is BlockReference blockRef)
+                    {
+                        // Check if this block reference points to our target block
+                        if (blockRef.BlockTableRecord == btr.ObjectId)
+                        {
+                            // Found a reference! Return the block this reference is in
+                            return searchBtr.ObjectId;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Return null on error
+        }
+
+        return ObjectId.Null;
+    }
+
+    /// <summary>
+    /// Processes parent block hierarchy into separate columns.
+    /// Only adds columns if there are entities inside blocks.
+    /// Uses "Parent Block" for single level, "Parent Block 1", "Parent Block 2", etc. for nested blocks.
+    /// Also adds "Parent Block Type" column showing block type (Block Reference, Dynamic Block, XRef).
+    /// </summary>
+    public static void ProcessParentBlockColumns(List<Dictionary<string, object>> entityData)
+    {
+        if (entityData == null || entityData.Count == 0)
+            return;
+
+        // Determine maximum nesting depth across all entities
+        int maxDepth = 0;
+        bool hasAnyBlockEntities = false;
+
+        foreach (var entity in entityData)
+        {
+            if (entity.ContainsKey("_ParentBlocks") && entity["_ParentBlocks"] is List<ParentBlockInfo> parentBlocks)
+            {
+                if (parentBlocks.Count > 0)
+                {
+                    hasAnyBlockEntities = true;
+                    maxDepth = Math.Max(maxDepth, parentBlocks.Count);
+                }
+            }
+        }
+
+        // Only add columns if there are entities in blocks
+        if (!hasAnyBlockEntities)
+        {
+            // Remove _ParentBlocks from all entities
+            foreach (var entity in entityData)
+            {
+                entity.Remove("_ParentBlocks");
+            }
+            return;
+        }
+
+        // Determine column names based on nesting depth
+        var columnNames = new List<string>();
+        if (maxDepth == 1)
+        {
+            columnNames.Add("ParentBlock");
+        }
+        else
+        {
+            for (int i = 1; i <= maxDepth; i++)
+            {
+                columnNames.Add($"ParentBlock{i}");
+            }
+        }
+
+        // Add parent block columns to each entity
+        foreach (var entity in entityData)
+        {
+            if (entity.ContainsKey("_ParentBlocks") && entity["_ParentBlocks"] is List<ParentBlockInfo> parentBlocks)
+            {
+                // Populate columns with block names
+                for (int i = 0; i < columnNames.Count; i++)
+                {
+                    entity[columnNames[i]] = i < parentBlocks.Count ? parentBlocks[i].Name : "";
+                }
+
+                // Add parent block type column (using the last/innermost block's type - the immediate parent)
+                entity["ParentBlockType"] = parentBlocks.Count > 0 ? parentBlocks[parentBlocks.Count - 1].Type : "";
+
+                // Remove internal property
+                entity.Remove("_ParentBlocks");
+            }
+            else
+            {
+                // Entity not in a block - add empty values
+                foreach (var columnName in columnNames)
+                {
+                    entity[columnName] = "";
+                }
+                entity["ParentBlockType"] = "";
+            }
+        }
+    }
+
     public static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties)
     {
         string entityName = "";
@@ -453,6 +710,17 @@ public static class FilterEntityDataHelper
         };
 
         data["DisplayName"] = !string.IsNullOrEmpty(entityName) ? entityName : data["Category"].ToString();
+
+        // Add parent block hierarchy for entities inside blocks
+        if (entity is Entity entityObj)
+        {
+            var parentBlocks = GetParentBlockHierarchy(entityObj);
+            data["_ParentBlocks"] = parentBlocks; // Internal property for processing
+        }
+        else
+        {
+            data["_ParentBlocks"] = new List<ParentBlockInfo>();
+        }
 
         // For BlockReferences, add dynamic block parent name if applicable
         if (entity is BlockReference blockRef)
@@ -1694,11 +1962,17 @@ public abstract class FilterElementsBase
             ed.WriteMessage($"[DIAG] ProcessTagsAndAttributes: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
+            // Process parent block hierarchy into separate columns
+            FilterEntityDataHelper.ProcessParentBlockColumns(entityData);
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] ProcessParentBlockColumns: {timer.ElapsedMilliseconds}ms\n");
+
+            timer.Restart();
             // Get ALL unique property names from ALL entities (union, not just first entity)
             var propertyNames = entityData
                 .SelectMany(e => e.Keys)
                 .Distinct()
-                .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex")
+                .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex" && k != "_ParentBlocks")
                 .ToList();
 
             // Normalize all entities to have all property names (fill missing keys with empty values)
@@ -1721,13 +1995,35 @@ public abstract class FilterElementsBase
 
             // Extract tag columns (tag_1, tag_2, tag_3, etc.) to place after Category
             var tagColumns = propertyNames.Where(p => p.StartsWith("tag_")).OrderBy(p => p).ToList();
-            var remainingProps = propertyNames.Except(orderedProps).Except(tagColumns);
+
+            // Extract parent block columns (ParentBlock or ParentBlock1, ParentBlock2, etc.) to place after IsExternal
+            var parentBlockColumns = propertyNames
+                .Where(p => p == "ParentBlock" || p.StartsWith("ParentBlock") && char.IsDigit(p.Last()))
+                .OrderBy(p => p == "ParentBlock" ? 0 : int.Parse(p.Substring("ParentBlock".Length)))
+                .ToList();
+
+            // Extract ParentBlockType column to place after parent block columns
+            var parentBlockTypeColumn = propertyNames.Contains("ParentBlockType") ? new[] { "ParentBlockType" } : new string[0];
+
+            var remainingProps = propertyNames
+                .Except(orderedProps)
+                .Except(tagColumns)
+                .Except(parentBlockColumns)
+                .Except(parentBlockTypeColumn);
 
             // Separate geometry properties, attributes and extension data for better organization
             var geometryProps = remainingProps.Where(p => FilterEntityDataHelper.IsGeometryProperty(p)).OrderBy(p => FilterEntityDataHelper.GetGeometryPropertyOrder(p));
             var attributeProps = remainingProps.Where(p => p.StartsWith("attr_")).OrderBy(p => p);
             var extensionProps = remainingProps.Where(p => p.StartsWith("xdata_") || p.StartsWith("ext_dict_")).OrderBy(p => p);
-            var otherProps = remainingProps.Where(p => !p.StartsWith("attr_") && !p.StartsWith("xdata_") && !p.StartsWith("ext_dict_") && p != "DocumentPath" && p != "DisplayName" && !FilterEntityDataHelper.IsGeometryProperty(p)).OrderBy(p => p);
+
+            // Get IsExternal column separately to place parent block columns after it
+            var isExternalColumn = propertyNames.Contains("IsExternal") ? new[] { "IsExternal" } : new string[0];
+
+            var otherProps = remainingProps
+                .Where(p => !p.StartsWith("attr_") && !p.StartsWith("xdata_") && !p.StartsWith("ext_dict_")
+                    && p != "DocumentPath" && p != "DisplayName" && p != "IsExternal"
+                    && !FilterEntityDataHelper.IsGeometryProperty(p))
+                .OrderBy(p => p);
             var documentPathProp = propertyNames.Contains("DocumentPath") ? new[] { "DocumentPath" } : new string[0];
 
             propertyNames = orderedProps.Where(p => propertyNames.Contains(p))
@@ -1735,6 +2031,9 @@ public abstract class FilterElementsBase
                 .Concat(geometryProps)
                 .Concat(attributeProps)
                 .Concat(extensionProps)
+                .Concat(isExternalColumn)  // IsExternal column
+                .Concat(parentBlockColumns)  // Parent block columns after IsExternal
+                .Concat(parentBlockTypeColumn)  // Parent block type after parent block columns
                 .Concat(otherProps)
                 .Concat(documentPathProp)
                 .ToList();

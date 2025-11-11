@@ -19,13 +19,17 @@ namespace AutoCADBallet
         public string Handle { get; set; }
         public string Category { get; set; }
         public string SpaceName { get; set; }
+        public string BlockPath { get; set; }  // Empty for top-level entities, "BlockA > BlockB" for nested
+        public bool IsInBlock { get; set; }     // True if entity is within a block definition
     }
 
     public static class SelectByCategories
     {
         public static void ExecuteViewScope(Editor ed, Database db)
         {
-            ed.WriteMessage("\nView Mode: Gathering entities from current view/layout...\n");
+            bool searchInBlocks = SelectInBlocksMode.IsEnabled();
+            string modeMsg = searchInBlocks ? " (including blocks/xrefs)" : "";
+            ed.WriteMessage($"\nView Mode: Gathering entities from current view/layout{modeMsg}...\n");
 
             var entityGroups = new Dictionary<string, List<ObjectId>>();
             var spaceName = GetCurrentSpaceName(db);
@@ -45,6 +49,29 @@ namespace AutoCADBallet
                             entityGroups[category] = new List<ObjectId>();
 
                         entityGroups[category].Add(id);
+
+                        // If search-in-blocks mode is enabled and this is a block reference, gather entities from within
+                        if (searchInBlocks && entity is BlockReference blockRef)
+                        {
+                            var blockEntities = BlockEntityUtilities.GetEntitiesInBlock(blockRef.BlockTableRecord, tr);
+                            foreach (var blockEntityId in blockEntities)
+                            {
+                                try
+                                {
+                                    var blockEntity = tr.GetObject(blockEntityId, OpenMode.ForRead);
+                                    var blockCategory = GetEntityCategory(blockEntity);
+
+                                    if (!entityGroups.ContainsKey(blockCategory))
+                                        entityGroups[blockCategory] = new List<ObjectId>();
+
+                                    entityGroups[blockCategory].Add(blockEntityId);
+                                }
+                                catch
+                                {
+                                    continue;
+                                }
+                            }
+                        }
                     }
                     catch
                     {
@@ -83,7 +110,9 @@ namespace AutoCADBallet
         public static void ExecuteDocumentScope(Editor ed, Database db)
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
-            ed.WriteMessage("\nDocument Mode: Gathering entities from entire document...\n");
+            bool searchInBlocks = SelectInBlocksMode.IsEnabled();
+            string modeMsg = searchInBlocks ? " (including blocks/xrefs)" : "";
+            ed.WriteMessage($"\nDocument Mode: Gathering entities from entire document{modeMsg}...\n");
 
             var entityGroups = new Dictionary<string, List<CategoryEntityReference>>();
 
@@ -114,8 +143,52 @@ namespace AutoCADBallet
                                 DocumentName = Path.GetFileName(doc.Name),
                                 Handle = entity.Handle.ToString(),
                                 Category = category,
-                                SpaceName = spaceName
+                                SpaceName = spaceName,
+                                BlockPath = "",
+                                IsInBlock = false
                             });
+
+                            // If search-in-blocks mode is enabled and this is a block reference, gather entities from within
+                            if (searchInBlocks && entity is BlockReference blockRef)
+                            {
+                                var blockName = BlockEntityUtilities.GetBlockName(blockRef, tr);
+                                var blockEntities = BlockEntityUtilities.GetEntitiesInBlock(blockRef.BlockTableRecord, tr, blockName, blockRef.Handle.ToString());
+
+                                foreach (var blockEntityId in blockEntities)
+                                {
+                                    try
+                                    {
+                                        var blockEntity = tr.GetObject(blockEntityId, OpenMode.ForRead);
+                                        var blockCategory = GetEntityCategory(blockEntity);
+
+                                        // Get block path from entity's block table record
+                                        string blockPath = blockName;
+                                        if (blockEntity is Entity ent)
+                                        {
+                                            var blockBtr = tr.GetObject(ent.BlockId, OpenMode.ForRead) as BlockTableRecord;
+                                            blockPath = blockBtr?.Name ?? blockName;
+                                        }
+
+                                        if (!entityGroups.ContainsKey(blockCategory))
+                                            entityGroups[blockCategory] = new List<CategoryEntityReference>();
+
+                                        entityGroups[blockCategory].Add(new CategoryEntityReference
+                                        {
+                                            DocumentPath = doc.Name,
+                                            DocumentName = Path.GetFileName(doc.Name),
+                                            Handle = blockEntity.Handle.ToString(),
+                                            Category = blockCategory,
+                                            SpaceName = spaceName,
+                                            BlockPath = blockPath,
+                                            IsInBlock = true
+                                        });
+                                    }
+                                    catch
+                                    {
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                         catch
                         {
@@ -142,7 +215,9 @@ namespace AutoCADBallet
                             DocumentName = Path.GetFileName(doc.Name),
                             Handle = layer.Handle.ToString(),
                             Category = "Layer",
-                            SpaceName = "Document-wide"
+                            SpaceName = "Document-wide",
+                            BlockPath = "",
+                            IsInBlock = false
                         });
                     }
                     catch
@@ -244,8 +319,74 @@ namespace AutoCADBallet
 
             if (selectedIds.Count > 0)
             {
-                ed.SetImpliedSelection(selectedIds.ToArray());
-                ed.WriteMessage($"\nSelected {selectedIds.Count} entities from {selectedCategories.Count} categories in {spaceName}.\n");
+                var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                var db = doc.Database;
+
+                // Build selection references for ALL entities (including those in blocks)
+                var selectionItems = new List<SelectionItem>();
+                var selectableIds = new List<ObjectId>();
+
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    foreach (var id in selectedIds)
+                    {
+                        try
+                        {
+                            var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                            if (entity != null)
+                            {
+                                // Add to selection storage (all entities, including block internals)
+                                selectionItems.Add(new SelectionItem
+                                {
+                                    DocumentPath = doc.Name,
+                                    Handle = entity.Handle.ToString(),
+                                    SessionId = null
+                                });
+
+                                // Only add entities in current space to selectable list
+                                if (entity.BlockId == db.CurrentSpaceId)
+                                {
+                                    selectableIds.Add(id);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Skip entities that can't be accessed
+                            continue;
+                        }
+                    }
+                    tr.Commit();
+                }
+
+                // Save selection references (including block entities) for filter commands
+                try
+                {
+                    var docName = Path.GetFileName(doc.Name);
+                    SelectionStorage.SaveSelection(selectionItems, docName);
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage($"\nWarning: Could not save selection references: {ex.Message}\n");
+                }
+
+                // Set implied selection for selectable entities only
+                if (selectableIds.Count > 0)
+                {
+                    ed.SetImpliedSelection(selectableIds.ToArray());
+                    ed.WriteMessage($"\nSelected {selectableIds.Count} entities from {selectedCategories.Count} categories in {spaceName}.\n");
+
+                    // Report if some entities were in blocks and stored as references
+                    int blockedCount = selectionItems.Count - selectableIds.Count;
+                    if (blockedCount > 0)
+                    {
+                        ed.WriteMessage($"  ({blockedCount} entities within blocks stored as references for filter commands)\n");
+                    }
+                }
+                else
+                {
+                    ed.WriteMessage($"\nNo directly selectable entities. All {selectionItems.Count} entities within blocks stored as references.\n");
+                }
             }
         }
 
@@ -475,6 +616,7 @@ namespace AutoCADBallet
         private static List<CategoryEntityReference> GatherEntityReferencesFromDocument(Database db, string docPath, string docName)
         {
             var references = new List<CategoryEntityReference>();
+            bool searchInBlocks = SelectInBlocksMode.IsEnabled();
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -499,8 +641,49 @@ namespace AutoCADBallet
                                 DocumentName = docName,
                                 Handle = entity.Handle.ToString(),
                                 Category = category,
-                                SpaceName = spaceName
+                                SpaceName = spaceName,
+                                BlockPath = "",
+                                IsInBlock = false
                             });
+
+                            // If search-in-blocks mode is enabled and this is a block reference, gather entities from within
+                            if (searchInBlocks && entity is BlockReference blockRef)
+                            {
+                                var blockName = BlockEntityUtilities.GetBlockName(blockRef, tr);
+                                var blockEntities = BlockEntityUtilities.GetEntitiesInBlock(blockRef.BlockTableRecord, tr, blockName, blockRef.Handle.ToString());
+
+                                foreach (var blockEntityId in blockEntities)
+                                {
+                                    try
+                                    {
+                                        var blockEntity = tr.GetObject(blockEntityId, OpenMode.ForRead);
+                                        var blockCategory = GetEntityCategory(blockEntity);
+
+                                        // Get block path from entity's block table record
+                                        string blockPath = blockName;
+                                        if (blockEntity is Entity ent)
+                                        {
+                                            var blockBtr = tr.GetObject(ent.BlockId, OpenMode.ForRead) as BlockTableRecord;
+                                            blockPath = blockBtr?.Name ?? blockName;
+                                        }
+
+                                        references.Add(new CategoryEntityReference
+                                        {
+                                            DocumentPath = docPath,
+                                            DocumentName = docName,
+                                            Handle = blockEntity.Handle.ToString(),
+                                            Category = blockCategory,
+                                            SpaceName = spaceName,
+                                            BlockPath = blockPath,
+                                            IsInBlock = true
+                                        });
+                                    }
+                                    catch
+                                    {
+                                        continue;
+                                    }
+                                }
+                            }
                         }
                         catch
                         {
@@ -533,7 +716,9 @@ namespace AutoCADBallet
                         DocumentName = docName,
                         Handle = layout.Handle.ToString(),
                         Category = "Layout",
-                        SpaceName = layout.LayoutName
+                        SpaceName = layout.LayoutName,
+                        BlockPath = "",
+                        IsInBlock = false
                     });
                 }
 
@@ -563,7 +748,9 @@ namespace AutoCADBallet
                             DocumentName = docName,
                             Handle = layer.Handle.ToString(),
                             Category = "Layer",
-                            SpaceName = "Document-wide"
+                            SpaceName = "Document-wide",
+                            BlockPath = "",
+                            IsInBlock = false
                         });
                     }
                     catch

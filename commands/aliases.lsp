@@ -7,6 +7,7 @@
 (defun c:wd () (command "switch-document") (princ))
 (defun c:wwd () (command "switch-document") (princ))
 (defun c:we () (command "switch-view-last") (princ))
+(defun c:wr () (command "switch-view-recent") (princ))
 (defun c:wwr () (command "switch-view-recent") (princ))
 (defun c:fse () (command "filter-selection-elements") (princ))
 (defun c:fses () (command "filter-selection-elements-span") (princ))
