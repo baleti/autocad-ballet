@@ -1,4 +1,5 @@
 using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Runtime;
 using System;
@@ -402,6 +403,23 @@ namespace AutoCADBallet
                         try
                         {
                             docs.MdiActiveDocument = lastOpenedDoc;
+
+                            // Explicitly log the layout change to ensure it appears in switch-view-recent
+                            // This ensures the opened document is tracked properly
+                            try
+                            {
+                                string projectName = Path.GetFileNameWithoutExtension(lastOpenedDoc.Name);
+                                string currentLayout = LayoutManager.Current.CurrentLayout;
+                                if (!string.IsNullOrEmpty(currentLayout))
+                                {
+                                    SwitchViewLogging.LogLayoutChange(projectName, lastOpenedDoc.Name, currentLayout, forceUpdate: true);
+                                }
+                            }
+                            catch
+                            {
+                                // Silently ignore logging errors
+                            }
+
                             SafeWriteMessage($"\n{successCount} document(s) opened successfully");
                             if (failCount > 0)
                             {

@@ -1560,40 +1560,64 @@ public static class FilterEntityDataHelper
             }
         }
 
-        // Step 3: Find all attribute columns (attr_*) that have no data
-        var allKeys = entityData.First().Keys.Where(k => k.StartsWith("attr_")).ToList();
-        var emptyAttributeColumns = new HashSet<string>();
-
-        foreach (var attrKey in allKeys)
+        // Step 3: Check if any block references exist in the selection
+        bool hasBlockReferences = false;
+        foreach (var entity in entityData)
         {
-            bool hasData = false;
-            foreach (var entity in entityData)
+            if (entity.TryGetValue("Category", out object category) && category != null)
             {
-                if (entity.TryGetValue(attrKey, out object value) && value != null)
+                string categoryStr = category.ToString();
+                if (categoryStr == "Block Reference" || categoryStr == "Dynamic Block" || categoryStr == "XRef")
                 {
-                    string strValue = value.ToString();
-                    if (!string.IsNullOrWhiteSpace(strValue))
-                    {
-                        hasData = true;
-                        break;
-                    }
+                    hasBlockReferences = true;
+                    break;
                 }
-            }
-
-            if (!hasData)
-            {
-                emptyAttributeColumns.Add(attrKey);
             }
         }
 
-        // Step 4: Remove empty attribute columns from all entities
-        if (emptyAttributeColumns.Count > 0)
+        // Step 4: Find all attribute columns (attr_*) across ALL entities
+        var allKeys = entityData
+            .SelectMany(e => e.Keys)
+            .Where(k => k.StartsWith("attr_"))
+            .Distinct()
+            .ToList();
+        var emptyAttributeColumns = new HashSet<string>();
+
+        // Only remove empty attribute columns if NO block references are present
+        // If block references exist, keep all attribute columns even if empty
+        if (!hasBlockReferences)
         {
-            foreach (var entity in entityData)
+            foreach (var attrKey in allKeys)
             {
-                foreach (var emptyCol in emptyAttributeColumns)
+                bool hasData = false;
+                foreach (var entity in entityData)
                 {
-                    entity.Remove(emptyCol);
+                    if (entity.TryGetValue(attrKey, out object value) && value != null)
+                    {
+                        string strValue = value.ToString();
+                        if (!string.IsNullOrWhiteSpace(strValue))
+                        {
+                            hasData = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!hasData)
+                {
+                    emptyAttributeColumns.Add(attrKey);
+                }
+            }
+
+            // Step 5: Remove empty attribute columns from all entities
+            if (emptyAttributeColumns.Count > 0)
+            {
+                foreach (var entity in entityData)
+                {
+                    foreach (var emptyCol in emptyAttributeColumns)
+                    {
+                        entity.Remove(emptyCol);
+                    }
                 }
             }
         }
@@ -1670,10 +1694,24 @@ public abstract class FilterElementsBase
             ed.WriteMessage($"[DIAG] ProcessTagsAndAttributes: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
-            // Get property names, excluding internal fields
-            var propertyNames = entityData.First().Keys
+            // Get ALL unique property names from ALL entities (union, not just first entity)
+            var propertyNames = entityData
+                .SelectMany(e => e.Keys)
+                .Distinct()
                 .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex")
                 .ToList();
+
+            // Normalize all entities to have all property names (fill missing keys with empty values)
+            foreach (var entity in entityData)
+            {
+                foreach (var propName in propertyNames)
+                {
+                    if (!entity.ContainsKey(propName))
+                    {
+                        entity[propName] = "";
+                    }
+                }
+            }
             timer.Stop();
             ed.WriteMessage($"[DIAG] Get property names: {timer.ElapsedMilliseconds}ms\n");
 

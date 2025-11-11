@@ -35,9 +35,12 @@ namespace AutoCADBallet
     public class SwitchViewLogging : IExtensionApplication
     {
         private static string _sessionId;
-        private static Dictionary<string, string> _lastKnownLayouts = new Dictionary<string, string>();
+        private static string _lastActiveDocumentLayout = null; // Tracks last active document+layout globally
+        private static string _previousActiveDocumentLayout = null; // Tracks the document+layout before the last one
+        private static DateTime _lastLogTime = DateTime.MinValue; // Tracks when last log occurred
         private static Dictionary<Document, System.EventHandler> _documentHandlers =
             new Dictionary<Document, System.EventHandler>();
+        private static HashSet<Document> _newlyCreatedDocuments = new HashSet<Document>(); // Track newly opened documents
 
         public void Initialize()
         {
@@ -123,11 +126,32 @@ namespace AutoCADBallet
                     // Check if we need to initialize the log file for this document
                     InitializeLogFileIfNeeded(projectName, e.Document);
 
-                    // Log the current layout of the activated document
-                    string currentLayout = LayoutManager.Current.CurrentLayout;
+                    // Check if this is a newly created/opened document
+                    bool isNewlyOpened = _newlyCreatedDocuments.Contains(e.Document);
+                    if (isNewlyOpened)
+                    {
+                        _newlyCreatedDocuments.Remove(e.Document);
+                    }
+
+                    // Get the layout from the activated document's database to ensure accuracy
+                    string currentLayout = null;
+                    try
+                    {
+                        using (var docLock = e.Document.LockDocument(DocumentLockMode.Read, null, null, false))
+                        {
+                            currentLayout = LayoutManager.Current.CurrentLayout;
+                        }
+                    }
+                    catch
+                    {
+                        // Fallback if locking fails
+                        currentLayout = LayoutManager.Current.CurrentLayout;
+                    }
+
                     if (!string.IsNullOrEmpty(currentLayout))
                     {
-                        LogLayoutChange(projectName, e.Document.Name, currentLayout);
+                        // Force update for newly opened documents to ensure they appear with current timestamp
+                        LogLayoutChange(projectName, e.Document.Name, currentLayout, isNewlyOpened);
                     }
                 }
             }
@@ -146,6 +170,9 @@ namespace AutoCADBallet
                     string projectName = Path.GetFileNameWithoutExtension(e.Document.Name) ?? "UnknownProject";
                     InitializeLogFileIfNeeded(projectName, e.Document, clearExisting: false);
                     RegisterDocumentSelectionEvents(e.Document);
+
+                    // Mark as newly created so first activation logs with forceUpdate
+                    _newlyCreatedDocuments.Add(e.Document);
                 }
             }
             catch (System.Exception ex)
@@ -161,6 +188,8 @@ namespace AutoCADBallet
                 if (e.Document != null)
                 {
                     UnregisterDocumentSelectionEvents(e.Document);
+                    // Clean up newly created documents tracking
+                    _newlyCreatedDocuments.Remove(e.Document);
                 }
             }
             catch (System.Exception ex)
@@ -176,11 +205,20 @@ namespace AutoCADBallet
                 if (e.Document != null)
                 {
                     string projectName = Path.GetFileNameWithoutExtension(e.Document.Name) ?? "UnknownProject";
+
+                    // Check if this is a newly created/opened document
+                    bool isNewlyOpened = _newlyCreatedDocuments.Contains(e.Document);
+                    if (isNewlyOpened)
+                    {
+                        _newlyCreatedDocuments.Remove(e.Document);
+                    }
+
                     string currentLayout = LayoutManager.Current.CurrentLayout;
 
                     if (!string.IsNullOrEmpty(currentLayout))
                     {
-                        LogLayoutChange(projectName, e.Document.Name, currentLayout);
+                        // Force update for newly opened documents to ensure they appear with current timestamp
+                        LogLayoutChange(projectName, e.Document.Name, currentLayout, isNewlyOpened);
                     }
                 }
             }
@@ -293,7 +331,6 @@ namespace AutoCADBallet
                 {
                     // Clear the contents of the log file
                     File.WriteAllText(logFilePath, string.Empty);
-                    _lastKnownLayouts.Remove(projectName);
                 }
 
                 // Parse existing sections or create empty list
@@ -339,14 +376,29 @@ namespace AutoCADBallet
             try
             {
                 string absolutePath = Path.GetFullPath(documentPath);
-                string cacheKey = $"{projectName}|{absolutePath}";
+                string currentDocLayoutKey = $"{absolutePath}|{layoutName}";
 
-                // Check if this is the same as the last known layout for this document
+                // Check if this is the same as the last active document+layout combination globally
+                // This allows logging when switching between documents even if they're on the same layout
                 // Skip duplicate check if forceUpdate is true (for manual switch commands)
-                if (!forceUpdate && _lastKnownLayouts.ContainsKey(cacheKey) &&
-                    _lastKnownLayouts[cacheKey] == layoutName)
+                if (!forceUpdate && _lastActiveDocumentLayout != null &&
+                    _lastActiveDocumentLayout == currentDocLayoutKey)
                 {
-                    return; // Don't log duplicate consecutive layout changes
+                    return; // Don't log duplicate consecutive document+layout changes
+                }
+
+                // Detect "bounce-back" pattern: Doc A → Doc B → Doc A (when Session command returns to original context)
+                // This happens when a Session command opens a document, then AutoCAD returns control to the original document
+                // Suppress bounce-back if it happens within 3 seconds and we're not forcing an update
+                if (!forceUpdate && _previousActiveDocumentLayout != null &&
+                    _previousActiveDocumentLayout == currentDocLayoutKey)
+                {
+                    TimeSpan timeSinceLastLog = DateTime.Now - _lastLogTime;
+                    if (timeSinceLastLog.TotalSeconds < 3.0)
+                    {
+                        // This is a bounce-back to the previous document within 3 seconds - suppress it
+                        return;
+                    }
                 }
 
                 string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -403,8 +455,10 @@ namespace AutoCADBallet
                 // Write all sections back to file
                 WriteSections(logFilePath, sections);
 
-                // Update our cache
-                _lastKnownLayouts[cacheKey] = layoutName;
+                // Update our global tracking: shift current to previous, then set new current
+                _previousActiveDocumentLayout = _lastActiveDocumentLayout;
+                _lastActiveDocumentLayout = currentDocLayoutKey;
+                _lastLogTime = DateTime.Now;
             }
             catch (System.Exception ex)
             {
