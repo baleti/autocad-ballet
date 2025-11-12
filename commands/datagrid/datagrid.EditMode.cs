@@ -272,23 +272,33 @@ public partial class CustomGUIs
         string value = originalValue ?? string.Empty;
         if (!string.IsNullOrEmpty(dialog.FindText))
         {
+            string findText = dialog.FindText;
+            string replaceText = dialog.ReplaceText ?? string.Empty;
+
+            // Resolve column references in find and replace fields
+            if (dataRow != null)
+            {
+                findText = DataRenamerHelper.ResolveColumnReferences(findText, dataRow);
+                replaceText = DataRenamerHelper.ResolveColumnReferences(replaceText, dataRow);
+            }
+
             if (dialog.IsRegexMode)
             {
                 try
                 {
                     // Use regex mode for find/replace
-                    value = Regex.Replace(value, dialog.FindText, dialog.ReplaceText ?? string.Empty);
+                    value = Regex.Replace(value, findText, replaceText);
                 }
                 catch (ArgumentException)
                 {
                     // Invalid regex pattern - fallback to literal replacement
-                    value = value.Replace(dialog.FindText, dialog.ReplaceText ?? string.Empty);
+                    value = value.Replace(findText, replaceText);
                 }
             }
             else
             {
                 // Use simple string replacement
-                value = value.Replace(dialog.FindText, dialog.ReplaceText ?? string.Empty);
+                value = value.Replace(findText, replaceText);
             }
         }
         else if (!string.IsNullOrEmpty(dialog.ReplaceText))
@@ -712,6 +722,34 @@ public partial class CustomGUIs
                 string dataValue = GetDataValueFromRow(dataRow, dataName);
                 return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
             });
+            return result;
+        }
+
+        /// <summary>
+        /// Resolve column references ($"Column Name") in a string by replacing them with actual values.
+        /// This is similar to ParsePatternWithDataReferences but does NOT replace {} placeholders.
+        /// Used for Find/Replace fields where {} should be treated literally.
+        /// </summary>
+        public static string ResolveColumnReferences(string text, Dictionary<string, object> dataRow)
+        {
+            if (string.IsNullOrEmpty(text) || dataRow == null)
+                return text;
+
+            // Regex pattern: $"Column Name" (quoted only, requires explicit spaces)
+            var regex = new Regex(@"\$""([^""]+)""");
+
+            string result = regex.Replace(text, match =>
+            {
+                // Extract column name from quoted group
+                string columnName = match.Groups[1].Value;
+
+                // Get value from dataRow with case-insensitive matching
+                string dataValue = GetDataValueFromRow(dataRow, columnName);
+
+                // If value found, use it; otherwise keep the original reference
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+            });
+
             return result;
         }
 

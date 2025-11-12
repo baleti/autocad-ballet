@@ -77,7 +77,7 @@ namespace AutoCADCommands
             {
                 Dock = WinForms.DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 8,
+                RowCount = 9,
                 Padding = new WinForms.Padding(8)
             };
             grid.ColumnStyles.Add(new WinForms.ColumnStyle(WinForms.SizeType.Absolute, 90));
@@ -87,8 +87,9 @@ namespace AutoCADCommands
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 1: Pattern hint
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 2: Find
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 3: Replace
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 4: Math
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 5: Math hint
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 4: Find/Replace hint
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 5: Math
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 6: Math hint
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
 
@@ -174,24 +175,26 @@ namespace AutoCADCommands
             var replaceBorderPanel = MakeBorderedTextBox(out _txtReplace);
             grid.Controls.Add(replaceBorderPanel, 1, 3);
 
-            // Math
-            grid.Controls.Add(MakeLabel("Math:"), 0, 4);
-            var mathBorderPanel = MakeBorderedTextBox(out _txtMath);
-            grid.Controls.Add(mathBorderPanel, 1, 4);
+            grid.Controls.Add(MakeHint("Use $\"column name\" to reference values from other columns"), 1, 4);
 
-            grid.Controls.Add(MakeHint("Use x to represent current value (e.g. 2x, x/2, x+3, -x)."), 1, 5);
+            // Math
+            grid.Controls.Add(MakeLabel("Math:"), 0, 5);
+            var mathBorderPanel = MakeBorderedTextBox(out _txtMath);
+            grid.Controls.Add(mathBorderPanel, 1, 5);
+
+            grid.Controls.Add(MakeHint("Use x to represent current value (e.g. 2x, x/2, x+3, -x)."), 1, 6);
 
             // Before / After preview
             _rtbBefore = new WinForms.RichTextBox { ReadOnly = true, Dock = WinForms.DockStyle.Fill };
             var grpBefore = new WinForms.GroupBox { Text = "Current Values", Dock = WinForms.DockStyle.Fill };
             grpBefore.Controls.Add(_rtbBefore);
-            grid.Controls.Add(grpBefore, 0, 6);
+            grid.Controls.Add(grpBefore, 0, 7);
             grid.SetColumnSpan(grpBefore, 2);
 
             _rtbAfter = new WinForms.RichTextBox { ReadOnly = true, Dock = WinForms.DockStyle.Fill };
             var grpAfter = new WinForms.GroupBox { Text = "Preview", Dock = WinForms.DockStyle.Fill };
             grpAfter.Controls.Add(_rtbAfter);
-            grid.Controls.Add(grpAfter, 0, 7);
+            grid.Controls.Add(grpAfter, 0, 8);
             grid.SetColumnSpan(grpAfter, 2);
 
             // buttons
@@ -437,6 +440,13 @@ namespace AutoCADCommands
                 string findText = UnescapeFromDisplay(_txtFind.Text);
                 string replaceText = UnescapeFromDisplay(_txtReplace.Text ?? "");
 
+                // Resolve column references in find and replace fields
+                if (dataRow != null)
+                {
+                    findText = ResolveColumnReferences(findText, dataRow);
+                    replaceText = ResolveColumnReferences(replaceText, dataRow);
+                }
+
                 if (_isRegexMode)
                 {
                     try
@@ -480,6 +490,34 @@ namespace AutoCADCommands
             var regex = new Regex(@"\$""([^""]+)""");
 
             string result = regex.Replace(pattern, match =>
+            {
+                // Extract column name from quoted group
+                string columnName = match.Groups[1].Value;
+
+                // Get value from dataRow with case-insensitive matching
+                string dataValue = GetDataValueFromRow(dataRow, columnName);
+
+                // If value found, use it; otherwise keep the original reference
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+            });
+
+            return result;
+        }
+
+        /// <summary>
+        /// Resolve column references ($"Column Name") in a string by replacing them with actual values.
+        /// This is similar to ParsePatternWithDataReferences but does NOT replace {} placeholders.
+        /// Used for Find/Replace fields where {} should be treated literally.
+        /// </summary>
+        private string ResolveColumnReferences(string text, Dictionary<string, object> dataRow)
+        {
+            if (string.IsNullOrEmpty(text) || dataRow == null)
+                return text;
+
+            // Regex pattern: $"Column Name" (quoted only, requires explicit spaces)
+            var regex = new Regex(@"\$""([^""]+)""");
+
+            string result = regex.Replace(text, match =>
             {
                 // Extract column name from quoted group
                 string columnName = match.Groups[1].Value;
