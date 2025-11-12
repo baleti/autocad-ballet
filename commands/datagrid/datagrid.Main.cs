@@ -25,6 +25,47 @@ public partial class CustomGUIs
     private static bool _initialSizingDone = false;
 
     // ──────────────────────────────────────────────────────────────
+    //  Internal ID tracking for stable edit tracking
+    // ──────────────────────────────────────────────────────────────
+
+    private static long _nextInternalId = 1;
+    private const string INTERNAL_ID_KEY = "__DATAGRID_INTERNAL_ID__";
+
+    /// <summary>
+    /// Assigns unique internal IDs to all entries that don't already have one.
+    /// This provides a stable identifier for edit tracking that is independent of:
+    /// - Row position (which changes with filtering/sorting)
+    /// - Data content (which can be edited)
+    /// - Specific columns (like Handle or DocumentPath which may not exist)
+    /// </summary>
+    private static void AssignInternalIdsToEntries(List<Dictionary<string, object>> entries)
+    {
+        foreach (var entry in entries)
+        {
+            if (!entry.ContainsKey(INTERNAL_ID_KEY))
+            {
+                entry[INTERNAL_ID_KEY] = _nextInternalId++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the internal ID for an entry, or creates one if it doesn't exist
+    /// </summary>
+    public static long GetInternalId(Dictionary<string, object> entry)
+    {
+        if (entry.ContainsKey(INTERNAL_ID_KEY))
+        {
+            return Convert.ToInt64(entry[INTERNAL_ID_KEY]);
+        }
+
+        // Assign a new ID if one doesn't exist
+        long newId = _nextInternalId++;
+        entry[INTERNAL_ID_KEY] = newId;
+        return newId;
+    }
+
+    // ──────────────────────────────────────────────────────────────
     //  Command name inference from call stack
     // ──────────────────────────────────────────────────────────────
 
@@ -135,6 +176,10 @@ public partial class CustomGUIs
             commandName = InferCommandNameFromCallStack();
         }
 
+        // CRITICAL: Assign unique internal IDs to all entries for stable edit tracking
+        // This ensures edits are correctly applied even when filters change row order
+        AssignInternalIdsToEntries(entries);
+
         // Clear any previous cached data
         _cachedOriginalData = entries;
         _cachedFilteredData = entries;
@@ -190,9 +235,13 @@ public partial class CustomGUIs
             e.SortResult = naturalComparer.Compare(e.CellValue1, e.CellValue2);
         };
 
-        // Add columns
+        // Add columns (skip internal ID column)
         foreach (string col in propertyNames)
         {
+            // Skip the internal tracking ID - never display it to users
+            if (col == INTERNAL_ID_KEY)
+                continue;
+
             var column = new DataGridViewTextBoxColumn
             {
                 Name = col,

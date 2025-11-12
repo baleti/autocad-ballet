@@ -88,37 +88,65 @@ public partial class CustomGUIs
 
         foreach (var kvp in _pendingCellEdits)
         {
-            string[] parts = kvp.Key.Split('|');
-            if (parts.Length == 2)
+            string editKey = kvp.Key;
+            string newValue = kvp.Value?.ToString() ?? "";
+
+            // Parse edit key: "InternalID|ColumnName"
+            int pipePos = editKey.LastIndexOf('|');
+            if (pipePos <= 0) continue;
+
+            string columnName = editKey.Substring(pipePos + 1);
+            string internalIdStr = editKey.Substring(0, pipePos);
+
+            if (!long.TryParse(internalIdStr, out long internalId))
             {
-                int rowIndex = int.Parse(parts[0]);
-                string columnName = parts[1];
-                string newValue = kvp.Value?.ToString() ?? "";
-
-                if (rowIndex >= 0 && rowIndex < _cachedFilteredData.Count)
-                {
-                    var entry = _cachedFilteredData[rowIndex];
-                    string documentPath;
-                    if (entry.TryGetValue("DocumentPath", out var docPathObj))
-                        documentPath = System.IO.Path.GetFullPath(docPathObj.ToString());
-                    else
-                        documentPath = System.IO.Path.GetFullPath(doc.Name);
-
-                    var pendingEdit = new PendingEdit
-                    {
-                        RowIndex = rowIndex,
-                        ColumnName = columnName,
-                        NewValue = newValue,
-                        Entry = entry
-                    };
-
-                    if (!editsByDocument.ContainsKey(documentPath))
-                        editsByDocument[documentPath] = new List<PendingEdit>();
-                    editsByDocument[documentPath].Add(pendingEdit);
-
-                    ed.WriteMessage($"\nGrouped edit for {System.IO.Path.GetFileName(documentPath)}: {columnName} = '{newValue}'");
-                }
+                ed.WriteMessage($"\nWARNING: Invalid internal ID in edit key '{editKey}' - edit will be skipped");
+                continue;
             }
+
+            // Find the entry in _modifiedEntries by matching internal ID
+            Dictionary<string, object> entry = _modifiedEntries.FirstOrDefault(e =>
+            {
+                long entryId = CustomGUIs.GetInternalId(e);
+                return entryId == internalId;
+            });
+
+            if (entry == null)
+            {
+                ed.WriteMessage($"\nWARNING: Could not find entry with internal ID '{internalId}' - edit will be skipped");
+                continue;
+            }
+
+            // Get document path from entry (if it exists)
+            string documentPath = doc.Name; // Default to current document
+            if (entry.TryGetValue("DocumentPath", out var docPathObj))
+            {
+                documentPath = docPathObj.ToString();
+            }
+
+            string fullDocPath;
+            try
+            {
+                fullDocPath = System.IO.Path.GetFullPath(documentPath);
+            }
+            catch
+            {
+                fullDocPath = documentPath;
+            }
+
+            var pendingEdit = new PendingEdit
+            {
+                RowIndex = 0, // Not used anymore
+                ColumnName = columnName,
+                NewValue = newValue,
+                Entry = entry
+            };
+
+            if (!editsByDocument.ContainsKey(fullDocPath))
+                editsByDocument[fullDocPath] = new List<PendingEdit>();
+            editsByDocument[fullDocPath].Add(pendingEdit);
+
+            ed.WriteMessage($"\nGrouped edit for {System.IO.Path.GetFileName(fullDocPath)}: InternalID={internalId}, Column={columnName}, Value='{newValue}'");
         }
         return editsByDocument;
     }

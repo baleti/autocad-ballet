@@ -13,6 +13,8 @@ public partial class CustomGUIs
 {
     // Edit mode state extracted from DataGrid2_Helpers.cs
     private static bool _isEditMode = false;
+    // CRITICAL: Store edits by entity identifier (Handle@DocumentPath|ColumnName) instead of row index
+    // This ensures edits stay with the correct entity even when filtering changes row order
     private static Dictionary<string, object> _pendingCellEdits = new Dictionary<string, object>();
     private static List<DataGridViewCell> _selectedEditCells = new List<DataGridViewCell>();
     private static HashSet<Dictionary<string, object>> _modifiedEntries = new HashSet<Dictionary<string, object>>();
@@ -40,6 +42,15 @@ public partial class CustomGUIs
         _selectedEditCells.Clear();
         _modifiedEntries.Clear();
         _selectionAnchor = null;
+    }
+
+    /// <summary>Create edit key using internal ID instead of row index</summary>
+    private static string GetEditKey(Dictionary<string, object> entry, string columnName)
+    {
+        // Use the stable internal ID assigned to each entry
+        // This is independent of row position, data content, or specific columns
+        long internalId = CustomGUIs.GetInternalId(entry);
+        return $"{internalId}|{columnName}";
     }
 
     private static bool IsColumnEditable(string columnName)
@@ -155,25 +166,9 @@ public partial class CustomGUIs
 
     private static void ApplyPendingEdits()
     {
-        foreach (var kvp in _pendingCellEdits)
-        {
-            string[] parts = kvp.Key.Split('|');
-            if (parts.Length == 2)
-            {
-                int rowIndex = int.Parse(parts[0]);
-                string columnName = parts[1];
-                if (rowIndex >= 0 && rowIndex < _cachedFilteredData.Count)
-                {
-                    var entry = _cachedFilteredData[rowIndex];
-                    entry[columnName] = kvp.Value;
-                    _modifiedEntries.Add(entry);
-                }
-            }
-        }
-        _pendingCellEdits.Clear();
+        // Edits are already applied to entry dictionaries in real-time
+        // This method is kept for backwards compatibility but does nothing
     }
-
-    private static string GetCellKey(int rowIndex, string columnName) => $"{rowIndex}|{columnName}";
 
     private static void ShowCellEditPrompt(DataGridView grid)
     {
@@ -241,13 +236,13 @@ public partial class CustomGUIs
                             }
                         }
 
-                        string cellKey = GetCellKey(cell.RowIndex, columnName);
-                        ed.WriteMessage($"\nCell [{cell.RowIndex}, {columnName}]: '{originalValue}' → '{newValue}'");
-                        _pendingCellEdits[cellKey] = newValue;
-
                         if (cell.RowIndex < _cachedFilteredData.Count)
                         {
                             var entry = _cachedFilteredData[cell.RowIndex];
+                            string editKey = GetEditKey(entry, columnName);
+
+                            ed.WriteMessage($"\nCell [{cell.RowIndex}, {columnName}]: '{originalValue}' → '{newValue}'");
+                            _pendingCellEdits[editKey] = newValue;
                             entry[columnName] = newValue;
                             _modifiedEntries.Add(entry);
                         }
@@ -329,10 +324,11 @@ public partial class CustomGUIs
             if (cell.RowIndex >= 0 && cell.RowIndex < _cachedFilteredData.Count)
             {
                 string columnName = grid.Columns[cell.ColumnIndex].Name;
-                string cellKey = GetCellKey(cell.RowIndex, columnName);
-                ed.WriteMessage($"\nStoring edit: Row {cell.RowIndex}, Column '{columnName}', Value '{newValue}'");
-                _pendingCellEdits[cellKey] = newValue;
                 var entry = _cachedFilteredData[cell.RowIndex];
+                string editKey = GetEditKey(entry, columnName);
+
+                ed.WriteMessage($"\nStoring edit: Row {cell.RowIndex}, Column '{columnName}', Value '{newValue}'");
+                _pendingCellEdits[editKey] = newValue;
                 entry[columnName] = newValue;
                 _modifiedEntries.Add(entry);
             }
@@ -557,10 +553,10 @@ public partial class CustomGUIs
                     if (cell.RowIndex < _cachedFilteredData.Count)
                     {
                         string columnName = grid.Columns[cell.ColumnIndex].Name;
-                        string cellKey = GetCellKey(cell.RowIndex, columnName);
-                        _pendingCellEdits[cellKey] = singleValue;
-
                         var entry = _cachedFilteredData[cell.RowIndex];
+                        string editKey = GetEditKey(entry, columnName);
+
+                        _pendingCellEdits[editKey] = singleValue;
                         entry[columnName] = singleValue;
                         _modifiedEntries.Add(entry);
 
@@ -624,10 +620,10 @@ public partial class CustomGUIs
                         // Apply the paste
                         if (targetRow < _cachedFilteredData.Count)
                         {
-                            string cellKey = GetCellKey(targetRow, columnName);
-                            _pendingCellEdits[cellKey] = newValue;
-
                             var entry = _cachedFilteredData[targetRow];
+                            string editKey = GetEditKey(entry, columnName);
+
+                            _pendingCellEdits[editKey] = newValue;
                             entry[columnName] = newValue;
                             _modifiedEntries.Add(entry);
 
