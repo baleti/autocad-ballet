@@ -1703,6 +1703,10 @@ public partial class CustomGUIs
                 }
             }
 
+            // CRITICAL: Refresh the block reference to ensure AttributeCollection reflects the new attributes
+            // Without this, subsequent reads of blockRef.AttributeCollection will return empty/stale data
+            blockRef.RecordGraphicsModified(true);
+
             ed.WriteMessage($"\n  >> Swapped '{oldBlockName}' → '{newBlockName}' ({copiedCount} attrs copied, {newCount} new)");
         }
         catch (System.Exception ex)

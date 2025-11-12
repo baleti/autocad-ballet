@@ -97,7 +97,7 @@ namespace AutoCADCommands
             var patternBorderPanel = MakeBorderedTextBox(out _txtPattern, "{}");
             grid.Controls.Add(patternBorderPanel, 1, 0);
 
-            grid.Controls.Add(MakeHint("Use {} for current value. Use $\"Column Name\" or $ColumnName to reference other columns."), 1, 1);
+            grid.Controls.Add(MakeHint("Use {} for current value. Use $\"column name\" to reference other columns"), 1, 1);
 
             // Find / Replace
             grid.Controls.Add(MakeLabel("Find:"), 0, 2);
@@ -425,13 +425,7 @@ namespace AutoCADCommands
                 // Replace column references if dataRow is available
                 if (dataRow != null)
                 {
-                    foreach (var kvp in dataRow)
-                    {
-                        string columnValue = kvp.Value?.ToString() ?? "";
-                        // Replace both quoted and unquoted column references
-                        patternResult = patternResult.Replace($"$\"{kvp.Key}\"", columnValue);
-                        patternResult = patternResult.Replace($"${kvp.Key}", columnValue);
-                    }
+                    patternResult = ParsePatternWithDataReferences(patternResult, dataRow);
                 }
 
                 result = patternResult;
@@ -470,6 +464,86 @@ namespace AutoCADCommands
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Parse pattern string with column references ($"Column Name").
+        /// Requires explicit quotation marks and spaces to match column headers exactly.
+        /// Supports case-insensitive matching.
+        /// </summary>
+        private string ParsePatternWithDataReferences(string pattern, Dictionary<string, object> dataRow)
+        {
+            if (string.IsNullOrEmpty(pattern) || dataRow == null)
+                return pattern;
+
+            // Regex pattern: $"Column Name" (quoted only, requires explicit spaces)
+            var regex = new Regex(@"\$""([^""]+)""");
+
+            string result = regex.Replace(pattern, match =>
+            {
+                // Extract column name from quoted group
+                string columnName = match.Groups[1].Value;
+
+                // Get value from dataRow with case-insensitive matching
+                string dataValue = GetDataValueFromRow(dataRow, columnName);
+
+                // If value found, use it; otherwise keep the original reference
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+            });
+
+            return result;
+        }
+
+        /// <summary>
+        /// Get data value from row with case-insensitive and space/underscore-normalized matching.
+        /// Example: "attr dated" will match "attr_dated", "Entity Type" will match "EntityType"
+        /// </summary>
+        private string GetDataValueFromRow(Dictionary<string, object> row, string key)
+        {
+            if (row == null || string.IsNullOrEmpty(key))
+                return string.Empty;
+
+            // Try exact match first
+            if (row.TryGetValue(key, out var exactValue) && exactValue != null)
+                return exactValue.ToString();
+
+            // Try case-insensitive match
+            var kvp = row.FirstOrDefault(k => string.Equals(k.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                return kvp.Value.ToString();
+
+            // Try matching with spaces converted to underscores
+            // This allows $"attr dated" to match "attr_dated" key in dictionary
+            string keyWithUnderscores = key.Replace(" ", "_");
+            if (keyWithUnderscores != key) // Only try if we actually replaced something
+            {
+                kvp = row.FirstOrDefault(k => string.Equals(k.Key, keyWithUnderscores, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                    return kvp.Value.ToString();
+            }
+
+            // Try matching with underscores converted to spaces
+            // This allows $"attr_dated" to match "attr dated" key in dictionary
+            string keyWithSpaces = key.Replace("_", " ");
+            if (keyWithSpaces != key) // Only try if we actually replaced something
+            {
+                kvp = row.FirstOrDefault(k => string.Equals(k.Key, keyWithSpaces, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                    return kvp.Value.ToString();
+            }
+
+            // Try matching with normalized spaces (remove spaces from both)
+            // This allows $"Entity Type" to match "EntityType" key in dictionary
+            string keyWithoutSpaces = key.Replace(" ", "").Replace("_", "");
+            kvp = row.FirstOrDefault(k =>
+                string.Equals(
+                    k.Key.Replace(" ", "").Replace("_", ""),
+                    keyWithoutSpaces,
+                    StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                return kvp.Value.ToString();
+
+            return string.Empty;
         }
 
         /// <summary>

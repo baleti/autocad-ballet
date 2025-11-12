@@ -93,53 +93,57 @@ public static class FilterEntityDataHelper
             }
 
             // ALSO load stored selection references (may include entities in blocks)
-            var docName = Path.GetFileName(doc.Name);
-            var storedSelection = SelectionStorage.LoadSelection(docName);
-
-            if (storedSelection != null && storedSelection.Count > 0)
+            // Only do this if select-in-blocks mode is enabled
+            if (SelectInBlocksMode.IsEnabled())
             {
-                // Filter to current session
-                var currentSessionId = GetCurrentSessionId();
-                storedSelection = storedSelection.Where(item =>
-                    string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
+                var docName = Path.GetFileName(doc.Name);
+                var storedSelection = SelectionStorage.LoadSelection(docName);
 
-                // Process stored selection items from current document
-                using (var tr = db.TransactionManager.StartTransaction())
+                if (storedSelection != null && storedSelection.Count > 0)
                 {
-                    foreach (var item in storedSelection)
-                    {
-                        try
-                        {
-                            // Only process items from current document
-                            if (Path.GetFullPath(item.DocumentPath) == Path.GetFullPath(doc.Name))
-                            {
-                                var handle = Convert.ToInt64(item.Handle, 16);
-                                var objectId = db.GetObjectId(false, new Handle(handle), 0);
+                    // Filter to current session
+                    var currentSessionId = GetCurrentSessionId();
+                    storedSelection = storedSelection.Where(item =>
+                        string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
 
-                                if (objectId != ObjectId.Null)
+                    // Process stored selection items from current document
+                    using (var tr = db.TransactionManager.StartTransaction())
+                    {
+                        foreach (var item in storedSelection)
+                        {
+                            try
+                            {
+                                // Only process items from current document
+                                if (Path.GetFullPath(item.DocumentPath) == Path.GetFullPath(doc.Name))
                                 {
-                                    var entity = tr.GetObject(objectId, OpenMode.ForRead);
-                                    if (entity != null)
+                                    var handle = Convert.ToInt64(item.Handle, 16);
+                                    var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                                    if (objectId != ObjectId.Null)
                                     {
-                                        // Check if this entity is already in entityData (from pickfirst)
-                                        bool alreadyAdded = entityData.Any(d => d.ContainsKey("ObjectId") && ((ObjectId)d["ObjectId"]) == objectId);
-                                        if (!alreadyAdded)
+                                        var entity = tr.GetObject(objectId, OpenMode.ForRead);
+                                        if (entity != null)
                                         {
-                                            var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
-                                            data["ObjectId"] = objectId; // Store for selection
-                                            entityData.Add(data);
+                                            // Check if this entity is already in entityData (from pickfirst)
+                                            bool alreadyAdded = entityData.Any(d => d.ContainsKey("ObjectId") && ((ObjectId)d["ObjectId"]) == objectId);
+                                            if (!alreadyAdded)
+                                            {
+                                                var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
+                                                data["ObjectId"] = objectId; // Store for selection
+                                                entityData.Add(data);
+                                            }
                                         }
                                     }
                                 }
                             }
+                            catch
+                            {
+                                // Skip problematic entities
+                                continue;
+                            }
                         }
-                        catch
-                        {
-                            // Skip problematic entities
-                            continue;
-                        }
+                        tr.Commit();
                     }
-                    tr.Commit();
                 }
             }
 

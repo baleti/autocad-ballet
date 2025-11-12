@@ -704,10 +704,11 @@ public partial class CustomGUIs
         {
             if (string.IsNullOrEmpty(pattern)) return currentValue;
             string result = pattern.Replace("{}", currentValue);
-            var regex = new Regex(@"\$""([^""]+)""|(?<!\$)\$(\w+)");
+            // Regex pattern: $"Column Name" (quoted only, requires explicit spaces)
+            var regex = new Regex(@"\$""([^""]+)""");
             result = regex.Replace(result, match =>
             {
-                string dataName = !string.IsNullOrEmpty(match.Groups[1].Value) ? match.Groups[1].Value : match.Groups[2].Value;
+                string dataName = match.Groups[1].Value;
                 string dataValue = GetDataValueFromRow(dataRow, dataName);
                 return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
             });
@@ -717,10 +718,47 @@ public partial class CustomGUIs
         private static string GetDataValueFromRow(Dictionary<string, object> row, string key)
         {
             if (row == null || string.IsNullOrEmpty(key)) return string.Empty;
-            if (row.TryGetValue(key, out var v) && v != null) return v.ToString();
-            // Also try case-insensitive match
-            var kv = row.FirstOrDefault(k => string.Equals(k.Key, key, StringComparison.OrdinalIgnoreCase));
-            if (!string.IsNullOrEmpty(kv.Key) && kv.Value != null) return kv.Value.ToString();
+
+            // Try exact match first
+            if (row.TryGetValue(key, out var exactValue) && exactValue != null)
+                return exactValue.ToString();
+
+            // Try case-insensitive match
+            var kvp = row.FirstOrDefault(k => string.Equals(k.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                return kvp.Value.ToString();
+
+            // Try matching with spaces converted to underscores
+            // This allows $"attr dated" to match "attr_dated" key in dictionary
+            string keyWithUnderscores = key.Replace(" ", "_");
+            if (keyWithUnderscores != key) // Only try if we actually replaced something
+            {
+                kvp = row.FirstOrDefault(k => string.Equals(k.Key, keyWithUnderscores, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                    return kvp.Value.ToString();
+            }
+
+            // Try matching with underscores converted to spaces
+            // This allows $"attr_dated" to match "attr dated" key in dictionary
+            string keyWithSpaces = key.Replace("_", " ");
+            if (keyWithSpaces != key) // Only try if we actually replaced something
+            {
+                kvp = row.FirstOrDefault(k => string.Equals(k.Key, keyWithSpaces, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                    return kvp.Value.ToString();
+            }
+
+            // Try matching with normalized spaces (remove spaces from both)
+            // This allows $"Entity Type" to match "EntityType" key in dictionary
+            string keyWithoutSpaces = key.Replace(" ", "").Replace("_", "");
+            kvp = row.FirstOrDefault(k =>
+                string.Equals(
+                    k.Key.Replace(" ", "").Replace("_", ""),
+                    keyWithoutSpaces,
+                    StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(kvp.Key) && kvp.Value != null)
+                return kvp.Value.ToString();
+
             return string.Empty;
         }
     }

@@ -135,39 +135,83 @@ public class ReplaceBlocksInDocument
                 {
                     var blockTable = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                     var targetBtrId = blockTable[targetBlockName];
+                    var targetBtr = tr.GetObject(targetBtrId, OpenMode.ForRead) as BlockTableRecord;
 
                     foreach (var blockRef in selectedBlockRefs)
                     {
-                        var currentBlockRef = tr.GetObject(blockRef.ObjectId, OpenMode.ForRead) as BlockReference;
+                        var currentBlockRef = tr.GetObject(blockRef.ObjectId, OpenMode.ForWrite) as BlockReference;
                         if (currentBlockRef != null)
                         {
-                            // Create a new block reference with the same properties but different block
-                            var newBlockRef = new BlockReference(currentBlockRef.Position, targetBtrId)
+                            // Save old block attributes before swapping
+                            var oldAttributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (ObjectId attId in currentBlockRef.AttributeCollection)
                             {
-                                Rotation = currentBlockRef.Rotation,
-                                ScaleFactors = currentBlockRef.ScaleFactors,
-                                Layer = currentBlockRef.Layer,
-                                Color = currentBlockRef.Color,
-                                Linetype = currentBlockRef.Linetype,
-                                LinetypeScale = currentBlockRef.LinetypeScale,
-                                LineWeight = currentBlockRef.LineWeight,
-                                Transparency = currentBlockRef.Transparency,
-                                Visible = currentBlockRef.Visible
-                            };
+                                var attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
+                                if (attRef != null)
+                                {
+                                    oldAttributes[attRef.Tag] = attRef.TextString;
+                                }
+                            }
 
-                            // Copy compatible attributes
-                            CopyCompatibleAttributes(tr, currentBlockRef, newBlockRef);
+                            // Collect old attribute IDs before changing the block
+                            var oldAttributeIds = new List<ObjectId>();
+                            foreach (ObjectId attId in currentBlockRef.AttributeCollection)
+                            {
+                                oldAttributeIds.Add(attId);
+                            }
 
-                            // Add the new block reference to the same container
-                            var container = tr.GetObject(currentBlockRef.BlockId, OpenMode.ForWrite) as BlockTableRecord;
-                            container.AppendEntity(newBlockRef);
-                            tr.AddNewlyCreatedDBObject(newBlockRef, true);
+                            // Change the block reference to point to the new block definition
+                            currentBlockRef.BlockTableRecord = targetBtrId;
 
-                            // Remove the original block reference
-                            currentBlockRef.UpgradeOpen();
-                            currentBlockRef.Erase();
+                            // Remove old attributes after changing the block reference
+                            foreach (ObjectId attId in oldAttributeIds)
+                            {
+                                if (!attId.IsErased)
+                                {
+                                    var attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                                    if (attRef != null)
+                                    {
+                                        attRef.Erase();
+                                    }
+                                }
+                            }
+
+                            // Add new attributes from the new block definition
+                            int copiedCount = 0;
+                            int newCount = 0;
+                            foreach (ObjectId defId in targetBtr)
+                            {
+                                var attDef = tr.GetObject(defId, OpenMode.ForRead) as AttributeDefinition;
+                                if (attDef != null && !attDef.Constant)
+                                {
+                                    var attRef = new AttributeReference();
+
+                                    // CRITICAL: Set database defaults to associate AttributeReference with correct database
+                                    // This prevents eWrongDatabase errors when appending to the block reference
+                                    attRef.SetDatabaseDefaults(db);
+
+                                    attRef.SetAttributeFromBlock(attDef, currentBlockRef.BlockTransform);
+
+                                    // Try to copy value from old attributes if tag matches
+                                    if (oldAttributes.TryGetValue(attDef.Tag, out string oldValue))
+                                    {
+                                        attRef.TextString = oldValue;
+                                        copiedCount++;
+                                    }
+                                    else
+                                    {
+                                        attRef.TextString = attDef.TextString; // Use default value
+                                        newCount++;
+                                    }
+
+                                    // Add the attribute to the block reference
+                                    currentBlockRef.AttributeCollection.AppendAttribute(attRef);
+                                    tr.AddNewlyCreatedDBObject(attRef, true);
+                                }
+                            }
 
                             replacedCount++;
+                            ed.WriteMessage($"\nReplaced block ({copiedCount} attrs copied, {newCount} new)");
                         }
                     }
 
@@ -249,70 +293,5 @@ public class ReplaceBlocksInDocument
         }
 
         return blockNames.OrderBy(name => name).ToList();
-    }
-
-    private void CopyCompatibleAttributes(Transaction tr, BlockReference sourceBlock, BlockReference targetBlock)
-    {
-        try
-        {
-            // Get the block table record for the target block to check for attribute definitions
-            var targetBtr = tr.GetObject(targetBlock.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
-            if (targetBtr == null)
-                return;
-
-            var hasAttributeDefs = false;
-            var attributeDefs = new Dictionary<string, AttributeDefinition>();
-
-            // Collect attribute definitions from the target block
-            foreach (ObjectId id in targetBtr)
-            {
-                var attDef = tr.GetObject(id, OpenMode.ForRead) as AttributeDefinition;
-                if (attDef != null)
-                {
-                    hasAttributeDefs = true;
-                    attributeDefs[attDef.Tag.ToUpper()] = attDef;
-                }
-            }
-
-            if (!hasAttributeDefs)
-                return;
-
-            // Get attribute values from source block
-            var sourceAttributes = new Dictionary<string, string>();
-            foreach (ObjectId attId in sourceBlock.AttributeCollection)
-            {
-                var sourceAttRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
-                if (sourceAttRef != null)
-                {
-                    sourceAttributes[sourceAttRef.Tag.ToUpper()] = sourceAttRef.TextString;
-                }
-            }
-
-            // Create attribute references for the target block
-            foreach (var kvp in attributeDefs)
-            {
-                var attDef = kvp.Value;
-                var attRef = new AttributeReference();
-
-                attRef.SetAttributeFromBlock(attDef, targetBlock.BlockTransform);
-
-                // Set the value from source if compatible tag exists, otherwise use default
-                if (sourceAttributes.ContainsKey(attDef.Tag.ToUpper()))
-                {
-                    attRef.TextString = sourceAttributes[attDef.Tag.ToUpper()];
-                }
-                else
-                {
-                    attRef.TextString = attDef.TextString;
-                }
-
-                targetBlock.AttributeCollection.AppendAttribute(attRef);
-                tr.AddNewlyCreatedDBObject(attRef, true);
-            }
-        }
-        catch
-        {
-            // Skip attribute copying if there are any issues
-        }
     }
 }
