@@ -262,12 +262,13 @@ public partial class CustomGUIs
         }
 
         // Search box with dropdown button container
-        Panel searchPanel = new Panel { Dock = DockStyle.Top, Height = 21 };
+        Panel searchPanel = new Panel { Dock = DockStyle.Top, Height = 20, Padding = new Padding(0) };
 
         TextBox searchBox = new TextBox
         {
             Dock = DockStyle.Fill,
-            BorderStyle = BorderStyle.FixedSingle
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Arial", 9, FontStyle.Regular)
         };
 
         // Dropdown button for search history
@@ -275,19 +276,22 @@ public partial class CustomGUIs
         {
             Dock = DockStyle.Right,
             Width = 20,
-            Height = 21,
-            Text = "▾",
+            Height = 20,
+            Text = "▼",
             FlatStyle = FlatStyle.Flat,
             TabStop = false,
             Cursor = Cursors.Hand,
-            ForeColor = Color.DimGray,
+            ForeColor = Color.Black,
             BackColor = Color.White,
-            Font = new Font("Arial", 9, FontStyle.Regular),
-            Margin = new Padding(2, 0, 0, 0)
+            Font = new Font("Arial", 8, FontStyle.Regular),
+            Margin = new Padding(0),
+            Padding = new Padding(0, 0, 0, 1)
         };
 
         dropdownButton.FlatAppearance.BorderSize = 1;
-        dropdownButton.FlatAppearance.BorderColor = SystemColors.ControlDark;
+        dropdownButton.FlatAppearance.BorderColor = Color.FromArgb(127, 127, 127);
+        dropdownButton.FlatAppearance.MouseOverBackColor = Color.White;
+        dropdownButton.FlatAppearance.MouseDownBackColor = Color.White;
 
         // Add tooltip to dropdown button
         ToolTip dropdownTooltip = new ToolTip();
