@@ -225,7 +225,8 @@ public partial class CustomGUIs
             RowTemplate = { Height = 18 },
             VirtualMode = true,
             ScrollBars = ScrollBars.Both,
-            StandardTab = true  // Allow Tab key to be handled by form instead of DataGridView
+            StandardTab = true,  // Allow Tab key to be handled by form instead of DataGridView
+            ShowCellToolTips = false  // Disable tooltips on hover
         };
 
         // Disable built-in sorting
