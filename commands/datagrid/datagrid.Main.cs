@@ -25,6 +25,13 @@ public partial class CustomGUIs
     private static bool _initialSizingDone = false;
 
     // ──────────────────────────────────────────────────────────────
+    //  Font size tracking for Ctrl+/- zoom functionality
+    // ──────────────────────────────────────────────────────────────
+    private static float _currentFontSize = 9f; // Default font size
+    private const float MIN_FONT_SIZE = 6f;
+    private const float MAX_FONT_SIZE = 24f;
+
+    // ──────────────────────────────────────────────────────────────
     //  Internal ID tracking for stable edit tracking
     // ──────────────────────────────────────────────────────────────
 
@@ -190,6 +197,7 @@ public partial class CustomGUIs
 
         // Reset sizing and edit mode state
         _initialSizingDone = false;
+        _currentFontSize = 9f; // Reset to default font size
         ResetEditMode();
 
         // Build search index upfront for performance
@@ -727,6 +735,18 @@ public partial class CustomGUIs
                 }
                 e.Handled = true;
             }
+            else if ((e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add) && e.Control)
+            {
+                // Ctrl+ or Ctrl+Numpad+: Increase font size
+                ResizeDataGrid(grid, searchBox, form, 1f);
+                e.Handled = true;
+            }
+            else if ((e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract) && e.Control)
+            {
+                // Ctrl- or Ctrl+Numpad-: Decrease font size
+                ResizeDataGrid(grid, searchBox, form, -1f);
+                e.Handled = true;
+            }
             else if (e.KeyCode == Keys.Delete && !_isEditMode && sender == grid && onDeleteEntries != null)
             {
                 // Delete key: Invoke callback if provided (callback handles confirmation)
@@ -1162,5 +1182,90 @@ public partial class CustomGUIs
         // Bring form to front
         form.BringToFront();
         form.Focus();
+    }
+
+    /// <summary>
+    /// Resizes the DataGrid font and row height based on Ctrl+/- zoom commands
+    /// </summary>
+    private static void ResizeDataGrid(DataGridView grid, TextBox searchBox, Form form, float fontSizeDelta)
+    {
+        // Calculate new font size with bounds checking
+        float newFontSize = Math.Max(MIN_FONT_SIZE, Math.Min(MAX_FONT_SIZE, _currentFontSize + fontSizeDelta));
+
+        if (newFontSize == _currentFontSize)
+        {
+            // Already at min or max, no change needed
+            return;
+        }
+
+        _currentFontSize = newFontSize;
+
+        // Update grid font
+        grid.Font = new Font(grid.Font.FontFamily, _currentFontSize);
+
+        // Update search box font to match
+        searchBox.Font = new Font(searchBox.Font.FontFamily, _currentFontSize);
+
+        // Update search box container (panel or direct parent) height to accommodate new font
+        Control searchParent = searchBox.Parent;
+        if (searchParent != null)
+        {
+            int newSearchHeight = (int)Math.Ceiling(_currentFontSize * 2.0f) + 6;
+            searchParent.Height = newSearchHeight;
+
+            // If there's a dropdown button, update its height as well
+            foreach (Control child in searchParent.Controls)
+            {
+                if (child is Button)
+                {
+                    child.Height = newSearchHeight;
+                }
+            }
+        }
+
+        // Calculate row height based on font size
+        // Use a multiplier to ensure adequate spacing (approx 2x font size)
+        int newRowHeight = (int)Math.Ceiling(_currentFontSize * 2.0f);
+        grid.RowTemplate.Height = newRowHeight;
+
+        // Update existing rows to new height
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            row.Height = newRowHeight;
+        }
+
+        // Update column header height based on font size
+        // Use a multiplier to ensure adequate spacing (approx 2.2x font size + padding)
+        int newHeaderHeight = (int)Math.Ceiling(_currentFontSize * 2.2f) + 4;
+        grid.ColumnHeadersHeight = newHeaderHeight;
+
+        // Auto-resize columns to fit new font size
+        grid.AutoResizeColumns();
+
+        // Adjust form height to accommodate new row heights if there's room
+        int padding = 20;
+        int rowsHeight = grid.Rows.GetRowsHeight(DataGridViewElementStates.Visible);
+        int requiredHeight = rowsHeight + grid.ColumnHeadersHeight +
+                            2 * grid.RowTemplate.Height +
+                            SystemInformation.HorizontalScrollBarHeight + 30;
+
+        int availableHeight = Screen.FromControl(form).WorkingArea.Height - padding * 2;
+        int newFormHeight = Math.Min(requiredHeight, availableHeight);
+
+        // Only adjust height if it's different from current height
+        if (newFormHeight != form.Height)
+        {
+            form.Height = newFormHeight;
+
+            // Re-center vertically after height change
+            Screen currentScreen = Screen.FromControl(form);
+            form.Location = new Point(
+                form.Location.X,
+                (currentScreen.WorkingArea.Height - form.Height) / 2 + currentScreen.WorkingArea.Top
+            );
+        }
+
+        // Force grid to refresh
+        grid.Invalidate();
     }
 }
