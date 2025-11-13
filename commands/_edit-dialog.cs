@@ -497,8 +497,8 @@ namespace AutoCADCommands
                 // Get value from dataRow with case-insensitive matching
                 string dataValue = GetDataValueFromRow(dataRow, columnName);
 
-                // If value found, use it; otherwise keep the original reference
-                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+                // If value found, use it; otherwise insert empty string (ignore empty values)
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : string.Empty;
             });
 
             return result;
@@ -525,8 +525,8 @@ namespace AutoCADCommands
                 // Get value from dataRow with case-insensitive matching
                 string dataValue = GetDataValueFromRow(dataRow, columnName);
 
-                // If value found, use it; otherwise keep the original reference
-                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+                // If value found, use it; otherwise insert empty string (ignore empty values)
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : string.Empty;
             });
 
             return result;

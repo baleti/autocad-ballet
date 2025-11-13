@@ -220,7 +220,7 @@ public partial class CustomGUIs
             }
         }
 
-        using (var advancedForm = new AutoCADCommands.AdvancedEditDialog(currentValues, dataRows, "Advanced Cell Editor"))
+        using (var advancedForm = new AutoCADCommands.AdvancedEditDialog(currentValues, dataRows, "rename"))
         {
             if (advancedForm.ShowDialog() == WinForms.DialogResult.OK)
             {
@@ -793,7 +793,7 @@ public partial class CustomGUIs
             {
                 string dataName = match.Groups[1].Value;
                 string dataValue = GetDataValueFromRow(dataRow, dataName);
-                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : string.Empty;
             });
             return result;
         }
@@ -819,8 +819,8 @@ public partial class CustomGUIs
                 // Get value from dataRow with case-insensitive matching
                 string dataValue = GetDataValueFromRow(dataRow, columnName);
 
-                // If value found, use it; otherwise keep the original reference
-                return !string.IsNullOrEmpty(dataValue) ? dataValue : match.Value;
+                // If value found, use it; otherwise insert empty string (ignore empty values)
+                return !string.IsNullOrEmpty(dataValue) ? dataValue : string.Empty;
             });
 
             return result;
