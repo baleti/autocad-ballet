@@ -191,8 +191,19 @@ namespace AutoCADBallet
                 return;
             }
 
-            // Select the second most recent layout (index 1)
-            var selectedView = availableViews[1];
+            // Check if current active view matches the most recent logged view
+            var mostRecentView = availableViews[0];
+            string mostRecentLayoutName = mostRecentView["LayoutName"].ToString();
+            Document mostRecentDoc = mostRecentView["Document"] as Document;
+
+            bool currentMatchesMostRecent = (activeDoc == mostRecentDoc &&
+                                             currentLayoutName == mostRecentLayoutName);
+
+            // If current view matches most recent logged view, switch to second-to-last (index 1)
+            // If it doesn't match, something went wrong - switch to most recent logged view (index 0)
+            int targetIndex = currentMatchesMostRecent ? 1 : 0;
+
+            var selectedView = availableViews[targetIndex];
             string chosenLayoutName = selectedView["LayoutName"].ToString();
             Document chosenDoc = selectedView["Document"] as Document;
             string targetDocName = selectedView["DocumentName"].ToString();
