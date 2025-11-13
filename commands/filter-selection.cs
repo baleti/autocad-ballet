@@ -633,6 +633,9 @@ public static class FilterEntityDataHelper
                     entity[columnName] = "";
                 }
                 entity["ParentBlockType"] = "";
+
+                // Remove internal property even if type cast failed
+                entity.Remove("_ParentBlocks");
             }
         }
     }
