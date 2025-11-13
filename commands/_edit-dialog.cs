@@ -59,8 +59,9 @@ namespace AutoCADCommands
         private void BuildUI()
         {
             Font = new Drawing.Font("Segoe UI", 9);
-            MinimumSize = new Drawing.Size(520, 480);
-            Size = new Drawing.Size(640, 560);
+            MinimumSize = new Drawing.Size(640, 600);
+            Size = new Drawing.Size(800, 720);
+            FormBorderStyle = WinForms.FormBorderStyle.Sizable;
             KeyPreview = true;
             KeyDown += (s, e) => { if (e.KeyCode == WinForms.Keys.Escape) Close(); };
 
@@ -90,8 +91,8 @@ namespace AutoCADCommands
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 4: Find/Replace hint
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 32)); // Row 5: Math
             grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Absolute, 22)); // Row 6: Math hint
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
-            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 45));
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 50)); // Row 7: Current Values (taller)
+            grid.RowStyles.Add(new WinForms.RowStyle(WinForms.SizeType.Percent, 50)); // Row 8: Preview (taller)
 
             // Pattern (moved to top)
             grid.Controls.Add(MakeLabel("Pattern:"), 0, 0);
@@ -202,7 +203,9 @@ namespace AutoCADCommands
             {
                 FlowDirection = WinForms.FlowDirection.RightToLeft,
                 Dock = WinForms.DockStyle.Bottom,
-                Padding = new WinForms.Padding(8)
+                Padding = new WinForms.Padding(8),
+                AutoSize = true,
+                AutoSizeMode = WinForms.AutoSizeMode.GrowAndShrink
             };
 
             var btnOK = new WinForms.Button { Text = "OK", DialogResult = WinForms.DialogResult.OK };

@@ -291,8 +291,19 @@ public partial class CustomGUIs
     private static string TransformValue(string originalValue, AutoCADCommands.AdvancedEditDialog dialog, Dictionary<string, object> dataRow)
     {
         // Use the same transformation logic as AdvancedEditDialog.TransformValue
-        // 1. Find/Replace
+        // This matches the order in _edit-dialog.cs TransformValue method
         string value = originalValue ?? string.Empty;
+
+        // 1. Pattern transformation (applied first as base)
+        if (!string.IsNullOrEmpty(dialog.PatternText))
+        {
+            if (dataRow != null)
+                value = DataRenamerHelper.ParsePatternWithDataReferences(dialog.PatternText, value, dataRow);
+            else
+                value = dialog.PatternText.Replace("{}", value);
+        }
+
+        // 2. Find/Replace transformation (applied to pattern result)
         if (!string.IsNullOrEmpty(dialog.FindText))
         {
             string findText = dialog.FindText;
@@ -324,19 +335,8 @@ public partial class CustomGUIs
                 value = value.Replace(findText, replaceText);
             }
         }
-        else if (!string.IsNullOrEmpty(dialog.ReplaceText))
-            value = dialog.ReplaceText;
 
-        // 2. Pattern (with data reference support)
-        if (!string.IsNullOrEmpty(dialog.PatternText))
-        {
-            if (dataRow != null)
-                value = DataRenamerHelper.ParsePatternWithDataReferences(dialog.PatternText, value, dataRow);
-            else
-                value = dialog.PatternText.Replace("{}", value);
-        }
-
-        // 3. Math
+        // 3. Math transformation (applied to result of pattern + find/replace)
         if (!string.IsNullOrEmpty(dialog.MathOperationText))
         {
             if (double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out double n))
