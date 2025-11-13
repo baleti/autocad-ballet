@@ -14,50 +14,15 @@ namespace AutoCADBallet
 {
     public static class PlotDiagnostics
     {
-        private static string logFilePath = null;
-
-        static PlotDiagnostics()
-        {
-            try
-            {
-                string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                string diagnosticsFolder = Path.Combine(appDataPath, "autocad-ballet", "runtime", "diagnostics");
-                Directory.CreateDirectory(diagnosticsFolder);
-
-                string timestamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-                logFilePath = Path.Combine(diagnosticsFolder, $"plot-layouts_{timestamp}.log");
-
-                Log($"=== Plot Layouts Diagnostics Started at {DateTime.Now} ===");
-            }
-            catch
-            {
-                // Silently fail if we can't create log file
-                logFilePath = null;
-            }
-        }
-
+        // Logging disabled - no diagnostic files will be created
         public static void Log(string message)
         {
-            if (logFilePath == null) return;
-
-            try
-            {
-                string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-                File.AppendAllText(logFilePath, $"[{timestamp}] {message}\n");
-            }
-            catch
-            {
-                // Silently fail
-            }
+            // No-op: logging disabled
         }
 
         public static void LogException(string context, Exception ex)
         {
-            Log($"EXCEPTION in {context}: {ex.GetType().Name} - {ex.Message}");
-            if (ex.StackTrace != null)
-            {
-                Log($"  Stack: {ex.StackTrace}");
-            }
+            // No-op: logging disabled
         }
     }
 
