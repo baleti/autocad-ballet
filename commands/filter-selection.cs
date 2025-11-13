@@ -2004,18 +2004,63 @@ public abstract class FilterElementsBase
             ed.WriteMessage($"[DIAG] ProcessTagsAndAttributes: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
+            // DIAGNOSTIC: Check for _ParentBlocks BEFORE ProcessParentBlockColumns
+            var entitiesWithParentBlocksBefore = entityData.Count(e => e.ContainsKey("_ParentBlocks"));
+            ed.WriteMessage($"[DIAG] Entities with _ParentBlocks BEFORE ProcessParentBlockColumns: {entitiesWithParentBlocksBefore}/{entityData.Count}\n");
+            if (entitiesWithParentBlocksBefore > 0)
+            {
+                var sampleEntity = entityData.First(e => e.ContainsKey("_ParentBlocks"));
+                ed.WriteMessage($"[DIAG] Sample _ParentBlocks type: {sampleEntity["_ParentBlocks"]?.GetType()?.FullName ?? "null"}\n");
+            }
+
             // Process parent block hierarchy into separate columns
             FilterEntityDataHelper.ProcessParentBlockColumns(entityData);
             timer.Stop();
             ed.WriteMessage($"[DIAG] ProcessParentBlockColumns: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
+            // DIAGNOSTIC: Check for _ParentBlocks AFTER ProcessParentBlockColumns
+            var entitiesWithParentBlocksAfter = entityData.Count(e => e.ContainsKey("_ParentBlocks"));
+            ed.WriteMessage($"[DIAG] Entities with _ParentBlocks AFTER ProcessParentBlockColumns: {entitiesWithParentBlocksAfter}/{entityData.Count}\n");
+
+            // DEFENSIVE: Ensure _ParentBlocks is removed from all entities (should already be done by ProcessParentBlockColumns)
+            var removedCount = 0;
+            foreach (var entity in entityData)
+            {
+                if (entity.Remove("_ParentBlocks"))
+                {
+                    removedCount++;
+                }
+            }
+            timer.Stop();
+            ed.WriteMessage($"[DIAG] Defensive _ParentBlocks removal: {timer.ElapsedMilliseconds}ms, removed from {removedCount} entities\n");
+
+            timer.Restart();
+            // DIAGNOSTIC: Final check before collecting property names
+            var entitiesWithParentBlocksFinal = entityData.Count(e => e.ContainsKey("_ParentBlocks"));
+            ed.WriteMessage($"[DIAG] Entities with _ParentBlocks AFTER defensive removal: {entitiesWithParentBlocksFinal}/{entityData.Count}\n");
+
             // Get ALL unique property names from ALL entities (union, not just first entity)
             var propertyNames = entityData
                 .SelectMany(e => e.Keys)
                 .Distinct()
                 .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex" && k != "_ParentBlocks")
                 .ToList();
+
+            // DIAGNOSTIC: Check if _ParentBlocks is in propertyNames
+            var allKeysBeforeFilter = entityData.SelectMany(e => e.Keys).Distinct().ToList();
+            var hasParentBlocksKey = allKeysBeforeFilter.Contains("_ParentBlocks");
+            ed.WriteMessage($"[DIAG] _ParentBlocks in all keys before filter: {hasParentBlocksKey}\n");
+            ed.WriteMessage($"[DIAG] _ParentBlocks in propertyNames after filter: {propertyNames.Contains("_ParentBlocks")}\n");
+            ed.WriteMessage($"[DIAG] Total property names collected: {propertyNames.Count}\n");
+
+            // DIAGNOSTIC: Show all keys that contain "parent" or "block" (case insensitive)
+            var parentBlockRelatedKeys = allKeysBeforeFilter.Where(k =>
+                k.ToLower().Contains("parent") || k.ToLower().Contains("block")).ToList();
+            if (parentBlockRelatedKeys.Any())
+            {
+                ed.WriteMessage($"[DIAG] Keys containing 'parent' or 'block': {string.Join(", ", parentBlockRelatedKeys)}\n");
+            }
 
             // Normalize all entities to have all property names (fill missing keys with empty values)
             foreach (var entity in entityData)

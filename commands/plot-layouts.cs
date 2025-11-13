@@ -147,6 +147,10 @@ namespace AutoCADBallet
 
             var propertyNames = new List<string> { "layout" };
             var initialSelectionIndices = new List<int>();
+            if (currentViewIndex >= 0)
+            {
+                initialSelectionIndices.Add(currentViewIndex);
+            }
 
             try
             {
@@ -315,6 +319,10 @@ namespace AutoCADBallet
 
             var propertyNames = new List<string> { "layout", "document", "autocad session" };
             var initialSelectionIndices = new List<int>();
+            if (currentViewIndex >= 0)
+            {
+                initialSelectionIndices.Add(currentViewIndex);
+            }
 
             try
             {
