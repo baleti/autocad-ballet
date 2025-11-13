@@ -788,9 +788,44 @@ namespace AutoCADBallet
             }
         }
 
+        private static bool IsRevisionCloud(Entity entity)
+        {
+            try
+            {
+                var xData = entity.XData;
+                if (xData != null)
+                {
+                    foreach (TypedValue typedValue in xData)
+                    {
+                        if (typedValue.TypeCode == (int)DxfCode.ExtendedDataRegAppName)
+                        {
+                            string appName = typedValue.Value?.ToString();
+                            // Check for both "RevcloudProps" and "RevCloudProps" (version differences)
+                            if (appName != null &&
+                                (appName.Equals("RevcloudProps", StringComparison.OrdinalIgnoreCase) ||
+                                 appName.Equals("RevCloudProps", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // If we can't read XData, assume it's not a revision cloud
+            }
+            return false;
+        }
+
         public static string GetEntityCategory(DBObject entity)
         {
             string typeName = entity.GetType().Name;
+
+            // Check for revision clouds before checking for regular polylines
+            // Revision clouds are polylines with XData registered application name "RevcloudProps"
+            if (entity is Polyline polyline && IsRevisionCloud(polyline))
+                return "Revision Cloud";
 
             if (entity is LayerTableRecord)
                 return "Layer";
