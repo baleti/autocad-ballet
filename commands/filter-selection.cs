@@ -70,6 +70,9 @@ public static class FilterEntityDataHelper
             {
                 using (var tr = db.TransactionManager.StartTransaction())
                 {
+                    // Build block hierarchy cache ONCE at the start (huge performance optimization)
+                    var blockHierarchyCache = BuildBlockHierarchyCache(db, tr);
+
                     foreach (var objectId in selResult.Value.GetObjectIds())
                     {
                         try
@@ -77,7 +80,7 @@ public static class FilterEntityDataHelper
                             var entity = tr.GetObject(objectId, OpenMode.ForRead);
                             if (entity != null)
                             {
-                                var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties);
+                                var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties, tr, blockHierarchyCache);
                                 data["ObjectId"] = objectId; // Store for selection
                                 entityData.Add(data);
                             }
@@ -109,6 +112,9 @@ public static class FilterEntityDataHelper
                     // Process stored selection items from current document
                     using (var tr = db.TransactionManager.StartTransaction())
                     {
+                        // Build block hierarchy cache ONCE at the start (huge performance optimization)
+                        var blockHierarchyCache = BuildBlockHierarchyCache(db, tr);
+
                         foreach (var item in storedSelection)
                         {
                             try
@@ -128,7 +134,7 @@ public static class FilterEntityDataHelper
                                             bool alreadyAdded = entityData.Any(d => d.ContainsKey("ObjectId") && ((ObjectId)d["ObjectId"]) == objectId);
                                             if (!alreadyAdded)
                                             {
-                                                var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
+                                                var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties, tr, blockHierarchyCache);
                                                 data["ObjectId"] = objectId; // Store for selection
                                                 entityData.Add(data);
                                             }
@@ -219,43 +225,77 @@ public static class FilterEntityDataHelper
             int externalDocCount = 0;
             var externalDocTimer = new System.Diagnostics.Stopwatch();
 
-            // Process stored selection items
+            // Separate current document items from external document items
+            var currentDocItems = new List<SelectionItem>();
+            var externalDocItems = new List<SelectionItem>();
+
             foreach (var item in storedSelection)
             {
                 try
                 {
-                    // Check if this is from the current document
                     if (Path.GetFullPath(item.DocumentPath) == Path.GetFullPath(doc.Name))
                     {
-                        currentDocCount++;
-                        // Current document - get entity directly
-                        var handle = Convert.ToInt64(item.Handle, 16);
-                        var objectId = db.GetObjectId(false, new Handle(handle), 0);
+                        currentDocItems.Add(item);
+                    }
+                    else
+                    {
+                        externalDocItems.Add(item);
+                    }
+                }
+                catch
+                {
+                    // If path comparison fails, treat as external
+                    externalDocItems.Add(item);
+                }
+            }
 
-                        if (objectId != ObjectId.Null)
+            // Process current document items in a single transaction with cache
+            if (currentDocItems.Count > 0)
+            {
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    // Build block hierarchy cache ONCE for all entities (huge performance optimization)
+                    var blockHierarchyCache = BuildBlockHierarchyCache(db, tr);
+
+                    foreach (var item in currentDocItems)
+                    {
+                        try
                         {
-                            using (var tr = db.TransactionManager.StartTransaction())
+                            currentDocCount++;
+                            var handle = Convert.ToInt64(item.Handle, 16);
+                            var objectId = db.GetObjectId(false, new Handle(handle), 0);
+
+                            if (objectId != ObjectId.Null)
                             {
                                 var entity = tr.GetObject(objectId, OpenMode.ForRead);
                                 if (entity != null)
                                 {
-                                    var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties);
+                                    var data = GetEntityDataDictionary(entity, item.DocumentPath, null, includeProperties, tr, blockHierarchyCache);
                                     data["ObjectId"] = objectId; // Store for selection
                                     entityData.Add(data);
                                 }
-                                tr.Commit();
                             }
                         }
+                        catch
+                        {
+                            // Skip problematic entities
+                            continue;
+                        }
                     }
-                    else
-                    {
-                        externalDocCount++;
-                        // Different document - retrieve properties from external document
-                        externalDocTimer.Start();
-                        var data = GetExternalEntityData(item.DocumentPath, item.Handle, includeProperties);
-                        externalDocTimer.Stop();
-                        entityData.Add(data);
-                    }
+                    tr.Commit();
+                }
+            }
+
+            // Process external document items
+            foreach (var item in externalDocItems)
+            {
+                try
+                {
+                    externalDocCount++;
+                    externalDocTimer.Start();
+                    var data = GetExternalEntityData(item.DocumentPath, item.Handle, includeProperties);
+                    externalDocTimer.Stop();
+                    entityData.Add(data);
                 }
                 catch
                 {
@@ -289,6 +329,9 @@ public static class FilterEntityDataHelper
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
+                // Build block hierarchy cache ONCE at the start (huge performance optimization)
+                var blockHierarchyCache = BuildBlockHierarchyCache(db, tr);
+
                 foreach (var objectId in entities)
                 {
                     try
@@ -296,7 +339,7 @@ public static class FilterEntityDataHelper
                         var entity = tr.GetObject(objectId, OpenMode.ForRead);
                         if (entity != null)
                         {
-                            var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties);
+                            var data = GetEntityDataDictionary(entity, doc.Name, null, includeProperties, tr, blockHierarchyCache);
                             entityData.Add(data);
                         }
                     }
@@ -395,7 +438,7 @@ public static class FilterEntityDataHelper
                             if (entity != null)
                             {
                                 // Get the real entity data
-                                data = GetEntityDataDictionary(entity, documentPath, null, includeProperties);
+                                data = GetEntityDataDictionary(entity, documentPath, null, includeProperties, tr);
                                 data["IsExternal"] = true;
                                 data["DisplayName"] = $"External: {data["Name"]}";
                             }
@@ -443,64 +486,156 @@ public static class FilterEntityDataHelper
     }
 
     /// <summary>
+    /// Builds a cache mapping block definition ObjectIds to their parent block ObjectIds.
+    /// This eliminates the need to scan all blocks repeatedly in FindParentBlockReference.
+    /// Returns a dictionary where Key = referenced block definition, Value = parent block containing the reference.
+    /// </summary>
+    public static Dictionary<ObjectId, ObjectId> BuildBlockHierarchyCache(Database db, Transaction tr)
+    {
+        var cache = new Dictionary<ObjectId, ObjectId>();
+        var cacheTimer = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            var blockTable = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
+            if (blockTable == null)
+                return cache;
+
+            int blocksScanned = 0;
+            int entitiesScanned = 0;
+            int referencesFound = 0;
+
+            // Scan all block definitions once
+            foreach (ObjectId blockId in blockTable)
+            {
+                var btr = tr.GetObject(blockId, OpenMode.ForRead) as BlockTableRecord;
+                if (btr == null || btr.IsLayout)
+                    continue;
+
+                blocksScanned++;
+
+                // Look through entities in this block for BlockReferences
+                foreach (ObjectId entityId in btr)
+                {
+                    entitiesScanned++;
+
+                    var entity = tr.GetObject(entityId, OpenMode.ForRead);
+                    if (entity is BlockReference blockRef)
+                    {
+                        // Map: referenced block definition → parent block that contains it
+                        var referencedBlockId = blockRef.BlockTableRecord;
+
+                        // Only store if not already in cache (first parent wins)
+                        if (!cache.ContainsKey(referencedBlockId))
+                        {
+                            cache[referencedBlockId] = btr.ObjectId;
+                            referencesFound++;
+                        }
+                    }
+                }
+            }
+
+            cacheTimer.Stop();
+            _diagCacheBuildTime = cacheTimer.ElapsedMilliseconds;
+            _diagCacheBlocksScanned = blocksScanned;
+            _diagCacheEntitiesScanned = entitiesScanned;
+            _diagCacheReferencesFound = referencesFound;
+        }
+        catch
+        {
+            // Return whatever cache we've built
+        }
+
+        return cache;
+    }
+
+    /// <summary>
+    /// Fast lookup using pre-built cache instead of scanning entire database.
+    /// </summary>
+    private static ObjectId FindParentBlockReferenceWithCache(ObjectId blockId, Dictionary<ObjectId, ObjectId> cache)
+    {
+        if (cache != null && cache.TryGetValue(blockId, out var parentBlockId))
+        {
+            return parentBlockId;
+        }
+        return ObjectId.Null;
+    }
+
+    /// <summary>
     /// Gets the parent block hierarchy for an entity.
     /// Returns list of block info from outermost to innermost (reversed for display).
     /// Returns empty list if entity is not in a block.
     /// </summary>
-    private static List<ParentBlockInfo> GetParentBlockHierarchy(Entity entity)
+    private static List<ParentBlockInfo> GetParentBlockHierarchy(Entity entity, Transaction tr, Dictionary<ObjectId, ObjectId> blockHierarchyCache = null)
     {
         var hierarchy = new List<ParentBlockInfo>();
+        _diagParentBlockCallCount++;
 
         try
         {
             var db = entity.Database;
-            using (var tr = db.TransactionManager.StartTransaction())
+            var currentBlockId = entity.BlockId;
+
+            // Walk up the block hierarchy
+            while (currentBlockId != ObjectId.Null)
             {
-                var currentBlockId = entity.BlockId;
+                _diagParentBlockIterations++;
 
-                // Walk up the block hierarchy
-                while (currentBlockId != ObjectId.Null)
+                _diagParentBlockGetObjectTimer.Start();
+                var btr = tr.GetObject(currentBlockId, OpenMode.ForRead) as BlockTableRecord;
+                _diagParentBlockGetObjectTimer.Stop();
+
+                if (btr == null)
+                    break;
+
+                // Stop if we reached a layout block (Model or Paper space)
+                _diagParentBlockCheckLayoutTimer.Start();
+                bool isLayout = btr.IsLayout;
+                _diagParentBlockCheckLayoutTimer.Stop();
+
+                if (isLayout)
+                    break;
+
+                // Determine block type and name
+                _diagParentBlockDetermineTypeTimer.Start();
+                string blockName = btr.Name;
+                string blockType = "Block Reference";
+
+                if (btr.IsFromExternalReference)
                 {
-                    var btr = tr.GetObject(currentBlockId, OpenMode.ForRead) as BlockTableRecord;
-                    if (btr == null)
-                        break;
+                    blockType = "XRef";
+                }
+                else if (btr.IsDynamicBlock)
+                {
+                    blockType = "Dynamic Block";
+                }
+                else if (btr.IsAnonymous)
+                {
+                    // Anonymous blocks could be from dynamic blocks
+                    // Try to get the original dynamic block name
+                    blockType = "Dynamic Block";
+                }
+                _diagParentBlockDetermineTypeTimer.Stop();
 
-                    // Stop if we reached a layout block (Model or Paper space)
-                    if (btr.IsLayout)
-                        break;
+                // Add this block to the hierarchy
+                hierarchy.Add(new ParentBlockInfo
+                {
+                    Name = blockName,
+                    Type = blockType
+                });
 
-                    // Determine block type and name
-                    string blockName = btr.Name;
-                    string blockType = "Block Reference";
-
-                    if (btr.IsFromExternalReference)
-                    {
-                        blockType = "XRef";
-                    }
-                    else if (btr.IsDynamicBlock)
-                    {
-                        blockType = "Dynamic Block";
-                    }
-                    else if (btr.IsAnonymous)
-                    {
-                        // Anonymous blocks could be from dynamic blocks
-                        // Try to get the original dynamic block name
-                        blockType = "Dynamic Block";
-                    }
-
-                    // Add this block to the hierarchy
-                    hierarchy.Add(new ParentBlockInfo
-                    {
-                        Name = blockName,
-                        Type = blockType
-                    });
-
-                    // Find if this block is itself nested in another block
-                    // Search for a BlockReference that references this block definition and is itself in a block
+                // Find if this block is itself nested in another block
+                // Use cache for fast lookup if available, otherwise fall back to database scan
+                _diagParentBlockFindParentTimer.Start();
+                if (blockHierarchyCache != null)
+                {
+                    currentBlockId = FindParentBlockReferenceWithCache(btr.ObjectId, blockHierarchyCache);
+                }
+                else
+                {
                     currentBlockId = FindParentBlockReference(btr, db, tr);
                 }
-
-                tr.Commit();
+                _diagParentBlockFindParentTimer.Stop();
             }
         }
         catch
@@ -521,32 +656,54 @@ public static class FilterEntityDataHelper
     {
         try
         {
+            _diagFindParentGetBlockTableTimer.Start();
             // Search through all block definitions for references to this block
             var blockTable = tr.GetObject(db.BlockTableId, OpenMode.ForRead) as BlockTable;
+            _diagFindParentGetBlockTableTimer.Stop();
+
             if (blockTable == null)
                 return ObjectId.Null;
 
+            _diagFindParentIterateBlocksTimer.Start();
             foreach (ObjectId blockId in blockTable)
             {
+                _diagFindParentBlockCount++;
+
+                _diagFindParentGetBlockDefTimer.Start();
                 var searchBtr = tr.GetObject(blockId, OpenMode.ForRead) as BlockTableRecord;
+                _diagFindParentGetBlockDefTimer.Stop();
+
                 if (searchBtr == null || searchBtr.IsLayout)
                     continue; // Skip layout blocks (Model, Paper spaces)
 
+                _diagFindParentIterateEntitiesTimer.Start();
                 // Look through entities in this block for a reference to our target block
                 foreach (ObjectId entityId in searchBtr)
                 {
+                    _diagFindParentEntityCount++;
+
+                    _diagFindParentGetEntityTimer.Start();
                     var entity = tr.GetObject(entityId, OpenMode.ForRead);
+                    _diagFindParentGetEntityTimer.Stop();
+
                     if (entity is BlockReference blockRef)
                     {
+                        _diagFindParentCheckRefTimer.Start();
                         // Check if this block reference points to our target block
                         if (blockRef.BlockTableRecord == btr.ObjectId)
                         {
+                            _diagFindParentCheckRefTimer.Stop();
+                            _diagFindParentIterateEntitiesTimer.Stop();
+                            _diagFindParentIterateBlocksTimer.Stop();
                             // Found a reference! Return the block this reference is in
                             return searchBtr.ObjectId;
                         }
+                        _diagFindParentCheckRefTimer.Stop();
                     }
                 }
+                _diagFindParentIterateEntitiesTimer.Stop();
             }
+            _diagFindParentIterateBlocksTimer.Stop();
         }
         catch
         {
@@ -640,8 +797,167 @@ public static class FilterEntityDataHelper
         }
     }
 
-    public static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties)
+    // Diagnostics for performance profiling
+    private static System.Diagnostics.Stopwatch _diagGetLayoutNameTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetParentBlocksTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetEntityAttributesTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagAddBlockAttributesTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagAddExtensionDataTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetCategoryTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetEntityAreaTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetEntityLengthTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetEntityElevationTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagGetGeometryPropsTimer = new System.Diagnostics.Stopwatch();
+
+    // Detailed GetParentBlockHierarchy diagnostics
+    private static System.Diagnostics.Stopwatch _diagParentBlockGetObjectTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagParentBlockCheckLayoutTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagParentBlockDetermineTypeTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagParentBlockFindParentTimer = new System.Diagnostics.Stopwatch();
+    private static long _diagParentBlockCallCount = 0;
+    private static long _diagParentBlockIterations = 0;
+
+    // Detailed FindParentBlockReference diagnostics
+    private static System.Diagnostics.Stopwatch _diagFindParentGetBlockTableTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagFindParentIterateBlocksTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagFindParentGetBlockDefTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagFindParentIterateEntitiesTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagFindParentGetEntityTimer = new System.Diagnostics.Stopwatch();
+    private static System.Diagnostics.Stopwatch _diagFindParentCheckRefTimer = new System.Diagnostics.Stopwatch();
+    private static long _diagFindParentBlockCount = 0;
+    private static long _diagFindParentEntityCount = 0;
+
+    // Cache build diagnostics
+    private static long _diagCacheBuildTime = 0;
+    private static int _diagCacheBlocksScanned = 0;
+    private static int _diagCacheEntitiesScanned = 0;
+    private static int _diagCacheReferencesFound = 0;
+
+    private static long _diagEntityCount = 0;
+
+    public static void ResetDiagnostics()
     {
+        _diagGetLayoutNameTimer.Reset();
+        _diagGetParentBlocksTimer.Reset();
+        _diagGetEntityAttributesTimer.Reset();
+        _diagAddBlockAttributesTimer.Reset();
+        _diagAddExtensionDataTimer.Reset();
+        _diagGetCategoryTimer.Reset();
+        _diagGetEntityAreaTimer.Reset();
+        _diagGetEntityLengthTimer.Reset();
+        _diagGetEntityElevationTimer.Reset();
+        _diagGetGeometryPropsTimer.Reset();
+
+        _diagParentBlockGetObjectTimer.Reset();
+        _diagParentBlockCheckLayoutTimer.Reset();
+        _diagParentBlockDetermineTypeTimer.Reset();
+        _diagParentBlockFindParentTimer.Reset();
+        _diagParentBlockCallCount = 0;
+        _diagParentBlockIterations = 0;
+
+        _diagFindParentGetBlockTableTimer.Reset();
+        _diagFindParentIterateBlocksTimer.Reset();
+        _diagFindParentGetBlockDefTimer.Reset();
+        _diagFindParentIterateEntitiesTimer.Reset();
+        _diagFindParentGetEntityTimer.Reset();
+        _diagFindParentCheckRefTimer.Reset();
+        _diagFindParentBlockCount = 0;
+        _diagFindParentEntityCount = 0;
+
+        _diagCacheBuildTime = 0;
+        _diagCacheBlocksScanned = 0;
+        _diagCacheEntitiesScanned = 0;
+        _diagCacheReferencesFound = 0;
+
+        _diagEntityCount = 0;
+    }
+
+    public static string GetDiagnosticsSummary()
+    {
+        if (_diagEntityCount == 0) return "No diagnostics collected";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"GetEntityDataDictionary Performance Breakdown ({_diagEntityCount} entities):");
+        sb.AppendLine($"  - GetEntityLayoutName: {_diagGetLayoutNameTimer.ElapsedMilliseconds}ms (avg {_diagGetLayoutNameTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+        sb.AppendLine($"  - GetParentBlockHierarchy: {_diagGetParentBlocksTimer.ElapsedMilliseconds}ms (avg {_diagGetParentBlocksTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+        sb.AppendLine($"  - GetEntityAttributes: {_diagGetEntityAttributesTimer.ElapsedMilliseconds}ms (avg {_diagGetEntityAttributesTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+        sb.AppendLine($"  - AddBlockAttributes: {_diagAddBlockAttributesTimer.ElapsedMilliseconds}ms (avg {_diagAddBlockAttributesTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+        sb.AppendLine($"  - AddExtensionData: {_diagAddExtensionDataTimer.ElapsedMilliseconds}ms (avg {_diagAddExtensionDataTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+        sb.AppendLine($"  - GetEntityCategory: {_diagGetCategoryTimer.ElapsedMilliseconds}ms (avg {_diagGetCategoryTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+
+        var geomTotal = _diagGetEntityAreaTimer.ElapsedMilliseconds + _diagGetEntityLengthTimer.ElapsedMilliseconds +
+                        _diagGetEntityElevationTimer.ElapsedMilliseconds + _diagGetGeometryPropsTimer.ElapsedMilliseconds;
+        if (geomTotal > 0)
+        {
+            sb.AppendLine($"  GEOMETRY PROPERTIES:");
+            sb.AppendLine($"    - GetEntityArea: {_diagGetEntityAreaTimer.ElapsedMilliseconds}ms (avg {_diagGetEntityAreaTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+            sb.AppendLine($"    - GetEntityLength: {_diagGetEntityLengthTimer.ElapsedMilliseconds}ms (avg {_diagGetEntityLengthTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+            sb.AppendLine($"    - GetEntityElevation: {_diagGetEntityElevationTimer.ElapsedMilliseconds}ms (avg {_diagGetEntityElevationTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+            sb.AppendLine($"    - GetEntityGeometryProperties: {_diagGetGeometryPropsTimer.ElapsedMilliseconds}ms (avg {_diagGetGeometryPropsTimer.ElapsedMilliseconds / _diagEntityCount}ms per entity)");
+            sb.AppendLine($"    - Geometry total: {geomTotal}ms");
+        }
+
+        // Cache build diagnostics
+        if (_diagCacheBuildTime > 0)
+        {
+            sb.AppendLine($"  BLOCK HIERARCHY CACHE:");
+            sb.AppendLine($"    - Build time: {_diagCacheBuildTime}ms (ONE-TIME cost)");
+            sb.AppendLine($"    - Blocks scanned: {_diagCacheBlocksScanned}");
+            sb.AppendLine($"    - Entities scanned: {_diagCacheEntitiesScanned}");
+            sb.AppendLine($"    - References found: {_diagCacheReferencesFound}");
+        }
+
+        // Parent block hierarchy detailed breakdown
+        if (_diagParentBlockCallCount > 0)
+        {
+            sb.AppendLine($"  PARENT BLOCK HIERARCHY DETAILS:");
+            sb.AppendLine($"    - Called {_diagParentBlockCallCount} times with {_diagParentBlockIterations} total iterations");
+            sb.AppendLine($"    - GetObject (BlockTableRecord): {_diagParentBlockGetObjectTimer.ElapsedMilliseconds}ms (avg {(_diagParentBlockIterations > 0 ? _diagParentBlockGetObjectTimer.ElapsedMilliseconds / _diagParentBlockIterations : 0)}ms per iteration)");
+            sb.AppendLine($"    - Check IsLayout: {_diagParentBlockCheckLayoutTimer.ElapsedMilliseconds}ms");
+            sb.AppendLine($"    - Determine block type: {_diagParentBlockDetermineTypeTimer.ElapsedMilliseconds}ms");
+            sb.AppendLine($"    - FindParentBlockReference: {_diagParentBlockFindParentTimer.ElapsedMilliseconds}ms (avg {(_diagParentBlockIterations > 0 ? _diagParentBlockFindParentTimer.ElapsedMilliseconds / _diagParentBlockIterations : 0)}ms per iteration)");
+            var parentBlockDetailTotal = _diagParentBlockGetObjectTimer.ElapsedMilliseconds + _diagParentBlockCheckLayoutTimer.ElapsedMilliseconds +
+                                        _diagParentBlockDetermineTypeTimer.ElapsedMilliseconds + _diagParentBlockFindParentTimer.ElapsedMilliseconds;
+            sb.AppendLine($"    - Detailed total: {parentBlockDetailTotal}ms");
+
+            // FindParentBlockReference detailed breakdown
+            if (_diagFindParentBlockCount > 0)
+            {
+                sb.AppendLine($"  FINDPARENTBLOCKREFERENCE DETAILS:");
+                sb.AppendLine($"    - Called {_diagParentBlockIterations} times (once per hierarchy iteration)");
+                sb.AppendLine($"    - Total block definitions checked: {_diagFindParentBlockCount}");
+                sb.AppendLine($"    - Total entities checked: {_diagFindParentEntityCount}");
+                sb.AppendLine($"    - Avg blocks per call: {(_diagParentBlockIterations > 0 ? _diagFindParentBlockCount / _diagParentBlockIterations : 0)}");
+                sb.AppendLine($"    - Avg entities per call: {(_diagParentBlockIterations > 0 ? _diagFindParentEntityCount / _diagParentBlockIterations : 0)}");
+                sb.AppendLine($"    BREAKDOWN:");
+                sb.AppendLine($"      - Get BlockTable: {_diagFindParentGetBlockTableTimer.ElapsedMilliseconds}ms");
+                sb.AppendLine($"      - Iterate blocks (outer loop): {_diagFindParentIterateBlocksTimer.ElapsedMilliseconds}ms");
+                sb.AppendLine($"      - Get block definitions: {_diagFindParentGetBlockDefTimer.ElapsedMilliseconds}ms (avg {(_diagFindParentBlockCount > 0 ? _diagFindParentGetBlockDefTimer.ElapsedMilliseconds / _diagFindParentBlockCount : 0)}ms per block)");
+                sb.AppendLine($"      - Iterate entities (inner loop): {_diagFindParentIterateEntitiesTimer.ElapsedMilliseconds}ms");
+                sb.AppendLine($"      - Get entity from block: {_diagFindParentGetEntityTimer.ElapsedMilliseconds}ms (avg {(_diagFindParentEntityCount > 0 ? _diagFindParentGetEntityTimer.ElapsedMilliseconds / _diagFindParentEntityCount : 0)}ms per entity)");
+                sb.AppendLine($"      - Check if BlockReference matches: {_diagFindParentCheckRefTimer.ElapsedMilliseconds}ms");
+                var findParentTotal = _diagFindParentGetBlockTableTimer.ElapsedMilliseconds + _diagFindParentGetBlockDefTimer.ElapsedMilliseconds +
+                                     _diagFindParentGetEntityTimer.ElapsedMilliseconds + _diagFindParentCheckRefTimer.ElapsedMilliseconds;
+                sb.AppendLine($"      - Accounted time: {findParentTotal}ms");
+                sb.AppendLine($"      - Unaccounted (loop overhead): {_diagParentBlockFindParentTimer.ElapsedMilliseconds - findParentTotal}ms");
+            }
+        }
+
+        var totalTracked = _diagGetLayoutNameTimer.ElapsedMilliseconds + _diagGetParentBlocksTimer.ElapsedMilliseconds +
+                          _diagGetEntityAttributesTimer.ElapsedMilliseconds + _diagAddBlockAttributesTimer.ElapsedMilliseconds +
+                          _diagAddExtensionDataTimer.ElapsedMilliseconds + _diagGetCategoryTimer.ElapsedMilliseconds + geomTotal;
+        sb.AppendLine($"  - Total tracked: {totalTracked}ms");
+        return sb.ToString();
+    }
+
+    public static Dictionary<string, object> GetEntityDataDictionary(DBObject entity, string documentPath, string spaceName, bool includeProperties, Transaction tr = null, Dictionary<ObjectId, ObjectId> blockHierarchyCache = null)
+    {
+        _diagEntityCount++;
+
+        // Include parent blocks ONLY when SelectInBlocksMode is enabled
+        // (SelectInBlocksMode controls whether we care about block nesting)
+        bool includeParentBlocks = SelectInBlocksMode.IsEnabled();
+
         string entityName = "";
         string layer = "";
         string color = "";
@@ -653,16 +969,28 @@ public static class FilterEntityDataHelper
             layer = ent.Layer;
             color = ent.Color.ToString();
             lineType = ent.Linetype;
+
+            _diagGetLayoutNameTimer.Start();
             layoutName = GetEntityLayoutName(ent);
+            _diagGetLayoutNameTimer.Stop();
 
             // Get entity-specific name
             if (entity is BlockReference br)
             {
-                using (var tr = br.Database.TransactionManager.StartTransaction())
+                if (tr != null)
                 {
                     var btr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
                     entityName = btr?.Name ?? "Block";
-                    tr.Commit();
+                }
+                else
+                {
+                    // Fallback if no transaction provided
+                    using (var tempTr = br.Database.TransactionManager.StartTransaction())
+                    {
+                        var btr = tempTr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                        entityName = btr?.Name ?? "Block";
+                        tempTr.Commit();
+                    }
                 }
             }
             else if (entity is MText mtext)
@@ -697,10 +1025,14 @@ public static class FilterEntityDataHelper
             lineType = GetLayerLinetype(layerRecord);
         }
 
+        _diagGetCategoryTimer.Start();
+        var category = GetEntityCategory(entity);
+        _diagGetCategoryTimer.Stop();
+
         var data = new Dictionary<string, object>
         {
             ["Name"] = entityName,
-            ["Category"] = GetEntityCategory(entity),
+            ["Category"] = category,
             ["Layer"] = layer,
             ["Color"] = color,
             ["LineType"] = lineType,
@@ -718,10 +1050,33 @@ public static class FilterEntityDataHelper
 
         data["DisplayName"] = !string.IsNullOrEmpty(entityName) ? entityName : data["Category"].ToString();
 
-        // Add parent block hierarchy for entities inside blocks
-        if (entity is Entity entityObj)
+        // Add parent block hierarchy for entities inside blocks (only when SelectInBlocksMode is enabled)
+        if (includeParentBlocks && tr != null && entity is Entity entityObj)
         {
-            var parentBlocks = GetParentBlockHierarchy(entityObj);
+            _diagGetParentBlocksTimer.Start();
+
+            // OPTIMIZATION: Only check parent blocks if entity is actually in a block (not in a layout)
+            var blockId = entityObj.BlockId;
+            var parentBlocks = new List<ParentBlockInfo>();
+
+            if (blockId != ObjectId.Null)
+            {
+                try
+                {
+                    var btr = tr.GetObject(blockId, OpenMode.ForRead) as BlockTableRecord;
+                    // Only compute hierarchy if entity is NOT in a layout block
+                    if (btr != null && !btr.IsLayout)
+                    {
+                        parentBlocks = GetParentBlockHierarchy(entityObj, tr, blockHierarchyCache);
+                    }
+                }
+                catch
+                {
+                    // If we can't determine, assume no parent blocks
+                }
+            }
+
+            _diagGetParentBlocksTimer.Stop();
             data["_ParentBlocks"] = parentBlocks; // Internal property for processing
         }
         else
@@ -732,7 +1087,7 @@ public static class FilterEntityDataHelper
         // For BlockReferences, add dynamic block parent name if applicable
         if (entity is BlockReference blockRef)
         {
-            using (var tr = blockRef.Database.TransactionManager.StartTransaction())
+            if (tr != null)
             {
                 var dynamicBlockTableRecordId = blockRef.DynamicBlockTableRecord;
                 if (dynamicBlockTableRecordId != ObjectId.Null && dynamicBlockTableRecordId != blockRef.BlockTableRecord)
@@ -748,15 +1103,39 @@ public static class FilterEntityDataHelper
                 {
                     data["XrefPath"] = btr.PathName ?? "";
                 }
+            }
+            else
+            {
+                // Fallback if no transaction provided
+                using (var tempTr = blockRef.Database.TransactionManager.StartTransaction())
+                {
+                    var dynamicBlockTableRecordId = blockRef.DynamicBlockTableRecord;
+                    if (dynamicBlockTableRecordId != ObjectId.Null && dynamicBlockTableRecordId != blockRef.BlockTableRecord)
+                    {
+                        // This is a dynamic block - get the parent block name
+                        var dynamicBtr = tempTr.GetObject(dynamicBlockTableRecordId, OpenMode.ForRead) as BlockTableRecord;
+                        data["DynamicBlockName"] = dynamicBtr?.Name ?? "";
+                    }
 
-                tr.Commit();
+                    // For xrefs, also store the xref path
+                    var btr = tempTr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                    if (btr != null && btr.IsFromExternalReference)
+                    {
+                        data["XrefPath"] = btr.PathName ?? "";
+                    }
+
+                    tempTr.Commit();
+                }
             }
         }
 
         // Add all attributes from unified attribute system (including Tags)
         try
         {
+            _diagGetEntityAttributesTimer.Start();
             var attributes = EntityAttributes.GetEntityAttributes(entity.ObjectId, entity.Database);
+            _diagGetEntityAttributesTimer.Stop();
+
             foreach (var attr in attributes)
             {
                 // Tags get special treatment (no prefix) for backward compatibility
@@ -769,6 +1148,7 @@ public static class FilterEntityDataHelper
         }
         catch
         {
+            _diagGetEntityAttributesTimer.Stop();
             // Skip if attributes can't be read
         }
 
@@ -788,7 +1168,9 @@ public static class FilterEntityDataHelper
         // Add block attributes if entity is a block reference
         if (entity is BlockReference)
         {
+            _diagAddBlockAttributesTimer.Start();
             AddBlockAttributes((BlockReference)entity, data);
+            _diagAddBlockAttributesTimer.Stop();
         }
 
         // Add plot settings for Layout entities
@@ -804,7 +1186,9 @@ public static class FilterEntityDataHelper
         }
 
         // Add XData and extension dictionary data
+        _diagAddExtensionDataTimer.Start();
         AddExtensionData(entity, data);
+        _diagAddExtensionDataTimer.Stop();
 
         // Include properties if requested
         if (includeProperties && entity is Entity entityWithProps)
@@ -812,18 +1196,35 @@ public static class FilterEntityDataHelper
             try
             {
                 // Add common AutoCAD properties
+                _diagGetEntityAreaTimer.Start();
                 data["Area"] = GetEntityArea(entityWithProps);
+                _diagGetEntityAreaTimer.Stop();
+
+                _diagGetEntityLengthTimer.Start();
                 data["Length"] = GetEntityLength(entityWithProps);
+                _diagGetEntityLengthTimer.Stop();
+
+                _diagGetEntityElevationTimer.Start();
                 data["Elevation"] = GetEntityElevation(entityWithProps);
+                _diagGetEntityElevationTimer.Stop();
 
                 // Add geometry properties
+                _diagGetGeometryPropsTimer.Start();
                 var geometryProps = GetEntityGeometryProperties(entityWithProps);
                 foreach (var prop in geometryProps)
                 {
                     data[prop.Key] = prop.Value;
                 }
+                _diagGetGeometryPropsTimer.Stop();
             }
-            catch { /* Skip if properties can't be read */ }
+            catch
+            {
+                _diagGetEntityAreaTimer.Stop();
+                _diagGetEntityLengthTimer.Stop();
+                _diagGetEntityElevationTimer.Stop();
+                _diagGetGeometryPropsTimer.Stop();
+                /* Skip if properties can't be read */
+            }
         }
 
         return data;

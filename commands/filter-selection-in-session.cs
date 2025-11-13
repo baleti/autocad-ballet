@@ -28,7 +28,7 @@ public class FilterSelectionSessionImpl : FilterElementsBase
 {
     public override bool SpanAllScreens => false;
     public override bool UseSelectedElements => true; // Use stored selection from session scope (all documents)
-    public override bool IncludeProperties => true;
+    public override bool IncludeProperties => true; // Include geometry properties (with detailed diagnostics)
     public override SelectionScope Scope => SelectionScope.application;
 
     public override void Execute()
@@ -37,10 +37,35 @@ public class FilterSelectionSessionImpl : FilterElementsBase
         var ed = doc.Editor;
         ObjectId[] originalSelection = null;
 
+        var totalTimer = System.Diagnostics.Stopwatch.StartNew();
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+
+        // Create diagnostics file
+        var diagPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "autocad-ballet", "runtime", "diagnostics");
+        Directory.CreateDirectory(diagPath);
+        var diagFile = Path.Combine(diagPath, $"filter-selection-in-session-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+        var diagLog = new System.Text.StringBuilder();
+
+        void LogDiag(string message)
+        {
+            diagLog.AppendLine(message);
+            ed.WriteMessage($"{message}\n");
+        }
+
         try
         {
+            LogDiag("================================================================================");
+            LogDiag($"FILTER-SELECTION-IN-SESSION DIAGNOSTICS - {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            LogDiag("================================================================================");
+            LogDiag("");
+            LogDiag("[DIAG] Starting filter-selection-in-session");
+
             // Force session scope behavior - load selection from all open documents (not closed ones)
+            timer.Restart();
             var storedSelection = SelectionStorage.LoadSelectionFromOpenDocuments();
+            timer.Stop();
+            LogDiag($"[DIAG] LoadSelectionFromOpenDocuments: {timer.ElapsedMilliseconds}ms, {storedSelection?.Count ?? 0} items");
 
             if (storedSelection == null || storedSelection.Count == 0)
             {
@@ -51,78 +76,184 @@ public class FilterSelectionSessionImpl : FilterElementsBase
             // Create entity data from the stored selection using the helper method
             var entityData = new List<Dictionary<string, object>>();
 
-            // Process stored selection items
-            foreach (var item in storedSelection)
+            timer.Restart();
+            var groupByDocTimer = new System.Diagnostics.Stopwatch();
+            var findDocTimer = new System.Diagnostics.Stopwatch();
+            var transactionTimer = new System.Diagnostics.Stopwatch();
+            var getEntityDataTimer = new System.Diagnostics.Stopwatch();
+            int itemsProcessed = 0;
+
+            // Track per-document statistics
+            var docStats = new Dictionary<string, (int count, long timeMs)>();
+
+            LogDiag($"[DIAG] Starting entity collection loop for {storedSelection.Count} items");
+
+            // Reset GetEntityDataDictionary diagnostics
+            FilterEntityDataHelper.ResetDiagnostics();
+
+            // OPTIMIZATION: Group items by document path first to avoid repeated document lookups
+            groupByDocTimer.Start();
+            var itemsByDocument = storedSelection.GroupBy(item => item.DocumentPath).ToDictionary(g => g.Key, g => g.ToList());
+            groupByDocTimer.Stop();
+            LogDiag($"[DIAG] Grouped {storedSelection.Count} items into {itemsByDocument.Count} documents in {groupByDocTimer.ElapsedMilliseconds}ms");
+
+            // Build a map of open documents for fast lookup
+            findDocTimer.Start();
+            var openDocuments = new Dictionary<string, Document>(StringComparer.OrdinalIgnoreCase);
+            foreach (Document openDoc in AcadApp.DocumentManager)
             {
                 try
                 {
-                    // Find the document this entity belongs to (should already be open)
-                    Document itemDoc = null;
-                    foreach (Document openDoc in AcadApp.DocumentManager)
+                    var fullPath = Path.GetFullPath(openDoc.Name);
+                    openDocuments[fullPath] = openDoc;
+                    // Also add the raw name for fallback
+                    if (!openDocuments.ContainsKey(openDoc.Name))
                     {
-                        try
-                        {
-                            if (string.Equals(Path.GetFullPath(openDoc.Name), Path.GetFullPath(item.DocumentPath), StringComparison.OrdinalIgnoreCase))
-                            {
-                                itemDoc = openDoc;
-                                break;
-                            }
-                        }
-                        catch
-                        {
-                            // Path comparison failed, try direct comparison
-                            if (string.Equals(openDoc.Name, item.DocumentPath, StringComparison.OrdinalIgnoreCase))
-                            {
-                                itemDoc = openDoc;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (itemDoc != null)
-                    {
-                        // Document is open - get entity directly (no need to mark as external)
-                        var handle = Convert.ToInt64(item.Handle, 16);
-                        var objectId = itemDoc.Database.GetObjectId(false, new Autodesk.AutoCAD.DatabaseServices.Handle(handle), 0);
-
-                        if (objectId != Autodesk.AutoCAD.DatabaseServices.ObjectId.Null)
-                        {
-                            using (var tr = itemDoc.Database.TransactionManager.StartTransaction())
-                            {
-                                var entity = tr.GetObject(objectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-                                if (entity != null)
-                                {
-                                    var data = FilterEntityDataHelper.GetEntityDataDictionary(entity, item.DocumentPath, null, IncludeProperties);
-
-                                    // Only mark as external if it's not the current document
-                                    if (itemDoc != doc)
-                                    {
-                                        data["IsExternal"] = true;
-                                        data["DisplayName"] = $"External: {data["Name"]}";
-                                    }
-                                    else
-                                    {
-                                        data["ObjectId"] = objectId; // Store for selection in current doc
-                                    }
-
-                                    entityData.Add(data);
-                                }
-                                tr.Commit();
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // Document is not open - skip it (session scope only works with open documents)
-                        ed.WriteMessage($"\nWarning: Document '{Path.GetFileName(item.DocumentPath)}' is not open, skipping entity.\n");
+                        openDocuments[openDoc.Name] = openDoc;
                     }
                 }
                 catch
                 {
-                    // Skip problematic entities
+                    // If GetFullPath fails, just use the name
+                    openDocuments[openDoc.Name] = openDoc;
+                }
+            }
+            findDocTimer.Stop();
+            LogDiag($"[DIAG] Built open documents map in {findDocTimer.ElapsedMilliseconds}ms, {openDocuments.Count} documents open");
+
+            // Process each document's items together
+            int docIndex = 0;
+            foreach (var docGroup in itemsByDocument)
+            {
+                docIndex++;
+                var docPath = docGroup.Key;
+                var items = docGroup.Value;
+                var docTimer = System.Diagnostics.Stopwatch.StartNew();
+
+                LogDiag($"[DIAG] Processing document {docIndex}/{itemsByDocument.Count}: {Path.GetFileName(docPath)} ({items.Count} items)");
+
+                try
+                {
+                    // Find the document in our open documents map
+                    Document itemDoc = null;
+
+                    // Try full path first
+                    try
+                    {
+                        var fullPath = Path.GetFullPath(docPath);
+                        if (openDocuments.TryGetValue(fullPath, out itemDoc))
+                        {
+                            // Found it
+                        }
+                    }
+                    catch { }
+
+                    // Try raw path as fallback
+                    if (itemDoc == null)
+                    {
+                        openDocuments.TryGetValue(docPath, out itemDoc);
+                    }
+
+                    if (itemDoc != null)
+                    {
+                        var docName = Path.GetFileName(itemDoc.Name);
+                        int entitiesCollected = 0;
+
+                        // Process all items for this document in a single transaction
+                        transactionTimer.Start();
+                        using (var tr = itemDoc.Database.TransactionManager.StartTransaction())
+                        {
+                            // Build block hierarchy cache ONCE per document (huge performance optimization)
+                            var cacheTimer = System.Diagnostics.Stopwatch.StartNew();
+                            var blockHierarchyCache = FilterEntityDataHelper.BuildBlockHierarchyCache(itemDoc.Database, tr);
+                            cacheTimer.Stop();
+                            LogDiag($"[DIAG]   - Built block hierarchy cache for {docName} in {cacheTimer.ElapsedMilliseconds}ms");
+
+                            foreach (var item in items)
+                            {
+                                itemsProcessed++;
+
+                                try
+                                {
+                                    var handle = Convert.ToInt64(item.Handle, 16);
+                                    var objectId = itemDoc.Database.GetObjectId(false, new Autodesk.AutoCAD.DatabaseServices.Handle(handle), 0);
+
+                                    if (objectId != Autodesk.AutoCAD.DatabaseServices.ObjectId.Null)
+                                    {
+                                        var entity = tr.GetObject(objectId, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                                        if (entity != null)
+                                        {
+                                            getEntityDataTimer.Start();
+                                            var data = FilterEntityDataHelper.GetEntityDataDictionary(entity, item.DocumentPath, null, IncludeProperties, tr, blockHierarchyCache);
+                                            getEntityDataTimer.Stop();
+
+                                            // Only mark as external if it's not the current document
+                                            if (itemDoc != doc)
+                                            {
+                                                data["IsExternal"] = true;
+                                                data["DisplayName"] = $"External: {data["Name"]}";
+                                            }
+                                            else
+                                            {
+                                                data["ObjectId"] = objectId; // Store for selection in current doc
+                                            }
+
+                                            entityData.Add(data);
+                                            entitiesCollected++;
+                                        }
+                                    }
+                                }
+                                catch
+                                {
+                                    // Skip problematic entities
+                                    continue;
+                                }
+                            }
+                            tr.Commit();
+                        }
+                        transactionTimer.Stop();
+
+                        docTimer.Stop();
+
+                        // Track per-document stats
+                        docStats[docName] = (entitiesCollected, docTimer.ElapsedMilliseconds);
+
+                        LogDiag($"[DIAG]   - Collected {entitiesCollected} entities from {docName} in {docTimer.ElapsedMilliseconds}ms (avg {(entitiesCollected > 0 ? docTimer.ElapsedMilliseconds / entitiesCollected : 0)}ms per entity)");
+                    }
+                    else
+                    {
+                        // Document is not open - skip all items for this document
+                        itemsProcessed += items.Count;
+                        LogDiag($"[DIAG]   - Document not open, skipped {items.Count} items");
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    LogDiag($"[DIAG]   - ERROR processing document: {ex.Message}");
+                    // Skip this entire document
+                    itemsProcessed += items.Count;
                     continue;
                 }
             }
+            timer.Stop();
+
+            LogDiag($"");
+            LogDiag($"[DIAG] ========== Entity Collection Summary ==========");
+            LogDiag($"[DIAG] Total time: {timer.ElapsedMilliseconds}ms");
+            LogDiag($"[DIAG] Items in stored selection: {storedSelection.Count}");
+            LogDiag($"[DIAG] Items processed: {itemsProcessed}");
+            LogDiag($"[DIAG] Documents processed: {itemsByDocument.Count}");
+            LogDiag($"[DIAG] Entities collected: {entityData.Count}");
+            LogDiag($"[DIAG] Time breakdown:");
+            LogDiag($"[DIAG]   - Group by document: {groupByDocTimer.ElapsedMilliseconds}ms");
+            LogDiag($"[DIAG]   - Build open documents map: {findDocTimer.ElapsedMilliseconds}ms");
+            LogDiag($"[DIAG]   - Transactions: {transactionTimer.ElapsedMilliseconds}ms");
+            LogDiag($"[DIAG]   - GetEntityDataDictionary: {getEntityDataTimer.ElapsedMilliseconds}ms");
+            LogDiag($"[DIAG] ================================================");
+            LogDiag($"");
+            LogDiag($"[DIAG] ========== GetEntityDataDictionary Breakdown ==========");
+            LogDiag(FilterEntityDataHelper.GetDiagnosticsSummary());
+            LogDiag($"[DIAG] ============================================================");
 
             if (!entityData.Any())
             {
@@ -130,36 +261,76 @@ public class FilterSelectionSessionImpl : FilterElementsBase
                 return;
             }
 
+            timer.Restart();
             // Process the entity data using the standard filtering logic from base class
-            ProcessSelectionResults(entityData, originalSelection, false);
+            ProcessSelectionResults(entityData, originalSelection, false, diagLog);
+            timer.Stop();
+            LogDiag($"[DIAG] ProcessSelectionResults: {timer.ElapsedMilliseconds}ms");
+
+            totalTimer.Stop();
+            LogDiag($"[DIAG] TOTAL Execute() time: {totalTimer.ElapsedMilliseconds}ms");
+
+            // Save diagnostics to file
+            File.WriteAllText(diagFile, diagLog.ToString());
+            ed.WriteMessage($"\n[DIAG] Diagnostics saved to: {diagFile}\n");
         }
         catch (InvalidOperationException ex)
         {
+            LogDiag($"[ERROR] InvalidOperationException: {ex.Message}");
+            LogDiag($"[ERROR] Stack trace: {ex.StackTrace}");
+            File.WriteAllText(diagFile, diagLog.ToString());
+            ed.WriteMessage($"\n[DIAG] Error diagnostics saved to: {diagFile}\n");
             ed.WriteMessage($"\nError: {ex.Message}\n");
         }
         catch (System.Exception ex)
         {
+            LogDiag($"[ERROR] Exception: {ex.Message}");
+            LogDiag($"[ERROR] Stack trace: {ex.StackTrace}");
+            File.WriteAllText(diagFile, diagLog.ToString());
+            ed.WriteMessage($"\n[DIAG] Error diagnostics saved to: {diagFile}\n");
             ed.WriteMessage($"\nUnexpected error: {ex.Message}\n");
         }
     }
 
-    private void ProcessSelectionResults(List<Dictionary<string, object>> entityData, ObjectId[] originalSelection, bool editsWereApplied)
+    private void ProcessSelectionResults(List<Dictionary<string, object>> entityData, ObjectId[] originalSelection, bool editsWereApplied, System.Text.StringBuilder diagLog)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+
+        void LogDiag(string message)
+        {
+            diagLog.AppendLine(message);
+            ed.WriteMessage($"{message}\n");
+        }
+
+        LogDiag($"[DIAG] ProcessSelectionResults starting with {entityData.Count} entities");
+
+        // Process parent block hierarchy into separate columns
+        timer.Restart();
+        FilterEntityDataHelper.ProcessParentBlockColumns(entityData);
+        timer.Stop();
+        LogDiag($"[DIAG]   - ProcessParentBlockColumns: {timer.ElapsedMilliseconds}ms");
 
         // Add index to each entity for mapping back after user selection
+        timer.Restart();
         for (int i = 0; i < entityData.Count; i++)
         {
             entityData[i]["OriginalIndex"] = i;
         }
+        timer.Stop();
+        LogDiag($"[DIAG]   - Add indices: {timer.ElapsedMilliseconds}ms");
 
         // Get property names, excluding internal fields
+        timer.Restart();
         var propertyNames = entityData.First().Keys
-            .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex")
+            .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex" && k != "_ParentBlocks")
             .ToList();
+        timer.Stop();
+        LogDiag($"[DIAG]   - Get property names: {timer.ElapsedMilliseconds}ms, {propertyNames.Count} properties");
 
         // Reorder to put most useful columns first
+        timer.Restart();
         var orderedProps = new List<string> { "Name", "Contents", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
         var remainingProps = propertyNames.Except(orderedProps);
 
@@ -177,11 +348,17 @@ public class FilterSelectionSessionImpl : FilterElementsBase
             .Concat(otherProps)
             .Concat(documentPathProp)
             .ToList();
+        timer.Stop();
+        LogDiag($"[DIAG]   - Reorder properties: {timer.ElapsedMilliseconds}ms");
 
         // Reset the edits flag at the start of each DataGrid session
         CustomGUIs.ResetEditsAppliedFlag();
 
+        LogDiag($"[DIAG]   - About to show DataGrid with {entityData.Count} rows, {propertyNames.Count} columns...");
+        timer.Restart();
         var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
+        timer.Stop();
+        LogDiag($"[DIAG]   - DataGrid returned: {timer.ElapsedMilliseconds}ms, {chosenRows.Count} rows selected");
 
         // Check if any edits were applied during DataGrid interaction
         editsWereApplied = CustomGUIs.HasPendingEdits() || CustomGUIs.WereEditsApplied();
@@ -197,6 +374,7 @@ public class FilterSelectionSessionImpl : FilterElementsBase
         }
 
         // Collect ObjectIds for selection and selected external entities
+        timer.Restart();
         var selectedIds = new List<Autodesk.AutoCAD.DatabaseServices.ObjectId>();
         var selectedExternalEntities = new List<Dictionary<string, object>>();
 
@@ -234,8 +412,11 @@ public class FilterSelectionSessionImpl : FilterElementsBase
                 }
             }
         }
+        timer.Stop();
+        LogDiag($"[DIAG]   - Collect ObjectIds: {timer.ElapsedMilliseconds}ms");
 
         // Set selection for current document entities (only if no edits were applied)
+        timer.Restart();
         if (selectedIds.Count > 0 && !editsWereApplied)
         {
             try
@@ -266,10 +447,16 @@ public class FilterSelectionSessionImpl : FilterElementsBase
                 ed.WriteMessage($"  ... and {selectedExternalEntities.Count - 5} more\n");
             }
         }
+        timer.Stop();
+        LogDiag($"[DIAG]   - Set selection and report: {timer.ElapsedMilliseconds}ms");
 
         // Clear all existing selections and save only the filtered results (session scope behavior)
+        timer.Restart();
         ClearAllStoredSelections();
+        timer.Stop();
+        LogDiag($"[DIAG]   - ClearAllStoredSelections: {timer.ElapsedMilliseconds}ms");
 
+        timer.Restart();
         if ((selectedIds.Count > 0 || selectedExternalEntities.Count > 0))
         {
             var selectionItems = new List<SelectionItem>();
@@ -303,6 +490,8 @@ public class FilterSelectionSessionImpl : FilterElementsBase
         {
             ed.WriteMessage("All selections cleared (no items selected in filter).\n");
         }
+        timer.Stop();
+        LogDiag($"[DIAG]   - Save selection: {timer.ElapsedMilliseconds}ms");
     }
 
     /// <summary>
