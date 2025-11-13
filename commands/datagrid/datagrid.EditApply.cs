@@ -1516,6 +1516,17 @@ public partial class CustomGUIs
             var layoutId = layoutDict.GetAt(currentLayoutName);
             var layout = (Layout)tr.GetObject(layoutId, OpenMode.ForWrite);
 
+            // Validate layout name for invalid characters
+            char[] invalidChars = new char[] { '<', '>', '/', '\\', '"', ':', ';', '?', ',', '*', '|', '=', '`' };
+            var foundInvalidChars = newLayoutName.Where(c => invalidChars.Contains(c)).Distinct().ToArray();
+            if (foundInvalidChars.Length > 0)
+            {
+                string invalidCharsStr = string.Join(", ", foundInvalidChars.Select(c => $"'{c}'"));
+                ed.WriteMessage($"\n  >> ERROR: Layout name contains invalid characters: {invalidCharsStr}");
+                ed.WriteMessage($"\n  >> Invalid characters in AutoCAD layout names: < > / \\ \" : ; ? , * | = `");
+                return;
+            }
+
             // Check if the new name already exists
             string finalLayoutName = newLayoutName;
             if (layoutDict.Contains(newLayoutName))

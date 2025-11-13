@@ -22,6 +22,13 @@ public partial class CustomGUIs
     // Track if edits were applied in the current session
     private static bool _editsWereApplied = false;
 
+    // Cache validation results to avoid showing the same dialog multiple times per operation
+    // Key: new layout name value, Value: tuple of (approved, sanitized value)
+    private static Dictionary<string, (bool approved, string sanitizedValue)> _layoutNameValidationCache = new Dictionary<string, (bool, string)>();
+
+    // Global decision for the current operation: null = not asked yet, true = replace all, false = reject all
+    private static bool? _globalLayoutNameDecision = null;
+
     /// <summary>Check if there are pending edits waiting to be applied</summary>
     public static bool HasPendingEdits() => _pendingCellEdits.Count > 0;
 
@@ -42,6 +49,8 @@ public partial class CustomGUIs
         _selectedEditCells.Clear();
         _modifiedEntries.Clear();
         _selectionAnchor = null;
+        _layoutNameValidationCache.Clear();
+        _globalLayoutNameDecision = null;
     }
 
     /// <summary>Create edit key using internal ID instead of row index</summary>
@@ -183,6 +192,10 @@ public partial class CustomGUIs
             return;
         }
 
+        // Clear validation cache at the start of this edit operation
+        _layoutNameValidationCache.Clear();
+        _globalLayoutNameDecision = null;
+
         var originalSelectedCells = _selectedEditCells.ToList();
         _selectedEditCells.Clear();
         _selectedEditCells.AddRange(editableCells);
@@ -225,6 +238,16 @@ public partial class CustomGUIs
                     if (newValue != originalValue)
                     {
                         string columnName = grid.Columns[cell.ColumnIndex].Name;
+
+                        // Validate Layout name edits before applying
+                        if (columnName.Equals("Layout", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!ValidateLayoutNameEdit(ref newValue, originalValue, dataRow, ed))
+                            {
+                                // Validation failed, skip this edit
+                                continue;
+                            }
+                        }
 
                         // Validate DynamicBlockName edits before applying
                         if (columnName.Equals("DynamicBlockName", StringComparison.OrdinalIgnoreCase))
@@ -329,6 +352,10 @@ public partial class CustomGUIs
     {
         var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
+
+        // Clear validation cache at the start of this operation
+        _layoutNameValidationCache.Clear();
+
         foreach (var cell in _selectedEditCells)
         {
             if (cell.RowIndex >= 0 && cell.RowIndex < _cachedFilteredData.Count)
@@ -337,9 +364,22 @@ public partial class CustomGUIs
                 var entry = _cachedFilteredData[cell.RowIndex];
                 string editKey = GetEditKey(entry, columnName);
 
-                ed.WriteMessage($"\nStoring edit: Row {cell.RowIndex}, Column '{columnName}', Value '{newValue}'");
-                _pendingCellEdits[editKey] = newValue;
-                entry[columnName] = newValue;
+                string valueToApply = newValue;
+
+                // Validate Layout name before applying
+                if (columnName.Equals("Layout", StringComparison.OrdinalIgnoreCase))
+                {
+                    string originalValue = entry.ContainsKey(columnName) && entry[columnName] != null ? entry[columnName].ToString() : "";
+                    if (!ValidateLayoutNameEdit(ref valueToApply, originalValue, entry, ed))
+                    {
+                        // Validation failed, skip this cell
+                        continue;
+                    }
+                }
+
+                ed.WriteMessage($"\nStoring edit: Row {cell.RowIndex}, Column '{columnName}', Value '{valueToApply}'");
+                _pendingCellEdits[editKey] = valueToApply;
+                entry[columnName] = valueToApply;
                 _modifiedEntries.Add(entry);
             }
         }
@@ -505,6 +545,10 @@ public partial class CustomGUIs
         var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
 
+        // Clear validation cache at the start of this paste operation
+        _layoutNameValidationCache.Clear();
+        _globalLayoutNameDecision = null;
+
         try
         {
             // Get clipboard text
@@ -566,8 +610,21 @@ public partial class CustomGUIs
                         var entry = _cachedFilteredData[cell.RowIndex];
                         string editKey = GetEditKey(entry, columnName);
 
-                        _pendingCellEdits[editKey] = singleValue;
-                        entry[columnName] = singleValue;
+                        string valueToApply = singleValue;
+
+                        // Validate Layout name before applying
+                        if (columnName.Equals("Layout", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string originalValue = entry.ContainsKey(columnName) && entry[columnName] != null ? entry[columnName].ToString() : "";
+                            if (!ValidateLayoutNameEdit(ref valueToApply, originalValue, entry, ed))
+                            {
+                                skippedCells++;
+                                continue;
+                            }
+                        }
+
+                        _pendingCellEdits[editKey] = valueToApply;
+                        entry[columnName] = valueToApply;
                         _modifiedEntries.Add(entry);
 
                         pastedCells++;
@@ -633,11 +690,27 @@ public partial class CustomGUIs
                             var entry = _cachedFilteredData[targetRow];
                             string editKey = GetEditKey(entry, columnName);
 
-                            _pendingCellEdits[editKey] = newValue;
-                            entry[columnName] = newValue;
-                            _modifiedEntries.Add(entry);
+                            string valueToApply = newValue;
+                            bool shouldApply = true;
 
-                            pastedCells++;
+                            // Validate Layout name before applying
+                            if (columnName.Equals("Layout", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string originalValue = entry.ContainsKey(columnName) && entry[columnName] != null ? entry[columnName].ToString() : "";
+                                if (!ValidateLayoutNameEdit(ref valueToApply, originalValue, entry, ed))
+                                {
+                                    shouldApply = false;
+                                    skippedCells++;
+                                }
+                            }
+
+                            if (shouldApply)
+                            {
+                                _pendingCellEdits[editKey] = valueToApply;
+                                entry[columnName] = valueToApply;
+                                _modifiedEntries.Add(entry);
+                                pastedCells++;
+                            }
                         }
                         else
                         {
@@ -799,6 +872,77 @@ public partial class CustomGUIs
 
             return string.Empty;
         }
+    }
+
+    /// <summary>
+    /// Validates Layout name edits to ensure they don't contain invalid characters.
+    /// Offers to replace invalid characters with hyphens.
+    /// Shows dialog only ONCE per operation - the decision applies to all cells.
+    /// </summary>
+    private static bool ValidateLayoutNameEdit(ref string newValue, string originalValue, Dictionary<string, object> dataRow, Autodesk.AutoCAD.EditorInput.Editor ed)
+    {
+        // AutoCAD layout name restrictions
+        char[] invalidChars = new char[] { '<', '>', '/', '\\', '"', ':', ';', '?', ',', '*', '|', '=', '`' };
+        var foundInvalidChars = newValue.Where(c => invalidChars.Contains(c)).Distinct().ToArray();
+
+        if (foundInvalidChars.Length > 0)
+        {
+            // Sanitize the value (we'll use this whether we already have a decision or need to ask)
+            string sanitizedValue = newValue;
+            foreach (char invalidChar in invalidChars)
+            {
+                sanitizedValue = sanitizedValue.Replace(invalidChar, '-');
+            }
+
+            // Check if we've already made a global decision for this operation
+            if (_globalLayoutNameDecision.HasValue)
+            {
+                if (_globalLayoutNameDecision.Value)
+                {
+                    // User chose to replace invalid characters
+                    newValue = sanitizedValue;
+                    return true;
+                }
+                else
+                {
+                    // User chose to reject all invalid values
+                    return false;
+                }
+            }
+
+            // First time encountering invalid characters in this operation - show dialog
+            string invalidCharsStr = string.Join(", ", foundInvalidChars.Select(c => $"'{c}'"));
+
+            var result = System.Windows.Forms.MessageBox.Show(
+                $"Layout name contains invalid characters: {invalidCharsStr}\n\n" +
+                $"AutoCAD does not allow these characters in layout names:\n" +
+                $"< > / \\ \" : ; ? , * | = `\n\n" +
+                $"Example - Original: {newValue}\n" +
+                $"Example - Sanitized: {sanitizedValue}\n\n" +
+                $"Would you like to replace ALL invalid characters with hyphens?\n" +
+                $"(This choice will apply to ALL cells in the current operation)",
+                "Invalid Layout Name Characters",
+                System.Windows.Forms.MessageBoxButtons.YesNo,
+                System.Windows.Forms.MessageBoxIcon.Warning);
+
+            if (result == System.Windows.Forms.DialogResult.Yes)
+            {
+                // Store global decision to replace all invalid characters
+                _globalLayoutNameDecision = true;
+                newValue = sanitizedValue;
+                ed.WriteMessage($"\n  >> Sanitizing invalid characters in layout names (applying to all cells)");
+                return true;
+            }
+            else
+            {
+                // Store global decision to reject all
+                _globalLayoutNameDecision = false;
+                ed.WriteMessage($"\n  >> Rejecting all layout names with invalid characters");
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
