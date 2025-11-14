@@ -564,9 +564,17 @@ public partial class CustomGUIs
                             ed.WriteMessage($"\n  >> Invalid color value: {newValue}");
                         }
                     }
-                    else if (dbObject is Entity entity2Ext && int.TryParse(newValue, out int colorIndexExt))
+                    else if (dbObject is Entity entity2Ext)
                     {
-                        entity2Ext.ColorIndex = colorIndexExt;
+                        // Parse color for entity (supports RGB format and color indices)
+                        if (TryParseColor(newValue, out Autodesk.AutoCAD.Colors.Color entityColorExt))
+                        {
+                            entity2Ext.Color = entityColorExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid color value: {newValue}");
+                        }
                     }
                     break;
                 case "linetype":
@@ -807,9 +815,17 @@ public partial class CustomGUIs
                             ed.WriteMessage($"\n  >> Invalid color value: {newValue}");
                         }
                     }
-                    else if (dbObject is Entity entity2 && int.TryParse(newValue, out int colorIndex))
+                    else if (dbObject is Entity entity2)
                     {
-                        entity2.ColorIndex = colorIndex;
+                        // Parse color for entity (supports RGB format and color indices)
+                        if (TryParseColor(newValue, out Autodesk.AutoCAD.Colors.Color entityColor))
+                        {
+                            entity2.Color = entityColor;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid color value: {newValue}");
+                        }
                     }
                     break;
                 case "linetype":
