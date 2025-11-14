@@ -5,10 +5,8 @@ using Autodesk.AutoCAD.Runtime;
 using AutoCADBallet;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 [assembly: CommandClass(typeof(FilterSelectionDocumentElements))]
@@ -35,35 +33,15 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
 
     public override void Execute()
     {
-        var totalTimer = Stopwatch.StartNew();
-        var diagnostics = new StringBuilder();
-
-        diagnostics.AppendLine("================================================================================");
-        diagnostics.AppendLine($"FILTER-SELECTION-IN-DOCUMENT DIAGNOSTICS - {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        diagnostics.AppendLine("================================================================================");
-        diagnostics.AppendLine();
-
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
         var db = doc.Database;
 
-        void LogDiag(string message)
-        {
-            diagnostics.AppendLine(message);
-            ed.WriteMessage($"{message}\n");
-        }
-
         try
         {
-            LogDiag("[DIAG] Starting filter-selection-in-document");
-
             // Load stored selection for document
-            var loadTimer = Stopwatch.StartNew();
             var docName = Path.GetFileName(doc.Name);
             var storedSelection = SelectionStorage.LoadSelection(docName);
-            loadTimer.Stop();
-
-            LogDiag($"[DIAG] LoadSelection: {loadTimer.ElapsedMilliseconds}ms, {storedSelection?.Count ?? 0} items");
 
             if (storedSelection == null || storedSelection.Count == 0)
             {
@@ -71,27 +49,14 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
                 return;
             }
 
-            LogDiag($"[DIAG] Starting entity collection loop for {storedSelection.Count} items");
-
             // Collect entity data with optimized single transaction
             var entityData = new List<Dictionary<string, object>>();
-            var entityCollectionTimer = Stopwatch.StartNew();
-            var getEntityDataTimer = new Stopwatch();
-            var transactionTimer = new Stopwatch();
-
-            // Reset GetEntityDataDictionary diagnostics
-            FilterEntityDataHelper.ResetDiagnostics();
 
             // Single transaction for all entities in the current document
-            int entitiesCollected = 0;
-            transactionTimer.Start();
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 // Build block hierarchy cache ONCE at the start (huge performance optimization)
-                var cacheTimer = Stopwatch.StartNew();
                 var blockHierarchyCache = FilterEntityDataHelper.BuildBlockHierarchyCache(db, tr);
-                cacheTimer.Stop();
-                LogDiag($"[DIAG] Built block hierarchy cache in {cacheTimer.ElapsedMilliseconds}ms");
 
                 foreach (var item in storedSelection)
                 {
@@ -105,36 +70,20 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
                             var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
                             if (entity != null)
                             {
-                                getEntityDataTimer.Start();
                                 var data = FilterEntityDataHelper.GetEntityDataDictionary(entity, item.DocumentPath, null, IncludeProperties, tr, blockHierarchyCache);
-                                getEntityDataTimer.Stop();
-
                                 data["ObjectId"] = objectId;
                                 entityData.Add(data);
-                                entitiesCollected++;
                             }
                         }
                     }
-                    catch (System.Exception ex)
+                    catch (System.Exception)
                     {
-                        LogDiag($"[DIAG]   - Error processing entity {item.Handle}: {ex.Message}");
+                        // Skip problematic entities
+                        continue;
                     }
                 }
                 tr.Commit();
             }
-            transactionTimer.Stop();
-            entityCollectionTimer.Stop();
-
-            LogDiag($"");
-            LogDiag($"[DIAG] ========== Entity Collection Summary ==========");
-            LogDiag($"[DIAG] Total time: {entityCollectionTimer.ElapsedMilliseconds}ms");
-            LogDiag($"[DIAG] Items in stored selection: {storedSelection.Count}");
-            LogDiag($"[DIAG] Entities collected: {entityData.Count}");
-            LogDiag($"[DIAG] Time breakdown:");
-            LogDiag($"[DIAG]   - Transaction: {transactionTimer.ElapsedMilliseconds}ms");
-            LogDiag($"[DIAG]   - GetEntityDataDictionary: {getEntityDataTimer.ElapsedMilliseconds}ms");
-            LogDiag($"[DIAG] ================================================");
-            LogDiag($"");
 
             if (entityData.Count == 0)
             {
@@ -142,98 +91,35 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
                 return;
             }
 
-            // Get GetEntityDataDictionary breakdown
-            LogDiag($"[DIAG] ========== GetEntityDataDictionary Breakdown ==========");
-            LogDiag(FilterEntityDataHelper.GetDiagnosticsSummary());
-            LogDiag($"[DIAG] ============================================================");
-
             // Process results with DataGrid
-            LogDiag($"[DIAG] ProcessSelectionResults starting with {entityData.Count} entities");
-            var processTimer = Stopwatch.StartNew();
-            ProcessSelectionResults(entityData, diagnostics);
-            processTimer.Stop();
-            LogDiag($"[DIAG] ProcessSelectionResults: {processTimer.ElapsedMilliseconds}ms");
-
-            totalTimer.Stop();
-            LogDiag($"[DIAG] TOTAL Execute() time: {totalTimer.ElapsedMilliseconds}ms");
-            LogDiag($"");
-
-            // Save diagnostics to file
-            var runtimeDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "autocad-ballet",
-                "runtime",
-                "diagnostics");
-            Directory.CreateDirectory(runtimeDir);
-
-            var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            var diagnosticsFile = Path.Combine(runtimeDir, $"filter-selection-in-document-{timestamp}.txt");
-            File.WriteAllText(diagnosticsFile, diagnostics.ToString());
-
-            ed.WriteMessage($"[DIAG] Diagnostics saved to: {diagnosticsFile}\n");
+            ProcessSelectionResults(entityData);
         }
         catch (System.Exception ex)
         {
-            diagnostics.AppendLine($"[ERROR] Exception: {ex.Message}");
-            diagnostics.AppendLine($"[ERROR] Stack trace: {ex.StackTrace}");
             ed.WriteMessage($"\nError in filter-selection-in-document: {ex.Message}\n");
-
-            // Save diagnostics even on error
-            try
-            {
-                var runtimeDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "autocad-ballet",
-                    "runtime",
-                    "diagnostics");
-                Directory.CreateDirectory(runtimeDir);
-
-                var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                var diagnosticsFile = Path.Combine(runtimeDir, $"filter-selection-in-document-error-{timestamp}.txt");
-                File.WriteAllText(diagnosticsFile, diagnostics.ToString());
-            }
-            catch { }
         }
     }
 
-    private void ProcessSelectionResults(List<Dictionary<string, object>> entityData, StringBuilder diagLog)
+    private void ProcessSelectionResults(List<Dictionary<string, object>> entityData)
     {
         var doc = AcadApp.DocumentManager.MdiActiveDocument;
         var ed = doc.Editor;
-        var db = doc.Database;
-        var timer = Stopwatch.StartNew();
-
-        void LogDiag(string message)
-        {
-            diagLog.AppendLine(message);
-            ed.WriteMessage($"{message}\n");
-        }
 
         // Process parent block hierarchy into separate columns
-        timer.Restart();
         FilterEntityDataHelper.ProcessParentBlockColumns(entityData);
-        timer.Stop();
-        LogDiag($"[DIAG]   - ProcessParentBlockColumns: {timer.ElapsedMilliseconds}ms");
 
         // Add index to each entity for mapping back after user selection
-        timer.Restart();
         for (int i = 0; i < entityData.Count; i++)
         {
             entityData[i]["OriginalIndex"] = i;
         }
-        timer.Stop();
-        LogDiag($"[DIAG]   - Add indices: {timer.ElapsedMilliseconds}ms");
 
         // Get property names, excluding internal fields
-        timer.Restart();
         var propertyNames = entityData.First().Keys
             .Where(k => !k.EndsWith("ObjectId") && k != "OriginalIndex" && k != "_ParentBlocks")
             .ToList();
-        timer.Stop();
-        LogDiag($"[DIAG]   - Get property names: {timer.ElapsedMilliseconds}ms, {propertyNames.Count} properties");
 
         // Reorder to put most useful columns first
-        timer.Restart();
         var orderedProps = new List<string> { "Name", "Contents", "Category", "Layer", "Layout", "DocumentName", "Color", "LineType", "Handle" };
         var remainingProps = propertyNames.Except(orderedProps);
 
@@ -251,15 +137,9 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
             .Concat(otherProps)
             .Concat(documentPathProp)
             .ToList();
-        timer.Stop();
-        LogDiag($"[DIAG]   - Reorder properties: {timer.ElapsedMilliseconds}ms");
 
         // Show DataGrid
-        LogDiag($"[DIAG]   - About to show DataGrid with {entityData.Count} rows, {propertyNames.Count} columns...");
-        timer.Restart();
         var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null);
-        timer.Stop();
-        LogDiag($"[DIAG]   - DataGrid returned: {timer.ElapsedMilliseconds}ms, {chosenRows.Count} rows selected");
 
         if (chosenRows.Count == 0)
         {

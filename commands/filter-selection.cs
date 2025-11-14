@@ -184,7 +184,6 @@ public static class FilterEntityDataHelper
                 storedSelection = SelectionStorage.LoadSelection();
             }
             loadTimer.Stop();
-            ed.WriteMessage($"  [DIAG] Load stored selection ({scope}): {loadTimer.ElapsedMilliseconds}ms, {storedSelection?.Count ?? 0} items\n");
 
             if (storedSelection == null || storedSelection.Count == 0)
             {
@@ -205,7 +204,6 @@ public static class FilterEntityDataHelper
             storedSelection = storedSelection.Where(item =>
                 string.IsNullOrEmpty(item.SessionId) || item.SessionId == currentSessionId).ToList();
             filterTimer.Stop();
-            ed.WriteMessage($"  [DIAG] Filter by session: {filterTimer.ElapsedMilliseconds}ms, {beforeFilterCount} -> {storedSelection.Count} items\n");
 
             // Check if filtering resulted in empty selection
             if (storedSelection.Count == 0)
@@ -304,17 +302,8 @@ public static class FilterEntityDataHelper
                 }
             }
             processTimer.Stop();
-            ed.WriteMessage($"  [DIAG] Process items: {processTimer.ElapsedMilliseconds}ms total\n");
-            ed.WriteMessage($"  [DIAG]   - Current doc: {currentDocCount} items\n");
-            ed.WriteMessage($"  [DIAG]   - External docs: {externalDocCount} items, {externalDocTimer.ElapsedMilliseconds}ms\n");
             if (externalDocCount > 0)
             {
-                ed.WriteMessage($"  [DIAG]   - Avg per external: {externalDocTimer.ElapsedMilliseconds / externalDocCount}ms\n");
-                ed.WriteMessage($"  [DIAG]   - GetExternalEntityData breakdown:\n");
-                ed.WriteMessage($"  [DIAG]     - Check if doc open: {_diagCheckOpenTimer.ElapsedMilliseconds}ms\n");
-                ed.WriteMessage($"  [DIAG]     - Open documents: {_diagOpenDocTimer.ElapsedMilliseconds}ms\n");
-                ed.WriteMessage($"  [DIAG]     - Read entity data: {_diagReadEntityTimer.ElapsedMilliseconds}ms\n");
-                ed.WriteMessage($"  [DIAG]     - Close documents: {_diagCloseDocTimer.ElapsedMilliseconds}ms\n");
                 // Reset timers for next run
                 _diagCheckOpenTimer.Reset();
                 _diagOpenDocTimer.Reset();
@@ -2375,7 +2364,6 @@ public abstract class FilterElementsBase
             var timer = System.Diagnostics.Stopwatch.StartNew();
             var entityData = FilterEntityDataHelper.GetEntityData(ed, Scope, out originalSelection, UseSelectedElements, IncludeProperties);
             timer.Stop();
-            ed.WriteMessage($"\n[DIAG] GetEntityData ({Scope} scope): {timer.ElapsedMilliseconds}ms for {entityData.Count} entities\n");
 
             if (!entityData.Any())
             {
@@ -2395,34 +2383,28 @@ public abstract class FilterElementsBase
                 entityData[i]["OriginalIndex"] = i;
             }
             timer.Stop();
-            ed.WriteMessage($"[DIAG] Add indices: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
             // Post-process: Split Tags into separate columns (tag_1, tag_2, tag_3, etc.)
             // and remove columns that have no data across all entities
             FilterEntityDataHelper.ProcessTagsAndAttributes(entityData);
             timer.Stop();
-            ed.WriteMessage($"[DIAG] ProcessTagsAndAttributes: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
             // DIAGNOSTIC: Check for _ParentBlocks BEFORE ProcessParentBlockColumns
             var entitiesWithParentBlocksBefore = entityData.Count(e => e.ContainsKey("_ParentBlocks"));
-            ed.WriteMessage($"[DIAG] Entities with _ParentBlocks BEFORE ProcessParentBlockColumns: {entitiesWithParentBlocksBefore}/{entityData.Count}\n");
             if (entitiesWithParentBlocksBefore > 0)
             {
                 var sampleEntity = entityData.First(e => e.ContainsKey("_ParentBlocks"));
-                ed.WriteMessage($"[DIAG] Sample _ParentBlocks type: {sampleEntity["_ParentBlocks"]?.GetType()?.FullName ?? "null"}\n");
             }
 
             // Process parent block hierarchy into separate columns
             FilterEntityDataHelper.ProcessParentBlockColumns(entityData);
             timer.Stop();
-            ed.WriteMessage($"[DIAG] ProcessParentBlockColumns: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
             // DIAGNOSTIC: Check for _ParentBlocks AFTER ProcessParentBlockColumns
             var entitiesWithParentBlocksAfter = entityData.Count(e => e.ContainsKey("_ParentBlocks"));
-            ed.WriteMessage($"[DIAG] Entities with _ParentBlocks AFTER ProcessParentBlockColumns: {entitiesWithParentBlocksAfter}/{entityData.Count}\n");
 
             // DEFENSIVE: Ensure _ParentBlocks is removed from all entities (should already be done by ProcessParentBlockColumns)
             var removedCount = 0;
@@ -2434,12 +2416,10 @@ public abstract class FilterElementsBase
                 }
             }
             timer.Stop();
-            ed.WriteMessage($"[DIAG] Defensive _ParentBlocks removal: {timer.ElapsedMilliseconds}ms, removed from {removedCount} entities\n");
 
             timer.Restart();
             // DIAGNOSTIC: Final check before collecting property names
             var entitiesWithParentBlocksFinal = entityData.Count(e => e.ContainsKey("_ParentBlocks"));
-            ed.WriteMessage($"[DIAG] Entities with _ParentBlocks AFTER defensive removal: {entitiesWithParentBlocksFinal}/{entityData.Count}\n");
 
             // Get ALL unique property names from ALL entities (union, not just first entity)
             var propertyNames = entityData
@@ -2451,16 +2431,12 @@ public abstract class FilterElementsBase
             // DIAGNOSTIC: Check if _ParentBlocks is in propertyNames
             var allKeysBeforeFilter = entityData.SelectMany(e => e.Keys).Distinct().ToList();
             var hasParentBlocksKey = allKeysBeforeFilter.Contains("_ParentBlocks");
-            ed.WriteMessage($"[DIAG] _ParentBlocks in all keys before filter: {hasParentBlocksKey}\n");
-            ed.WriteMessage($"[DIAG] _ParentBlocks in propertyNames after filter: {propertyNames.Contains("_ParentBlocks")}\n");
-            ed.WriteMessage($"[DIAG] Total property names collected: {propertyNames.Count}\n");
 
             // DIAGNOSTIC: Show all keys that contain "parent" or "block" (case insensitive)
             var parentBlockRelatedKeys = allKeysBeforeFilter.Where(k =>
                 k.ToLower().Contains("parent") || k.ToLower().Contains("block")).ToList();
             if (parentBlockRelatedKeys.Any())
             {
-                ed.WriteMessage($"[DIAG] Keys containing 'parent' or 'block': {string.Join(", ", parentBlockRelatedKeys)}\n");
             }
 
             // Normalize all entities to have all property names (fill missing keys with empty values)
@@ -2475,7 +2451,6 @@ public abstract class FilterElementsBase
                 }
             }
             timer.Stop();
-            ed.WriteMessage($"[DIAG] Get property names: {timer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
             // Reorder to put most useful columns first
@@ -2526,18 +2501,15 @@ public abstract class FilterElementsBase
                 .Concat(documentPathProp)
                 .ToList();
             timer.Stop();
-            ed.WriteMessage($"[DIAG] Reorder properties: {timer.ElapsedMilliseconds}ms\n");
 
             // Reset the edits flag at the start of each DataGrid session
             CustomGUIs.ResetEditsAppliedFlag();
 
             totalTimer.Stop();
-            ed.WriteMessage($"[DIAG] Total before DataGrid: {totalTimer.ElapsedMilliseconds}ms\n");
 
             timer.Restart();
             var chosenRows = CustomGUIs.DataGrid(entityData, propertyNames, SpanAllScreens, null, null, false, GetCommandName());
             timer.Stop();
-            ed.WriteMessage($"[DIAG] DataGrid display: {timer.ElapsedMilliseconds}ms\n");
 
             // Check if any edits were applied during DataGrid interaction
             bool editsWereApplied = CustomGUIs.HasPendingEdits() || CustomGUIs.WereEditsApplied();
