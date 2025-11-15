@@ -3,9 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,7 +28,7 @@ namespace AutoCADBallet
     public class StartRoslynServerInBackground
     {
         internal const int PORT = 34157;
-        internal const string URL = "http://127.0.0.1:34157/";
+        internal const string URL = "https://127.0.0.1:34157/";
 
         // Global instance - note: this will be reset when assembly is hot-reloaded
         // We rely on port conflict detection and HTTP shutdown endpoint for cross-reload control
@@ -70,11 +73,15 @@ namespace AutoCADBallet
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc?.Editor;
 
-            // Send HTTP shutdown request to the server
+            // Send HTTPS shutdown request to the server
             // This works even when the server was started from a different assembly instance
             try
             {
-                using (var client = new System.Net.Http.HttpClient())
+                // For HTTPS with self-signed certificate, we need to bypass certificate validation
+                var handler = new System.Net.Http.HttpClientHandler();
+                handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+
+                using (var client = new System.Net.Http.HttpClient(handler))
                 {
                     client.Timeout = TimeSpan.FromSeconds(5);
                     client.DefaultRequestHeaders.Add("X-Shutdown-Key", "AUTOCAD_BALLET_SHUTDOWN");
@@ -143,6 +150,7 @@ namespace AutoCADBallet
         private CancellationTokenSource cancellationTokenSource;
         private bool isRunning = false;
         private string authToken;
+        private X509Certificate2 serverCertificate;
         private Assembly scriptGlobalsAssembly;  // Cached assembly with valid Location
         private Type scriptGlobalsType;           // Cached ScriptGlobals type from that assembly
 
@@ -210,8 +218,32 @@ namespace AutoCADBallet
                 throw new InvalidOperationException("Cannot find ScriptGlobals type in assembly");
             }
 
+            // Load or generate self-signed certificate for HTTPS
+            try
+            {
+                serverCertificate = SslCertificateHelper.GetOrCreateCertificate();
+            }
+            catch (NotSupportedException ex)
+            {
+                // Certificate generation not supported on older .NET Framework
+                throw new InvalidOperationException(
+                    "SSL/TLS certificate generation failed.\n" + ex.Message);
+            }
+
             // Generate secure random password (32 bytes = 256 bits)
             authToken = GenerateSecureToken();
+
+            // Copy token to clipboard for user convenience
+            try
+            {
+                Clipboard.SetText(authToken);
+            }
+            catch (System.Exception clipEx)
+            {
+                // Clipboard access may fail in some environments, but don't block server startup
+                // Will notify user in the startup message if needed
+                System.Diagnostics.Debug.WriteLine($"Failed to copy token to clipboard: {clipEx.Message}");
+            }
 
             cancellationTokenSource = new CancellationTokenSource();
             listener = new TcpListener(IPAddress.Parse("127.0.0.1"), StartRoslynServerInBackground.PORT);
@@ -224,14 +256,16 @@ namespace AutoCADBallet
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc?.Editor;
             ed?.WriteMessage($"\n========================================\n");
-            ed?.WriteMessage($"Roslyn server started in background\n");
+            ed?.WriteMessage($"Roslyn server started in background (HTTPS)\n");
             ed?.WriteMessage($"URL: {StartRoslynServerInBackground.URL}\n");
             ed?.WriteMessage($"Authentication token: {authToken}\n");
+            ed?.WriteMessage($"(Token copied to clipboard)\n");
             ed?.WriteMessage($"\nSample curl command:\n");
-            ed?.WriteMessage($"curl -X POST {StartRoslynServerInBackground.URL} \\\n");
+            ed?.WriteMessage($"curl --insecure -X POST {StartRoslynServerInBackground.URL} \\\n");
             ed?.WriteMessage($"  -H \"X-Auth-Token: {authToken}\" \\\n");
             ed?.WriteMessage($"  -d 'Console.WriteLine(\"Hello from AutoCAD!\");'\n");
-            ed?.WriteMessage($"\nUse 'stop-roslyn-server' command to stop the server.\n");
+            ed?.WriteMessage($"\nNote: Using self-signed certificate. Use --insecure (curl) or equivalent.\n");
+            ed?.WriteMessage($"Use 'stop-roslyn-server' command to stop the server.\n");
             ed?.WriteMessage($"========================================\n");
         }
 
@@ -253,6 +287,14 @@ namespace AutoCADBallet
             try
             {
                 listener?.Stop();
+            }
+            catch { }
+
+            // Dispose of certificate
+            try
+            {
+                serverCertificate?.Dispose();
+                serverCertificate = null;
             }
             catch { }
 
@@ -307,7 +349,7 @@ namespace AutoCADBallet
                         LogMessage($"[{DateTime.Now:HH:mm:ss}] Connection from {clientEndpoint}");
 
                         // Handle request in background thread
-                        _ = Task.Run(async () => await HandleHttpRequest(client, clientEndpoint, cancellationToken));
+                        _ = Task.Run(async () => await HandleHttpsRequest(client, clientEndpoint, cancellationToken));
                     }
                     else
                     {
@@ -326,12 +368,79 @@ namespace AutoCADBallet
             }
         }
 
-        private async Task HandleHttpRequest(TcpClient client, string clientEndpoint, CancellationToken cancellationToken)
+        private async Task HandleHttpsRequest(TcpClient client, string clientEndpoint, CancellationToken cancellationToken)
         {
             try
             {
                 using (client)
-                using (var stream = client.GetStream())
+                {
+                    // Wrap TCP stream with SSL/TLS encryption
+                    var networkStream = client.GetStream();
+                    var sslStream = new SslStream(networkStream, false);
+
+                    try
+                    {
+                        LogMessage($"[{DateTime.Now:HH:mm:ss}] Starting SSL/TLS handshake with {clientEndpoint}");
+
+                        // Verify certificate has private key
+                        if (!serverCertificate.HasPrivateKey)
+                        {
+                            LogMessage($"[{DateTime.Now:HH:mm:ss}] ERROR: Server certificate does not have a private key!");
+                            return;
+                        }
+
+                        // Authenticate as server with the self-signed certificate
+                        // Use TLS 1.2 only for maximum compatibility
+#if NET8_0_OR_GREATER
+                        // .NET 8 supports TLS 1.3
+                        var protocols = SslProtocols.Tls12 | SslProtocols.Tls13;
+#else
+                        // .NET Framework 4.8 and earlier - use TLS 1.2 only
+                        var protocols = SslProtocols.Tls12;
+#endif
+                        await sslStream.AuthenticateAsServerAsync(
+                            serverCertificate,
+                            clientCertificateRequired: false,
+                            enabledSslProtocols: protocols,
+                            checkCertificateRevocation: false
+                        );
+
+                        LogMessage($"[{DateTime.Now:HH:mm:ss}] SSL/TLS handshake completed with {clientEndpoint}");
+
+                        // Now handle the HTTP request over the encrypted stream
+                        await HandleHttpRequest(sslStream, clientEndpoint, cancellationToken);
+                    }
+                    catch (AuthenticationException authEx)
+                    {
+                        LogMessage($"[{DateTime.Now:HH:mm:ss}] SSL/TLS authentication failed: {authEx.Message}");
+                        LogMessage($"[{DateTime.Now:HH:mm:ss}] Stack trace: {authEx.StackTrace}");
+                    }
+                    catch (System.Exception innerEx)
+                    {
+                        LogMessage($"[{DateTime.Now:HH:mm:ss}] SSL handshake error: {innerEx.GetType().Name}: {innerEx.Message}");
+                        LogMessage($"[{DateTime.Now:HH:mm:ss}] Stack trace: {innerEx.StackTrace}");
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            sslStream?.Dispose();
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                LogMessage($"[{DateTime.Now:HH:mm:ss}] Error handling HTTPS request from {clientEndpoint}: {ex.Message}");
+                LogMessage($"[{DateTime.Now:HH:mm:ss}] Stack trace: {ex.StackTrace}");
+            }
+        }
+
+        private async Task HandleHttpRequest(Stream stream, string clientEndpoint, CancellationToken cancellationToken)
+        {
+            try
+            {
                 using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true))
                 {
                     // Parse HTTP request on background thread (no AutoCAD interaction)
@@ -710,7 +819,7 @@ namespace AutoCADBallet
             return response;
         }
 
-        private async Task SendHttpResponse(NetworkStream stream, ScriptResponse scriptResponse, int statusCode = 0, string statusText = null)
+        private async Task SendHttpResponse(Stream stream, ScriptResponse scriptResponse, int statusCode = 0, string statusText = null)
         {
             var jsonResponse = scriptResponse.ToJson();
             var responseBytes = Encoding.UTF8.GetBytes(jsonResponse);
@@ -769,6 +878,172 @@ namespace AutoCADBallet
             };
 
             this.Controls.Add(label);
+        }
+    }
+
+    /// <summary>
+    /// Helper class for generating and managing self-signed SSL certificates for HTTPS server
+    /// </summary>
+    internal static class SslCertificateHelper
+    {
+        private static readonly string CertificateStorePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "autocad-ballet",
+            "runtime",
+            "roslyn-server-cert.pfx"
+        );
+
+        private const string CertificatePassword = "autocad-ballet-localhost";
+
+        /// <summary>
+        /// Gets or creates a self-signed certificate for localhost HTTPS
+        /// Certificate is cached in %APPDATA%/autocad-ballet/runtime/ for reuse
+        /// </summary>
+        public static X509Certificate2 GetOrCreateCertificate()
+        {
+            // Try to load existing certificate from disk
+            if (File.Exists(CertificateStorePath))
+            {
+                try
+                {
+                    var cert = new X509Certificate2(CertificateStorePath, CertificatePassword,
+                        X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet);
+
+                    // Check if certificate is still valid (not expired)
+                    if (cert.NotAfter > DateTime.Now.AddDays(30))
+                    {
+                        return cert;
+                    }
+
+                    // Certificate is expiring soon, generate a new one
+                    cert.Dispose();
+                }
+                catch
+                {
+                    // Failed to load cert, will generate new one
+                }
+            }
+
+            // Generate new self-signed certificate
+            var certificate = GenerateSelfSignedCertificate();
+
+            // Save to disk for future use
+            try
+            {
+                var certDirectory = Path.GetDirectoryName(CertificateStorePath);
+                if (!Directory.Exists(certDirectory))
+                {
+                    Directory.CreateDirectory(certDirectory);
+                }
+
+                var certBytes = certificate.Export(X509ContentType.Pfx, CertificatePassword);
+                File.WriteAllBytes(CertificateStorePath, certBytes);
+            }
+            catch
+            {
+                // Failed to save, but we can still use the in-memory certificate
+            }
+
+            return certificate;
+        }
+
+        private static X509Certificate2 GenerateSelfSignedCertificate()
+        {
+#if NET48 || NET8_0_OR_GREATER
+            // Use CertificateRequest API (available in .NET Framework 4.7.1+, .NET Core 2.0+)
+            // For AutoCAD 2021-2024 (net48) and 2025-2026 (net8.0)
+
+            // IMPORTANT: Don't use 'using' on RSA - we need to keep it alive through export/import
+            var rsa = RSA.Create(2048);
+            try
+            {
+                var request = new CertificateRequest(
+                    "CN=localhost",
+                    rsa,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1
+                );
+
+                // Add Subject Alternative Name for localhost
+                var sanBuilder = new SubjectAlternativeNameBuilder();
+                sanBuilder.AddDnsName("localhost");
+                sanBuilder.AddIpAddress(System.Net.IPAddress.Loopback);
+                sanBuilder.AddIpAddress(System.Net.IPAddress.Parse("127.0.0.1"));
+                request.CertificateExtensions.Add(sanBuilder.Build());
+
+                // Add Key Usage extension
+                request.CertificateExtensions.Add(
+                    new X509KeyUsageExtension(
+                        X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
+                        critical: true
+                    )
+                );
+
+                // Add Enhanced Key Usage for Server Authentication
+                request.CertificateExtensions.Add(
+                    new X509EnhancedKeyUsageExtension(
+                        new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, // Server Authentication
+                        critical: true
+                    )
+                );
+
+                // Create self-signed certificate (valid for 365 days)
+                // The certificate will contain a copy of the private key
+                var certificate = request.CreateSelfSigned(
+                    DateTimeOffset.Now.AddDays(-1),
+                    DateTimeOffset.Now.AddDays(365)
+                );
+
+                // Export to PFX and re-import to ensure private key is fully embedded and exportable
+                // This is necessary for the certificate to work with SslStream
+                var certBytes = certificate.Export(X509ContentType.Pfx, CertificatePassword);
+
+                // Dispose the original certificate before creating the new one
+                certificate.Dispose();
+
+                // Import with flags that ensure private key is accessible
+                var finalCertificate = new X509Certificate2(certBytes, CertificatePassword,
+                    X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.MachineKeySet);
+
+                return finalCertificate;
+            }
+            finally
+            {
+                // Now we can safely dispose the RSA key
+                rsa?.Dispose();
+            }
+#else
+            // Fallback for older .NET Framework versions (net46, net47)
+            // For AutoCAD 2017-2020
+
+            // Since CertificateRequest is not available, we'll use a simpler approach:
+            // Create a certificate using makecert-style parameters with X509Certificate2
+
+            throw new NotSupportedException(
+                "Self-signed certificate generation is not supported on .NET Framework 4.6/4.7.\n" +
+                "For AutoCAD 2017-2020, please generate a certificate manually using:\n" +
+                "  PowerShell: New-SelfSignedCertificate -DnsName 'localhost' -CertStoreLocation 'Cert:\\CurrentUser\\My'\n" +
+                "Then export it to: " + CertificateStorePath
+            );
+#endif
+        }
+
+        /// <summary>
+        /// Deletes the cached certificate file
+        /// </summary>
+        public static void DeleteCachedCertificate()
+        {
+            try
+            {
+                if (File.Exists(CertificateStorePath))
+                {
+                    File.Delete(CertificateStorePath);
+                }
+            }
+            catch
+            {
+                // Ignore errors
+            }
         }
     }
 }
