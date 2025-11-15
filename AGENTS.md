@@ -270,27 +270,66 @@ AutoCAD Ballet provides a Roslyn compiler-as-a-service that enables AI agents (l
 
 #### 1. Start the Server
 
-In AutoCAD, run the command:
+AutoCAD Ballet provides two Roslyn server variants:
+
+**Modal Server (blocks AutoCAD UI):**
 ```
 start-roslyn-server
 ```
+- Opens modal dialog showing server activity
+- AutoCAD UI is **unavailable** while server runs
+- No authentication required
+- Press ESC to stop server
+- Best for: Quick interactive sessions
 
-This will:
-- Open a monitoring dialog showing server activity
-- Start HTTP server on `http://127.0.0.1:34157/`
-- Display HTTP request/response activity in real-time
-- Continue running until you press ESC
+**Background Server (non-blocking):**
+```
+start-roslyn-server-in-background
+```
+- Opens non-blocking dialog (can be closed)
+- AutoCAD **remains fully functional** while server runs
+- Requires authentication token (generated on startup)
+- Server persists across document switches
+- Use `stop-roslyn-server` command or dialog button to stop
+- Best for: Long-running automation, CI/CD integration, multi-document workflows
 
-#### 2. Send Queries
+Both servers listen on `http://127.0.0.1:34157/`
 
-From your terminal or AI agent, send C# code via HTTP POST:
+#### 2. Get Authentication Token (Background Server Only)
 
+When starting the background server, AutoCAD will display:
+```
+Roslyn server started in background on http://127.0.0.1:34157/
+Authentication token: K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=
+```
+
+Copy this token for use in your requests. The token is also displayed in the server dialog.
+
+#### 3. Send Queries
+
+**To Modal Server (no authentication):**
 ```bash
-# Simple query
 curl -X POST http://127.0.0.1:34157/ -d 'Console.WriteLine("Hello from AutoCAD!");'
+```
 
-# Multi-line code with proper quoting
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+**To Background Server (with authentication):**
+```bash
+# Using X-Auth-Token header
+curl -X POST http://127.0.0.1:34157/ \
+  -H "X-Auth-Token: K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=" \
+  -d 'Console.WriteLine("Hello from AutoCAD!");'
+
+# Or using Authorization Bearer header
+curl -X POST http://127.0.0.1:34157/ \
+  -H "Authorization: Bearer K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=" \
+  -d 'Console.WriteLine("Hello from AutoCAD!");'
+```
+
+**Multi-line code example:**
+```bash
+curl -X POST http://127.0.0.1:34157/ \
+  -H "X-Auth-Token: YOUR_TOKEN_HERE" \
+  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     Console.WriteLine($"Total layers: {layerTable.Cast<ObjectId>().Count()}");
@@ -298,7 +337,9 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 }'
 
 # From a file
-curl -X POST http://127.0.0.1:34157/ -d @script.cs
+curl -X POST http://127.0.0.1:34157/ \
+  -H "X-Auth-Token: YOUR_TOKEN_HERE" \
+  -d @script.cs
 ```
 
 #### 3. Parse Response
@@ -583,17 +624,87 @@ fi
 ### Security Considerations
 
 - Server only listens on **localhost (127.0.0.1)** - not accessible from network
-- No authentication - relies on localhost-only binding
-- Code executes with **full AutoCAD API access**
+- **Modal server**: No authentication (relies on localhost-only binding and blocking dialog)
+- **Background server**: Requires authentication token (256-bit random, generated per session)
+- Code executes with **full AutoCAD API access** - can read, modify, and delete drawing data
 - Intended for **local development and automation only**
 - Do not expose this service to untrusted networks
+- Token is visible in AutoCAD command line and server dialog - keep AutoCAD session secure
+
+### Type Identity Issue in .NET 8 (AutoCAD 2025-2026)
+
+The background server (`start-roslyn-server-in-background`) addresses a critical .NET 8 type identity issue that occurs when assemblies are loaded with rewritten identities for hot-reloading support.
+
+**Problem:**
+- Assemblies loaded from modified bytes (via Mono.Cecil) don't have a file `Location` property
+- Roslyn's `AddReferences()` requires assemblies with valid file paths
+- .NET treats types from different assembly instances as incompatible, causing cast exceptions
+
+**Symptoms:**
+```
+Cannot reference assembly without location
+Type A cannot be cast to Type B (both are ScriptGlobals)
+```
+
+**Solution:**
+The background server uses a unified type approach:
+1. At startup, search `AppDomain` for ANY loaded `autocad-ballet.dll` with a valid `Location`
+2. Cache both the assembly AND the `ScriptGlobals` type from that instance
+3. Use the cached assembly for Roslyn compilation references
+4. Use the cached type via reflection (`Activator.CreateInstance`) to create globals instance
+5. This ensures type identity consistency across compilation and execution
+
+See `CLAUDE.md` for detailed implementation notes and code patterns.
+
+### Future: Central Server Hub Architecture
+
+Current implementation provides one server per AutoCAD session. Future enhancements:
+
+**Central Hub Server:**
+- Single server process managing multiple AutoCAD sessions
+- Sessions register with hub on startup, deregister on close
+- Clients route requests via session ID (e.g., process ID, document name, or custom identifier)
+
+**Multi-Session Capabilities:**
+- Execute scripts across multiple AutoCAD instances
+- Aggregate queries (e.g., "find all layers named X across all open drawings")
+- Cross-session validation (ensure consistency across project drawing sets)
+- Session discovery API (enumerate available AutoCAD instances)
+
+**Protocol Extensions:**
+```bash
+# Target specific session
+curl -X POST http://127.0.0.1:34157/ \
+  -H "X-Auth-Token: TOKEN" \
+  -H "X-Session-ID: 12345" \
+  -d 'Console.WriteLine(Doc.Name);'
+
+# Query all sessions
+curl -X POST http://127.0.0.1:34157/query-all \
+  -H "X-Auth-Token: TOKEN" \
+  -d 'Console.WriteLine(Doc.Name);'
+
+# List available sessions
+curl -X GET http://127.0.0.1:34157/sessions \
+  -H "X-Auth-Token: TOKEN"
+```
+
+**Implementation Considerations:**
+- Type version compatibility: Ensure `ScriptGlobals` types match across sessions
+- Session lifecycle management: Handle AutoCAD crashes, disconnections
+- Thread marshalling: Route execution to correct AutoCAD UI thread
+- Document locking: Coordinate access across concurrent requests
+
+This architecture enables powerful distributed validation and automation scenarios for large multi-drawing projects.
 
 ### Future Capabilities
 
-The Roslyn server will eventually support:
+Additional planned enhancements:
 - **Vision Integration**: Send screenshots for visual validation
-- **Persistent Scripts**: Save commonly-used validation scripts
-- **Batch Execution**: Run multiple queries in one request
+- **Persistent Scripts**: Save commonly-used validation scripts in library
+- **Batch Execution**: Run multiple queries in one request with transaction guarantees
 - **CI/CD Integration**: Automated drawing validation in build pipelines
+- **WebSocket Support**: Real-time streaming of drawing changes for live monitoring
+- **Script Templates**: Pre-built validation patterns for common standards (AIA, ISO, etc.)
 
 For more implementation details, see the "Roslyn Server for AI Agents" section in `CLAUDE.md`.

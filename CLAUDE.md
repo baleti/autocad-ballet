@@ -229,31 +229,97 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 }'
 ```
 
-*Command:*
-- `start-roslyn-server` - Opens dialog and starts HTTP server on `http://127.0.0.1:34157/`
+*Commands:*
+- `start-roslyn-server` - Opens modal dialog and starts HTTP server on `http://127.0.0.1:34157/`
+  - Modal blocking dialog - AutoCAD UI is unavailable while server runs
   - Press ESC to stop the server and close dialog
   - Dialog shows connection events and request/response activity in real-time
   - Server continues accepting connections until stopped
+  - No authentication required (localhost-only)
+
+- `start-roslyn-server-in-background` - Starts HTTP server in background with non-blocking dialog
+  - Non-blocking dialog - AutoCAD remains fully functional while server runs
+  - Dialog can be closed while server continues running
+  - Authentication required via `X-Auth-Token` header or `Authorization: Bearer <token>` header
+  - Server generates secure random token (256-bit) on startup
+  - Token displayed in dialog and written to AutoCAD command line
+  - Use `stop-roslyn-server` command or dialog button to stop server
+  - Server persists across document switches and stays active until explicitly stopped
+
+*Authentication (background server only):*
+```bash
+# Using X-Auth-Token header
+curl -X POST http://127.0.0.1:34157/ \
+  -H "X-Auth-Token: YOUR_TOKEN_HERE" \
+  -d 'Console.WriteLine("Hello");'
+
+# Using Authorization Bearer header
+curl -X POST http://127.0.0.1:34157/ \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -d 'Console.WriteLine("Hello");'
+```
 
 *Security Notes:*
 - Server only listens on localhost (127.0.0.1)
 - Intended for local development and automation only
 - Code execution happens within AutoCAD process with full API access
-- No authentication - relies on localhost-only binding for security
+- Background server requires authentication token to prevent unauthorized access
+- Foreground server has no authentication (relies on localhost-only binding and modal dialog)
 
-*Future Enhancements:*
-- Vision integration for visual drawing validation
-- Persistent script library for common validation tasks
-- Batch execution support for multiple queries
-- Integration with CI/CD pipelines for drawing validation
+*Type Identity Issue (.NET 8 / AutoCAD 2025-2026):*
+The background server implementation addresses a critical .NET 8 type identity issue:
+
+**Problem**: In .NET 8, assemblies loaded with rewritten identities (via Mono.Cecil for hot-reloading) do not have a file `Location` property. Roslyn's `ScriptOptions.AddReferences()` requires assemblies with valid file paths. Additionally, .NET treats types from different assembly instances as incompatible even if they have identical definitions.
+
+**Symptoms**:
+- `Cannot reference assembly without location` error during compilation
+- `Type A cannot be cast to Type B` error during execution (both Type A and Type B are `ScriptGlobals`)
+
+**Solution** (implemented in `start-roslyn-server-in-background.cs`):
+1. **Assembly Location Resolution**: On server startup, search `AppDomain.CurrentDomain.GetAssemblies()` to find ANY loaded copy of `autocad-ballet.dll` that has a valid `Location` property
+2. **Type Caching**: Cache both the assembly reference AND the `ScriptGlobals` type from that specific assembly instance
+3. **Unified Type Usage**:
+   - Use cached assembly for Roslyn's `AddReferences()`
+   - Use cached `ScriptGlobals` type for `CSharpScript.Create()`
+   - Use cached type with `Activator.CreateInstance()` + reflection to create globals instance
+4. **Result**: All operations use the SAME assembly instance, ensuring type identity consistency
+
+**Code Pattern**:
+```csharp
+// Cache assembly and type at startup
+Assembly scriptGlobalsAssembly = FindAssemblyWithLocation();
+Type scriptGlobalsType = scriptGlobalsAssembly.GetType("AutoCADBallet.ScriptGlobals");
+
+// Use cached assembly for Roslyn references
+var scriptOptions = ScriptOptions.Default.AddReferences(scriptGlobalsAssembly);
+
+// Use cached type for script creation
+var script = CSharpScript.Create(code, scriptOptions, scriptGlobalsType);
+
+// Use cached type for globals instance (via reflection, not "new ScriptGlobals()")
+var globals = Activator.CreateInstance(scriptGlobalsType);
+scriptGlobalsType.GetProperty("Doc").SetValue(globals, doc);
+```
+
+This pattern ensures type identity across compilation and execution, preventing cast exceptions.
+
+*Future: Central Server Hub Architecture:*
+The current implementation provides one server per AutoCAD session. Future enhancements will support:
+- **Central Hub Server**: Single server process managing multiple AutoCAD sessions
+- **Session Routing**: Clients specify target session ID in requests
+- **Cross-Session Queries**: Execute scripts across multiple AutoCAD instances
+- **Session Discovery**: API to enumerate available AutoCAD sessions
+- **Distributed Validation**: Batch validation across entire project drawing sets
+- **Type Version Compatibility**: Ensure ScriptGlobals types are compatible across sessions
 
 *Implementation Details:*
 - Uses `CommandFlags.Session` to work at application level
 - Runs TCP server on background thread with cancellation token
-- Marshals AutoCAD API access appropriately
+- Marshals AutoCAD API access appropriately (executes on UI thread via `Application.Idle` event)
 - Captures `Console.WriteLine()` output using `StringWriter`
 - Returns both compilation diagnostics and runtime errors
 - Keeps listening even after compilation errors (allows correction)
+- Background server uses document locking for thread-safe database operations
 
 For detailed usage examples and integration with AI agents, see `AGENTS.md`.
 

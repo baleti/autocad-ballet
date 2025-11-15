@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -96,6 +97,8 @@ namespace AutoCADBallet
         private bool isRunning = false;
         private string authToken;
         private BackgroundRoslynServerDialog dialog;
+        private Assembly scriptGlobalsAssembly;  // Cached assembly with valid Location
+        private Type scriptGlobalsType;           // Cached ScriptGlobals type from that assembly
 
         public bool IsRunning => isRunning;
         public string AuthToken => authToken;
@@ -105,6 +108,62 @@ namespace AutoCADBallet
         {
             if (isRunning)
                 return;
+
+            // CRITICAL: Assembly Location Resolution for Roslyn Compilation
+            // ============================================================
+            // Problem: In .NET 8 (AutoCAD 2025/2026), assemblies loaded from modified bytes
+            // (with rewritten identity via Mono.Cecil) do not have a file Location property.
+            // Roslyn's ScriptOptions.AddReferences() requires assemblies with valid file paths.
+            //
+            // Solution: Search for any loaded copy of autocad-ballet.dll that HAS a Location.
+            // Cache both the assembly AND the ScriptGlobals type from it. Use these cached
+            // references for BOTH compilation (AddReferences) and execution (CreateInstance).
+            //
+            // Why this matters: .NET treats types from different assembly instances as incompatible
+            // even if they have the same definition. Using the SAME assembly instance for both
+            // compilation and execution prevents "Type A cannot be cast to Type B" errors.
+            //
+            // Future: When implementing a central server hub, this logic will need to ensure
+            // all connected AutoCAD sessions use compatible assembly versions.
+
+            var currentAsm = typeof(ScriptGlobals).Assembly;
+            if (!string.IsNullOrEmpty(currentAsm.Location))
+            {
+                // Current assembly has a file location - use it directly
+                scriptGlobalsAssembly = currentAsm;
+            }
+            else
+            {
+                // Current assembly was loaded from bytes - search AppDomain for a copy with Location
+                var loadedAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+                foreach (var asm in loadedAssemblies)
+                {
+                    if (!string.IsNullOrEmpty(asm.Location))
+                    {
+                        try
+                        {
+                            var type = asm.GetType("AutoCADBallet.ScriptGlobals");
+                            if (type != null)
+                            {
+                                scriptGlobalsAssembly = asm;
+                                break;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            if (scriptGlobalsAssembly == null)
+            {
+                throw new InvalidOperationException("Cannot find autocad-ballet assembly with valid file location for Roslyn compilation");
+            }
+
+            scriptGlobalsType = scriptGlobalsAssembly.GetType("AutoCADBallet.ScriptGlobals");
+            if (scriptGlobalsType == null)
+            {
+                throw new InvalidOperationException("Cannot find ScriptGlobals type in assembly");
+            }
 
             // Generate secure random password (32 bytes = 256 bits)
             authToken = GenerateSecureToken();
@@ -337,28 +396,14 @@ namespace AutoCADBallet
 
             try
             {
-                // Configure script options with necessary references
-                var scriptOptions = ScriptOptions.Default;
-
-                // Add reference to autocad-ballet.dll for ScriptGlobals
-                var scriptGlobalsAsm = typeof(ScriptGlobals).Assembly;
-
-                if (string.IsNullOrEmpty(scriptGlobalsAsm.Location))
-                {
-                    result.Success = false;
-                    result.ErrorResponse = new ScriptResponse
-                    {
-                        Success = false,
-                        Error = $"Cannot reference assembly without location. Assembly: {scriptGlobalsAsm.FullName}"
-                    };
-                    return Task.FromResult(result);
-                }
-
-                scriptOptions = scriptOptions
-                    .AddReferences(scriptGlobalsAsm)
-                    .AddReferences(typeof(Document).Assembly)
-                    .AddReferences(typeof(Database).Assembly)
-                    .AddReferences(typeof(Editor).Assembly)
+                // Configure Roslyn script compilation options
+                // CRITICAL: Use cached scriptGlobalsAssembly (has valid Location) instead of
+                // typeof(ScriptGlobals).Assembly (may lack Location in .NET 8 with identity rewriting)
+                var scriptOptions = ScriptOptions.Default
+                    .AddReferences(scriptGlobalsAssembly)             // autocad-ballet.dll for ScriptGlobals
+                    .AddReferences(typeof(Document).Assembly)        // Autodesk.AutoCAD.ApplicationServices
+                    .AddReferences(typeof(Database).Assembly)        // Autodesk.AutoCAD.DatabaseServices
+                    .AddReferences(typeof(Editor).Assembly)          // Autodesk.AutoCAD.EditorInput
                     .AddReferences(typeof(System.Linq.Enumerable).Assembly)
                     .AddImports("System")
                     .AddImports("System.Linq")
@@ -368,8 +413,9 @@ namespace AutoCADBallet
                     .AddImports("Autodesk.AutoCAD.EditorInput")
                     .AddImports("Autodesk.AutoCAD.Geometry");
 
-                // Compile the script
-                var script = CSharpScript.Create(code, scriptOptions, typeof(ScriptGlobals));
+                // Compile the script using the cached ScriptGlobals type
+                // This type MUST match the one used in ExecuteCompiledScript() for type identity
+                var script = CSharpScript.Create(code, scriptOptions, scriptGlobalsType);
                 var compilation = script.GetCompilation();
                 var diagnostics = compilation.GetDiagnostics();
 
@@ -487,13 +533,26 @@ namespace AutoCADBallet
                 // Give dialog a moment to show
                 await Task.Delay(100);
 
-                // Create script globals with AutoCAD context
-                var globals = new ScriptGlobals
-                {
-                    Doc = doc,
-                    Db = db,
-                    Ed = ed
-                };
+                // CRITICAL: Create ScriptGlobals instance using cached type
+                // =========================================================
+                // Why use reflection instead of "new ScriptGlobals()"?
+                // - The cached scriptGlobalsType is from an assembly with a valid Location
+                // - Using "new ScriptGlobals()" would create an instance from a DIFFERENT assembly
+                //   (the current one, which may lack a Location)
+                // - Roslyn compiles the script against scriptGlobalsType (from cached assembly)
+                // - If we pass an instance from a different assembly, .NET throws:
+                //   "Type A cannot be cast to Type B" even though they're the same type
+                // - Solution: Use Activator.CreateInstance + reflection to ensure type identity match
+                var globals = Activator.CreateInstance(scriptGlobalsType);
+
+                // Set AutoCAD context properties via reflection
+                var docProp = scriptGlobalsType.GetProperty("Doc");
+                var dbProp = scriptGlobalsType.GetProperty("Db");
+                var edProp = scriptGlobalsType.GetProperty("Ed");
+
+                docProp.SetValue(globals, doc);
+                dbProp.SetValue(globals, db);
+                edProp.SetValue(globals, ed);
 
                 // Execute the script with document lock
                 using (var docLock = doc.LockDocument())
