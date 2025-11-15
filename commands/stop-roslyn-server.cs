@@ -11,26 +11,9 @@ namespace AutoCADBallet
         [CommandMethod("stop-roslyn-server", CommandFlags.Session)]
         public void StopRoslynServerCommand()
         {
-            var doc = AcadApp.DocumentManager.MdiActiveDocument;
-            var ed = doc?.Editor;
-
-            var server = StartRoslynServerInBackground.GetServerInstance();
-
-            if (server == null || !server.IsRunning)
-            {
-                ed?.WriteMessage("\nNo Roslyn server is currently running.\n");
-                return;
-            }
-
-            try
-            {
-                StartRoslynServerInBackground.StopServer();
-                ed?.WriteMessage("\nRoslyn server stopped successfully.\n");
-            }
-            catch (System.Exception ex)
-            {
-                ed?.WriteMessage($"\nError stopping Roslyn server: {ex.Message}\n");
-            }
+            // Just call StopServer() directly - it will send HTTP shutdown request
+            // This works even when assembly is hot-reloaded and static serverInstance is null
+            StartRoslynServerInBackground.StopServer();
         }
     }
 }

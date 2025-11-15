@@ -27,30 +27,22 @@ namespace AutoCADBallet
         internal const int PORT = 34157;
         internal const string URL = "http://127.0.0.1:34157/";
 
-        // Global instance to manage the background server
+        // Global instance - note: this will be reset when assembly is hot-reloaded
+        // We rely on port conflict detection and HTTP shutdown endpoint for cross-reload control
         private static BackgroundRoslynServer serverInstance = null;
         private static readonly object lockObject = new object();
 
         [CommandMethod("start-roslyn-server-in-background", CommandFlags.Session)]
         public void StartRoslynServerInBackgroundCommand()
         {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var ed = doc?.Editor;
+
             lock (lockObject)
             {
                 if (serverInstance != null && serverInstance.IsRunning)
                 {
-                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
-                    var ed = doc?.Editor;
                     ed?.WriteMessage("\nRoslyn server is already running. Use 'stop-roslyn-server' to stop it.\n");
-
-                    // Show the existing dialog
-                    if (serverInstance.Dialog != null && !serverInstance.Dialog.IsDisposed)
-                    {
-                        serverInstance.Dialog.Invoke(new Action(() =>
-                        {
-                            serverInstance.Dialog.BringToFront();
-                            serverInstance.Dialog.Activate();
-                        }));
-                    }
                     return;
                 }
 
@@ -59,10 +51,14 @@ namespace AutoCADBallet
                     serverInstance = new BackgroundRoslynServer();
                     serverInstance.Start();
                 }
+                catch (SocketException sockEx) when (sockEx.SocketErrorCode == SocketError.AddressAlreadyInUse)
+                {
+                    // Port is already in use - server is running from a previous assembly load
+                    ed?.WriteMessage($"\nRoslyn server is already running on port {PORT}. Use 'stop-roslyn-server' to stop it.\n");
+                    serverInstance = null;
+                }
                 catch (System.Exception ex)
                 {
-                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
-                    var ed = doc?.Editor;
                     ed?.WriteMessage($"\nError starting background Roslyn server: {ex.Message}\n");
                     serverInstance = null;
                 }
@@ -71,11 +67,62 @@ namespace AutoCADBallet
 
         internal static void StopServer()
         {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var ed = doc?.Editor;
+
+            // Send HTTP shutdown request to the server
+            // This works even when the server was started from a different assembly instance
+            try
+            {
+                using (var client = new System.Net.Http.HttpClient())
+                {
+                    client.Timeout = TimeSpan.FromSeconds(5);
+                    client.DefaultRequestHeaders.Add("X-Shutdown-Key", "AUTOCAD_BALLET_SHUTDOWN");
+
+                    ed?.WriteMessage("\nSending shutdown request to Roslyn server...\n");
+
+                    var task = client.PostAsync(URL + "shutdown", new System.Net.Http.StringContent(""));
+                    task.Wait(); // Block until complete
+
+                    var response = task.Result;
+                    response.EnsureSuccessStatusCode();
+
+                    ed?.WriteMessage("\n========================================\n");
+                    ed?.WriteMessage("Roslyn server stopped.\n");
+                    ed?.WriteMessage("========================================\n");
+                }
+            }
+            catch (System.AggregateException aggEx)
+            {
+                var innerEx = aggEx.InnerException;
+                if (innerEx is System.Net.Http.HttpRequestException || innerEx is System.Net.Sockets.SocketException)
+                {
+                    // Server not running or already stopped
+                    ed?.WriteMessage("\nNo Roslyn server is currently running.\n");
+                }
+                else
+                {
+                    ed?.WriteMessage($"\nError stopping server: {innerEx?.Message ?? aggEx.Message}\n");
+                    ed?.WriteMessage($"Exception type: {innerEx?.GetType().Name ?? aggEx.GetType().Name}\n");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed?.WriteMessage($"\nError stopping server: {ex.Message}\n");
+                ed?.WriteMessage($"Exception type: {ex.GetType().Name}\n");
+                ed?.WriteMessage($"Stack trace: {ex.StackTrace}\n");
+            }
+
+            // Clean up local instance if it exists
             lock (lockObject)
             {
                 if (serverInstance != null)
                 {
-                    serverInstance.Stop();
+                    try
+                    {
+                        serverInstance.Stop();
+                    }
+                    catch { }
                     serverInstance = null;
                 }
             }
@@ -96,13 +143,11 @@ namespace AutoCADBallet
         private CancellationTokenSource cancellationTokenSource;
         private bool isRunning = false;
         private string authToken;
-        private BackgroundRoslynServerDialog dialog;
         private Assembly scriptGlobalsAssembly;  // Cached assembly with valid Location
         private Type scriptGlobalsType;           // Cached ScriptGlobals type from that assembly
 
         public bool IsRunning => isRunning;
         public string AuthToken => authToken;
-        public BackgroundRoslynServerDialog Dialog => dialog;
 
         public void Start()
         {
@@ -176,14 +221,18 @@ namespace AutoCADBallet
             // Start background listener thread
             Task.Run(() => AcceptRequestsLoop(cancellationTokenSource.Token));
 
-            // Show non-blocking status dialog
-            dialog = new BackgroundRoslynServerDialog(this);
-            dialog.Show();
-
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc?.Editor;
-            ed?.WriteMessage($"\nRoslyn server started in background on {StartRoslynServerInBackground.URL}\n");
+            ed?.WriteMessage($"\n========================================\n");
+            ed?.WriteMessage($"Roslyn server started in background\n");
+            ed?.WriteMessage($"URL: {StartRoslynServerInBackground.URL}\n");
             ed?.WriteMessage($"Authentication token: {authToken}\n");
+            ed?.WriteMessage($"\nSample curl command:\n");
+            ed?.WriteMessage($"curl -X POST {StartRoslynServerInBackground.URL} \\\n");
+            ed?.WriteMessage($"  -H \"X-Auth-Token: {authToken}\" \\\n");
+            ed?.WriteMessage($"  -d 'Console.WriteLine(\"Hello from AutoCAD!\");'\n");
+            ed?.WriteMessage($"\nUse 'stop-roslyn-server' command to stop the server.\n");
+            ed?.WriteMessage($"========================================\n");
         }
 
         public void Stop()
@@ -192,22 +241,41 @@ namespace AutoCADBallet
                 return;
 
             isRunning = false;
-            cancellationTokenSource?.Cancel();
 
+            // Cancel any pending operations
+            try
+            {
+                cancellationTokenSource?.Cancel();
+            }
+            catch { }
+
+            // Stop the listener
             try
             {
                 listener?.Stop();
             }
             catch { }
 
-            if (dialog != null && !dialog.IsDisposed)
+            // Dispose of resources
+            try
             {
-                dialog.Invoke(new Action(() => dialog.Close()));
+                cancellationTokenSource?.Dispose();
+                cancellationTokenSource = null;
             }
+            catch { }
+
+            try
+            {
+                // Note: TcpListener doesn't implement IDisposable, but we null it out
+                listener = null;
+            }
+            catch { }
 
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             var ed = doc?.Editor;
-            ed?.WriteMessage("\nRoslyn server stopped.\n");
+            ed?.WriteMessage("\n========================================\n");
+            ed?.WriteMessage("Roslyn server stopped.\n");
+            ed?.WriteMessage("========================================\n");
         }
 
         private string GenerateSecureToken()
@@ -269,6 +337,17 @@ namespace AutoCADBallet
                     // Parse HTTP request on background thread (no AutoCAD interaction)
                     var requestLine = await reader.ReadLineAsync();
 
+                    // Extract the request path from the request line (e.g., "POST /shutdown HTTP/1.1")
+                    string requestPath = "/";
+                    if (!string.IsNullOrEmpty(requestLine))
+                    {
+                        var parts = requestLine.Split(' ');
+                        if (parts.Length >= 2)
+                        {
+                            requestPath = parts[1];
+                        }
+                    }
+
                     var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     string line;
                     while ((line = await reader.ReadLineAsync()) != null && line.Length > 0)
@@ -279,6 +358,40 @@ namespace AutoCADBallet
                             var key = line.Substring(0, colonIndex).Trim();
                             var value = line.Substring(colonIndex + 1).Trim();
                             headers[key] = value;
+                        }
+                    }
+
+                    // Handle shutdown endpoint (no authentication required for shutdown from localhost)
+                    if (requestPath.TrimEnd('/').Equals("/shutdown", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (headers.ContainsKey("X-Shutdown-Key") && headers["X-Shutdown-Key"] == "AUTOCAD_BALLET_SHUTDOWN")
+                        {
+                            LogMessage($"[{DateTime.Now:HH:mm:ss}] Shutdown request received from {clientEndpoint}");
+
+                            var shutdownResponse = new ScriptResponse
+                            {
+                                Success = true,
+                                Output = "Server shutting down..."
+                            };
+                            await SendHttpResponse(stream, shutdownResponse);
+
+                            // Stop the server on a background task to allow response to be sent
+                            _ = Task.Run(() =>
+                            {
+                                System.Threading.Thread.Sleep(100); // Give time for response to be sent
+                                Stop();
+                            });
+                            return;
+                        }
+                        else
+                        {
+                            var errorResponse = new ScriptResponse
+                            {
+                                Success = false,
+                                Error = "Invalid shutdown key"
+                            };
+                            await SendHttpResponse(stream, errorResponse, 403, "Forbidden");
+                            return;
                         }
                     }
 
@@ -626,233 +739,9 @@ namespace AutoCADBallet
 
         internal void LogMessage(string message)
         {
-            if (dialog != null && !dialog.IsDisposed)
-            {
-                dialog.LogMessage(message);
-            }
-        }
-    }
-
-    public class BackgroundRoslynServerDialog : Form
-    {
-        private Label statusLabel;
-        private TextBox tokenTextBox;
-        private TextBox curlTextBox;
-        private TextBox logTextBox;
-        private Button stopButton;
-        private BackgroundRoslynServer server;
-
-        public BackgroundRoslynServerDialog(BackgroundRoslynServer server)
-        {
-            this.server = server;
-            InitializeComponents();
-        }
-
-        private void InitializeComponents()
-        {
-            this.Text = "Roslyn Server (Background) - AutoCAD Ballet";
-            this.Size = new System.Drawing.Size(900, 700);
-            this.StartPosition = FormStartPosition.CenterScreen;
-            this.FormBorderStyle = FormBorderStyle.Sizable;
-            this.MinimumSize = new System.Drawing.Size(700, 500);
-
-            var layout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 1,
-                RowCount = 6,
-                Padding = new Padding(15)
-            };
-
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // Status
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));  // Token section
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 150)); // Curl example
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));  // Log header
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // Log area
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));  // Buttons
-
-            // Status label
-            statusLabel = new Label
-            {
-                Text = $"✓ Server running on {StartRoslynServerInBackground.URL}",
-                Dock = DockStyle.Fill,
-                TextAlign = System.Drawing.ContentAlignment.MiddleLeft,
-                Font = new System.Drawing.Font("Segoe UI", 11, System.Drawing.FontStyle.Bold),
-                ForeColor = System.Drawing.Color.DarkGreen
-            };
-
-            // Token section
-            var tokenPanel = new Panel { Dock = DockStyle.Fill };
-            var tokenLabel = new Label
-            {
-                Text = "Authentication Token:",
-                Location = new System.Drawing.Point(0, 0),
-                Size = new System.Drawing.Size(200, 20),
-                Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold)
-            };
-            tokenTextBox = new TextBox
-            {
-                Text = server.AuthToken,
-                Location = new System.Drawing.Point(0, 25),
-                Width = 850,
-                ReadOnly = true,
-                Font = new System.Drawing.Font("Consolas", 9),
-                BackColor = System.Drawing.Color.LightYellow,
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
-            };
-            var copyTokenButton = new Button
-            {
-                Text = "Copy",
-                Location = new System.Drawing.Point(0, 52),
-                Size = new System.Drawing.Size(80, 25),
-                Font = new System.Drawing.Font("Segoe UI", 9)
-            };
-            copyTokenButton.Click += (s, e) =>
-            {
-                Clipboard.SetText(server.AuthToken);
-                copyTokenButton.Text = "Copied!";
-                Task.Delay(2000).ContinueWith(_ =>
-                {
-                    if (!copyTokenButton.IsDisposed)
-                    {
-                        copyTokenButton.Invoke(new Action(() => copyTokenButton.Text = "Copy"));
-                    }
-                });
-            };
-
-            tokenPanel.Controls.Add(tokenLabel);
-            tokenPanel.Controls.Add(tokenTextBox);
-            tokenPanel.Controls.Add(copyTokenButton);
-
-            // Curl example section
-            var curlPanel = new Panel { Dock = DockStyle.Fill };
-            var curlLabel = new Label
-            {
-                Text = "Sample curl command:",
-                Location = new System.Drawing.Point(0, 0),
-                Size = new System.Drawing.Size(200, 20),
-                Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold)
-            };
-
-            var curlExample = $"curl -X POST {StartRoslynServerInBackground.URL} \\\n" +
-                            $"  -H \"X-Auth-Token: {server.AuthToken}\" \\\n" +
-                            "  -d 'Console.WriteLine(\"Hello from AutoCAD!\");'";
-
-            curlTextBox = new TextBox
-            {
-                Text = curlExample,
-                Location = new System.Drawing.Point(0, 25),
-                Width = 850,
-                Height = 100,
-                Multiline = true,
-                ReadOnly = true,
-                Font = new System.Drawing.Font("Consolas", 8),
-                BackColor = System.Drawing.Color.FromArgb(240, 240, 240),
-                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom,
-                ScrollBars = ScrollBars.Vertical
-            };
-
-            var copyCurlButton = new Button
-            {
-                Text = "Copy",
-                Location = new System.Drawing.Point(0, 128),
-                Size = new System.Drawing.Size(80, 25),
-                Font = new System.Drawing.Font("Segoe UI", 9),
-                Anchor = AnchorStyles.Bottom | AnchorStyles.Left
-            };
-            copyCurlButton.Click += (s, e) =>
-            {
-                Clipboard.SetText(curlTextBox.Text);
-                copyCurlButton.Text = "Copied!";
-                Task.Delay(2000).ContinueWith(_ =>
-                {
-                    if (!copyCurlButton.IsDisposed)
-                    {
-                        copyCurlButton.Invoke(new Action(() => copyCurlButton.Text = "Copy"));
-                    }
-                });
-            };
-
-            curlPanel.Controls.Add(curlLabel);
-            curlPanel.Controls.Add(curlTextBox);
-            curlPanel.Controls.Add(copyCurlButton);
-
-            // Log header
-            var logHeaderLabel = new Label
-            {
-                Text = "Activity Log:",
-                Dock = DockStyle.Fill,
-                TextAlign = System.Drawing.ContentAlignment.BottomLeft,
-                Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold)
-            };
-
-            // Log area
-            logTextBox = new TextBox
-            {
-                Multiline = true,
-                Dock = DockStyle.Fill,
-                ScrollBars = ScrollBars.Vertical,
-                ReadOnly = true,
-                Font = new System.Drawing.Font("Consolas", 9),
-                BackColor = System.Drawing.Color.Black,
-                ForeColor = System.Drawing.Color.LightGreen
-            };
-
-            // Button panel
-            var buttonPanel = new Panel { Dock = DockStyle.Fill };
-            stopButton = new Button
-            {
-                Text = "Stop Server",
-                Size = new System.Drawing.Size(120, 35),
-                Location = new System.Drawing.Point(0, 8),
-                Font = new System.Drawing.Font("Segoe UI", 10, System.Drawing.FontStyle.Bold),
-                BackColor = System.Drawing.Color.FromArgb(220, 53, 69),
-                ForeColor = System.Drawing.Color.White,
-                FlatStyle = FlatStyle.Flat
-            };
-            stopButton.FlatAppearance.BorderSize = 0;
-            stopButton.Click += (s, e) =>
-            {
-                StartRoslynServerInBackground.StopServer();
-                this.Close();
-            };
-
-            buttonPanel.Controls.Add(stopButton);
-
-            // Add all to layout
-            layout.Controls.Add(statusLabel, 0, 0);
-            layout.Controls.Add(tokenPanel, 0, 1);
-            layout.Controls.Add(curlPanel, 0, 2);
-            layout.Controls.Add(logHeaderLabel, 0, 3);
-            layout.Controls.Add(logTextBox, 0, 4);
-            layout.Controls.Add(buttonPanel, 0, 5);
-
-            this.Controls.Add(layout);
-
-            // Log initial message
-            LogMessage($"[{DateTime.Now:HH:mm:ss}] Server started and waiting for requests...");
-            LogMessage($"[{DateTime.Now:HH:mm:ss}] All requests must include authentication token");
-
-            this.FormClosing += (s, e) =>
-            {
-                // Don't stop server when dialog is closed, only when button is clicked
-                // This allows the dialog to be closed while server continues running
-            };
-        }
-
-        internal void LogMessage(string message)
-        {
-            if (logTextBox.InvokeRequired)
-            {
-                logTextBox.Invoke(new Action(() =>
-                {
-                    logTextBox.AppendText(message + Environment.NewLine);
-                }));
-            }
-            else
-            {
-                logTextBox.AppendText(message + Environment.NewLine);
-            }
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            var ed = doc?.Editor;
+            ed?.WriteMessage($"{message}\n");
         }
     }
 
