@@ -446,8 +446,30 @@ namespace AutoCADBallet
             if (!isRunning) return;
 
             isRunning = false;
+
+            LogMessage($"[{DateTime.Now:HH:mm:ss}] Stopping server...");
+
+            // Cancel the background task
             cancellationTokenSource?.Cancel();
-            listener?.Stop();
+
+            // Stop the listener and dispose properly
+            try
+            {
+                listener?.Stop();
+
+                // Give background tasks a moment to clean up
+                Task.Delay(200).Wait();
+            }
+            catch (System.Exception ex)
+            {
+                LogMessage($"[{DateTime.Now:HH:mm:ss}] Error during cleanup: {ex.Message}");
+            }
+            finally
+            {
+                cancellationTokenSource?.Dispose();
+                cancellationTokenSource = null;
+                listener = null;
+            }
 
             UpdateStatus("Server stopped");
             LogMessage($"[{DateTime.Now:HH:mm:ss}] Server stopped");

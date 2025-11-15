@@ -11,10 +11,6 @@ using Autodesk.AutoCAD.EditorInput;
 
 using Mono.Cecil;
 
-#if ACAD2025 || ACAD2026
-using System.Runtime.Loader;
-#endif
-
 // Alias to avoid Application naming ambiguity
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
@@ -22,27 +18,6 @@ using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace AutocadBallet
 {
-#if ACAD2025 || ACAD2026
-    // Custom AssemblyLoadContext for .NET 8 (AutoCAD 2025/2026)
-    // Allows loading the same assembly multiple times with isolation
-    public class IsolatedAssemblyLoadContext : AssemblyLoadContext
-    {
-        private readonly string _assemblyPath;
-
-        public IsolatedAssemblyLoadContext(string assemblyPath) : base(isCollectible: false)
-        {
-            _assemblyPath = assemblyPath;
-        }
-
-        protected override Assembly Load(AssemblyName assemblyName)
-        {
-            // Return null to let default context handle all dependencies
-            // Only load the main assembly from our custom path
-            return null;
-        }
-    }
-#endif
-
     // Shared command info for both invoke-addin-command and invoke-last-addin-command
     public class CachedCommandInfo
     {
@@ -52,9 +27,6 @@ namespace AutocadBallet
         public string TypeFullName { get; set; }
         public string MethodName { get; set; }
         public bool LoadedFromFile { get; set; }
-#if ACAD2025 || ACAD2026
-        public IsolatedAssemblyLoadContext LoadContext { get; set; }
-#endif
     }
 
     public class InvokeAddinCommand
@@ -323,6 +295,27 @@ namespace AutocadBallet
                 var readerParams = new ReaderParameters { ReadSymbols = false };
                 var assemblyDef = AssemblyDefinition.ReadAssembly(ms, readerParams);
 
+                // CRITICAL: When loadFromFile is true, modify assembly identity to allow loading
+                // into DEFAULT context multiple times (needed to avoid type isolation issues)
+                // In .NET 8, we must change the identity to load the same assembly multiple times
+                if (loadFromFile)
+                {
+#if ACAD2025 || ACAD2026
+                    // For .NET 8: Modify identity to allow loading into default context
+                    // This prevents type isolation issues with Roslyn ScriptGlobals
+                    assemblyDef.Name.Name = assemblyDef.Name.Name + uniqueSuffix;
+                    assemblyDef.Name.Version = new Version(
+                        assemblyDef.Name.Version.Major,
+                        assemblyDef.Name.Version.Minor,
+                        assemblyDef.Name.Version.Build,
+                        DateTime.Now.Millisecond
+                    );
+                    assemblyDef.Name.PublicKey = null;
+                    assemblyDef.Name.PublicKeyToken = null;
+                    assemblyDef.Name.HasPublicKey = false;
+#endif
+                }
+
                 bool foundTargetCommand = false;
 
                 // Iterate through all types and methods to find CommandMethod attributes
@@ -412,9 +405,6 @@ namespace AutocadBallet
             }
 
             Assembly assembly;
-#if ACAD2025 || ACAD2026
-            IsolatedAssemblyLoadContext loadContext = null;
-#endif
 
             if (loadFromFile)
             {
@@ -428,15 +418,10 @@ namespace AutocadBallet
                 var tempAssemblyPath = Path.Combine(tempDir, Path.GetFileName(assemblyPath));
                 File.WriteAllBytes(tempAssemblyPath, modifiedAssemblyBytes);
 
-#if ACAD2025 || ACAD2026
-                // For .NET 8 (AutoCAD 2025/2026), use custom AssemblyLoadContext for isolation
-                // This allows loading the same assembly multiple times without conflicts
-                loadContext = new IsolatedAssemblyLoadContext(tempAssemblyPath);
-                assembly = loadContext.LoadFromAssemblyPath(tempAssemblyPath);
-#else
-                // For .NET Framework (AutoCAD 2017-2024), use traditional LoadFrom
+                // IMPORTANT: Load into DEFAULT context (not isolated) to avoid type isolation issues
+                // Assembly identity has been modified to allow multiple loads in .NET 8
+                // AutoCAD will automatically register commands, allowing SendStringToExecute to work
                 assembly = Assembly.LoadFrom(tempAssemblyPath);
-#endif
             }
             else
             {
@@ -447,7 +432,7 @@ namespace AutocadBallet
 
             sessionAssemblies[assemblyName] = assembly;
 
-            var cachedInfo = new CachedCommandInfo
+            return new CachedCommandInfo
             {
                 Assembly = assembly,
                 OriginalName = targetCommandName,
@@ -456,15 +441,6 @@ namespace AutocadBallet
                 MethodName = methodName,
                 LoadedFromFile = loadFromFile
             };
-
-#if ACAD2025 || ACAD2026
-            if (loadContext != null)
-            {
-                cachedInfo.LoadContext = loadContext;
-            }
-#endif
-
-            return cachedInfo;
         }
 
         private Assembly LoadAssemblyWithoutRegistration_OLD(string assemblyPath)
@@ -687,78 +663,40 @@ namespace AutocadBallet
                     throw new InvalidOperationException("No active document");
                 }
 
-                if (commandInfo.LoadedFromFile)
+                // All commands (both loadFromFile and loaded from bytes) are now registered with AutoCAD
+                // Invoke through AutoCAD's command pipeline to avoid type isolation issues
+                string commandString;
+
+                // Restore pickfirst selection using LISP before invoking the command
+                // This ensures selection survives and the command can modify it
+                if (pickfirstSelection != null && pickfirstSelection.Length > 0)
                 {
-                    // Command loaded from file (e.g., start-roslyn-server)
-                    // Must invoke via reflection since it's not registered in AutoCAD's command table
+                    var db = doc.Database;
+                    var handles = new StringBuilder();
+                    handles.Append("(progn (setq _tmp_ss (ssadd))");
 
-                    // Restore pickfirst selection if provided
-                    if (pickfirstSelection != null && pickfirstSelection.Length > 0)
+                    using (var tr = db.TransactionManager.StartTransaction())
                     {
-                        ed.SetImpliedSelection(pickfirstSelection);
+                        foreach (var id in pickfirstSelection)
+                        {
+                            var ent = tr.GetObject(id, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                            var handle = ent.Handle.ToString();
+                            handles.Append($" (ssadd (handent \"{handle}\") _tmp_ss)");
+                        }
+                        tr.Commit();
                     }
 
-                    var type = commandInfo.Assembly.GetType(commandInfo.TypeFullName);
-                    if (type == null)
-                    {
-                        throw new InvalidOperationException($"Type not found: {commandInfo.TypeFullName}");
-                    }
-
-                    var method = type.GetMethod(commandInfo.MethodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-                    if (method == null)
-                    {
-                        throw new InvalidOperationException($"Method not found: {commandInfo.MethodName}");
-                    }
-
-                    // Create instance if method is not static
-                    object instance = null;
-                    if (!method.IsStatic)
-                    {
-                        instance = Activator.CreateInstance(type);
-                    }
-
-                    // Invoke the method
-                    method.Invoke(instance, null);
-
-                    ed.WriteMessage($"\nCommand completed: {commandInfo.OriginalName}");
+                    handles.Append($" (sssetfirst nil _tmp_ss) (command \"{commandInfo.ModifiedName}\") (princ)) ");
+                    commandString = handles.ToString();
                 }
                 else
                 {
-                    // Command loaded from bytes - registered with AutoCAD
-                    // Invoke through AutoCAD's command pipeline to preserve command context
-
-                    string commandString;
-
-                    // Restore pickfirst selection using LISP before invoking the command
-                    // This ensures selection survives and the command can modify it
-                    if (pickfirstSelection != null && pickfirstSelection.Length > 0)
-                    {
-                        var db = doc.Database;
-                        var handles = new StringBuilder();
-                        handles.Append("(progn (setq _tmp_ss (ssadd))");
-
-                        using (var tr = db.TransactionManager.StartTransaction())
-                        {
-                            foreach (var id in pickfirstSelection)
-                            {
-                                var ent = tr.GetObject(id, Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
-                                var handle = ent.Handle.ToString();
-                                handles.Append($" (ssadd (handent \"{handle}\") _tmp_ss)");
-                            }
-                            tr.Commit();
-                        }
-
-                        handles.Append($" (sssetfirst nil _tmp_ss) (command \"{commandInfo.ModifiedName}\") (princ)) ");
-                        commandString = handles.ToString();
-                    }
-                    else
-                    {
-                        commandString = commandInfo.ModifiedName + "\n";
-                    }
-
-                    // Use SendStringToExecute to invoke through AutoCAD's command pipeline
-                    doc.SendStringToExecute(commandString, true, false, false);
+                    commandString = commandInfo.ModifiedName + "\n";
                 }
+
+                // Use SendStringToExecute to invoke through AutoCAD's command pipeline
+                // This ensures all commands execute in the default context, avoiding type isolation
+                doc.SendStringToExecute(commandString, true, false, false);
             }
             catch (System.Exception ex)
             {
