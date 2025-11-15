@@ -32,10 +32,19 @@
     <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- Exclude localization satellite assemblies - only include English -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AutoCAD.NET" Version="$(AutoCADPackageVersion)" ExcludeAssets="runtime" />
     <PackageReference Include="Mono.Cecil" Version="0.11.5" />
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.11.0" />
+    <!-- Roslyn package - use older version for .NET Framework 4.6/4.7 -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="2.10.0" Condition="'$(TargetFramework)' == 'net46'" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="3.11.0" Condition="'$(TargetFramework)' == 'net47'" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.11.0" Condition="'$(TargetFramework)' == 'net48' OR '$(TargetFramework)' == 'net8.0-windows'" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net46' OR '$(TargetFramework)' == 'net47' OR '$(TargetFramework)' == 'net48'">
+    <!-- Add Microsoft.CSharp for dynamic support in .NET Framework -->
+    <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
 </Project>

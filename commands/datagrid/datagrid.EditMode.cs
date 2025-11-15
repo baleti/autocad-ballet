@@ -958,7 +958,7 @@ public partial class CustomGUIs
         string category = categoryObj?.ToString() ?? "";
 
         // Only validate for block references
-        if (!category.Contains("Block", StringComparison.OrdinalIgnoreCase)) return true;
+        if (category.IndexOf("Block", StringComparison.OrdinalIgnoreCase) == -1) return true;
 
         // Check if the new block name exists in the block table
         var doc = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument;

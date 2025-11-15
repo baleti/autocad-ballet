@@ -89,8 +89,8 @@ namespace AutoCADBallet
 
     public class StartRoslynServer
     {
-        internal const int PORT = 23714;
-        internal const string URL = "http://127.0.0.1:23714/";
+        internal const int PORT = 34157;
+        internal const string URL = "http://127.0.0.1:34157/";
 
         [CommandMethod("start-roslyn-server", CommandFlags.Session)]
         public void StartRoslynServerCommand()
@@ -229,7 +229,7 @@ namespace AutoCADBallet
             {
                 using (client)
                 using (var stream = client.GetStream())
-                using (var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true))
+                using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true))
                 {
                     // Read HTTP request line and headers
                     var requestLine = await reader.ReadLineAsync();

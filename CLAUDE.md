@@ -122,7 +122,7 @@ AutoCAD Ballet provides a Roslyn compiler-as-a-service that allows external tool
 - Support automated drawing quality checks and audits
 
 *Architecture:*
-- **HTTP REST API**: Listens on `http://127.0.0.1:23714/` for incoming POST requests
+- **HTTP REST API**: Listens on `http://127.0.0.1:34157/` for incoming POST requests
 - **Roslyn Compilation**: Compiles received C# code using Microsoft.CodeAnalysis.CSharp.Scripting
 - **Execution Context**: Provides access to AutoCAD API through `ScriptGlobals` class
 - **Output Capture**: Redirects `Console.WriteLine()` output and returns to client
@@ -145,7 +145,7 @@ Note: Application-level features can be accessed through the `Autodesk.AutoCAD.A
 - `Autodesk.AutoCAD.Geometry`
 
 *Protocol:*
-- **Request**: HTTP POST to `http://127.0.0.1:23714/` with C# code in request body
+- **Request**: HTTP POST to `http://127.0.0.1:34157/` with C# code in request body
 - **Response**: JSON object with structure:
   ```json
   {
@@ -159,7 +159,7 @@ Note: Application-level features can be accessed through the `Autodesk.AutoCAD.A
 *Usage from Command Line (curl):*
 ```bash
 # Example: Get all layer names
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     foreach (ObjectId layerId in layerTable)
@@ -171,13 +171,13 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 }'
 
 # Example: Get document name
-curl -X POST http://127.0.0.1:23714/ -d 'Console.WriteLine($"Document: {Doc.Name}");'
+curl -X POST http://127.0.0.1:34157/ -d 'Console.WriteLine($"Document: {Doc.Name}");'
 
 # Or using a file
-curl -X POST http://127.0.0.1:23714/ -d @script.cs
+curl -X POST http://127.0.0.1:34157/ -d @script.cs
 
 # Example: Check layer naming compliance
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     var nonCompliant = new List<string>();
@@ -205,7 +205,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 }'
 
 # Example: Find entities on wrong layers
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -230,7 +230,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 ```
 
 *Command:*
-- `start-roslyn-server` - Opens dialog and starts HTTP server on `http://127.0.0.1:23714/`
+- `start-roslyn-server` - Opens dialog and starts HTTP server on `http://127.0.0.1:34157/`
   - Press ESC to stop the server and close dialog
   - Dialog shows connection events and request/response activity in real-time
   - Server continues accepting connections until stopped

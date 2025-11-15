@@ -277,7 +277,7 @@ start-roslyn-server
 
 This will:
 - Open a monitoring dialog showing server activity
-- Start HTTP server on `http://127.0.0.1:23714/`
+- Start HTTP server on `http://127.0.0.1:34157/`
 - Display HTTP request/response activity in real-time
 - Continue running until you press ESC
 
@@ -287,10 +287,10 @@ From your terminal or AI agent, send C# code via HTTP POST:
 
 ```bash
 # Simple query
-curl -X POST http://127.0.0.1:23714/ -d 'Console.WriteLine("Hello from AutoCAD!");'
+curl -X POST http://127.0.0.1:34157/ -d 'Console.WriteLine("Hello from AutoCAD!");'
 
 # Multi-line code with proper quoting
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     Console.WriteLine($"Total layers: {layerTable.Cast<ObjectId>().Count()}");
@@ -298,7 +298,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 }'
 
 # From a file
-curl -X POST http://127.0.0.1:23714/ -d @script.cs
+curl -X POST http://127.0.0.1:34157/ -d @script.cs
 ```
 
 #### 3. Parse Response
@@ -335,7 +335,7 @@ Pre-imported namespaces:
 
 **Get All Layer Names:**
 ```bash
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     foreach (ObjectId layerId in layerTable)
@@ -349,7 +349,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 
 **Count Entities by Type:**
 ```bash
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -376,7 +376,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 
 **Check Layer Naming Compliance:**
 ```bash
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     var nonCompliant = new List<string>();
@@ -413,7 +413,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 
 **Find Window Blocks on Wrong Layers:**
 ```bash
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -443,7 +443,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 
 **Check for Entities on Layer 0:**
 ```bash
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -476,7 +476,7 @@ curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.S
 
 **Get Drawing Statistics:**
 ```bash
-curl -X POST http://127.0.0.1:23714/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -556,7 +556,7 @@ If code compiles but fails during execution:
 
 When Claude Code needs to query the AutoCAD session:
 
-1. **Verify server is running**: Check if port 23714 is listening
+1. **Verify server is running**: Check if port 34157 is listening
 2. **Construct query**: Build appropriate C# code based on task
 3. **Send request**: Use curl or equivalent HTTP client
 4. **Parse JSON response**: Extract `success`, `output`, `error`, and `diagnostics`
@@ -565,13 +565,13 @@ When Claude Code needs to query the AutoCAD session:
 Example workflow:
 ```bash
 # Check if server is running
-if ! curl -s --connect-timeout 1 http://127.0.0.1:23714 > /dev/null 2>&1; then
+if ! curl -s --connect-timeout 1 http://127.0.0.1:34157 > /dev/null 2>&1; then
     echo "Roslyn server not running. Run 'start-roslyn-server' in AutoCAD."
     exit 1
 fi
 
 # Send query and parse response (requires jq for JSON parsing)
-RESPONSE=$(curl -s -X POST http://127.0.0.1:23714/ -d 'Console.WriteLine("Test");')
+RESPONSE=$(curl -s -X POST http://127.0.0.1:34157/ -d 'Console.WriteLine("Test");')
 SUCCESS=$(echo $RESPONSE | jq -r '.success')
 OUTPUT=$(echo $RESPONSE | jq -r '.output')
 

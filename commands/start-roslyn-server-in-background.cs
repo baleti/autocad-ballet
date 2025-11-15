@@ -23,8 +23,8 @@ namespace AutoCADBallet
 {
     public class StartRoslynServerInBackground
     {
-        internal const int PORT = 23714;
-        internal const string URL = "http://127.0.0.1:23714/";
+        internal const int PORT = 34157;
+        internal const string URL = "http://127.0.0.1:34157/";
 
         // Global instance to manage the background server
         private static BackgroundRoslynServer serverInstance = null;
@@ -154,7 +154,14 @@ namespace AutoCADBallet
         private string GenerateSecureToken()
         {
             var tokenBytes = new byte[32]; // 256 bits
+#if NET8_0_OR_GREATER
             RandomNumberGenerator.Fill(tokenBytes);
+#else
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(tokenBytes);
+            }
+#endif
             return Convert.ToBase64String(tokenBytes);
         }
 
@@ -198,7 +205,7 @@ namespace AutoCADBallet
             {
                 using (client)
                 using (var stream = client.GetStream())
-                using (var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true))
+                using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true))
                 {
                     // Parse HTTP request on background thread (no AutoCAD interaction)
                     var requestLine = await reader.ReadLineAsync();

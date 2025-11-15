@@ -11,6 +11,10 @@ using Autodesk.AutoCAD.EditorInput;
 
 using Mono.Cecil;
 
+#if ACAD2025 || ACAD2026
+using System.Runtime.Loader;
+#endif
+
 // Alias to avoid Application naming ambiguity
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
@@ -18,6 +22,27 @@ using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace AutocadBallet
 {
+#if ACAD2025 || ACAD2026
+    // Custom AssemblyLoadContext for .NET 8 (AutoCAD 2025/2026)
+    // Allows loading the same assembly multiple times with isolation
+    public class IsolatedAssemblyLoadContext : AssemblyLoadContext
+    {
+        private readonly string _assemblyPath;
+
+        public IsolatedAssemblyLoadContext(string assemblyPath) : base(isCollectible: false)
+        {
+            _assemblyPath = assemblyPath;
+        }
+
+        protected override Assembly Load(AssemblyName assemblyName)
+        {
+            // Return null to let default context handle all dependencies
+            // Only load the main assembly from our custom path
+            return null;
+        }
+    }
+#endif
+
     // Shared command info for both invoke-addin-command and invoke-last-addin-command
     public class CachedCommandInfo
     {
@@ -27,6 +52,9 @@ namespace AutocadBallet
         public string TypeFullName { get; set; }
         public string MethodName { get; set; }
         public bool LoadedFromFile { get; set; }
+#if ACAD2025 || ACAD2026
+        public IsolatedAssemblyLoadContext LoadContext { get; set; }
+#endif
     }
 
     public class InvokeAddinCommand
@@ -384,17 +412,31 @@ namespace AutocadBallet
             }
 
             Assembly assembly;
+#if ACAD2025 || ACAD2026
+            IsolatedAssemblyLoadContext loadContext = null;
+#endif
 
             if (loadFromFile)
             {
                 // Write modified assembly to temp file and load from it
                 // This gives the assembly a Location property (needed for Roslyn server)
-                var tempDir = Path.Combine(Path.GetDirectoryName(assemblyPath), "temp", Guid.NewGuid().ToString("N").Substring(0, 32));
+                // Use shared temp folder (commands/bin/temp) so startup-loader.lsp can clean up old copies
+                var binDir = Path.GetDirectoryName(Path.GetDirectoryName(assemblyPath)); // Go up from {year} to bin/
+                var tempBase = Path.Combine(binDir, "temp");
+                var tempDir = Path.Combine(tempBase, Guid.NewGuid().ToString("N").Substring(0, 32));
                 Directory.CreateDirectory(tempDir);
                 var tempAssemblyPath = Path.Combine(tempDir, Path.GetFileName(assemblyPath));
                 File.WriteAllBytes(tempAssemblyPath, modifiedAssemblyBytes);
 
+#if ACAD2025 || ACAD2026
+                // For .NET 8 (AutoCAD 2025/2026), use custom AssemblyLoadContext for isolation
+                // This allows loading the same assembly multiple times without conflicts
+                loadContext = new IsolatedAssemblyLoadContext(tempAssemblyPath);
+                assembly = loadContext.LoadFromAssemblyPath(tempAssemblyPath);
+#else
+                // For .NET Framework (AutoCAD 2017-2024), use traditional LoadFrom
                 assembly = Assembly.LoadFrom(tempAssemblyPath);
+#endif
             }
             else
             {
@@ -405,7 +447,7 @@ namespace AutocadBallet
 
             sessionAssemblies[assemblyName] = assembly;
 
-            return new CachedCommandInfo
+            var cachedInfo = new CachedCommandInfo
             {
                 Assembly = assembly,
                 OriginalName = targetCommandName,
@@ -414,6 +456,15 @@ namespace AutocadBallet
                 MethodName = methodName,
                 LoadedFromFile = loadFromFile
             };
+
+#if ACAD2025 || ACAD2026
+            if (loadContext != null)
+            {
+                cachedInfo.LoadContext = loadContext;
+            }
+#endif
+
+            return cachedInfo;
         }
 
         private Assembly LoadAssemblyWithoutRegistration_OLD(string assemblyPath)
