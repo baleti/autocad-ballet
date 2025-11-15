@@ -1,285 +1,26 @@
-# Repository Guidelines
+# Roslyn Server for AI Agent Integration
 
-## Project Structure & Module Organization
-- `commands/` — C# AutoCAD plugin and AutoLISP utilities (`*.lsp`).
-  - Multi-version targeting via `AutoCADYear` in `autocad-ballet.csproj`.
-- `installer/` — Windows Forms installer that bundles built artifacts.
-- `runtime/` — **IMPORTANT**: This codebase IS located at `%APPDATA%/autocad-ballet/`, so the `runtime/` folder contains **live usage data** and can be examined to verify code behavior and debug issues. Use `ls -lt runtime/switch-view-logs/ | head` to check recent log activity.
-- Key files: `commands/autocad-ballet.csproj`, `commands/_selection.cs`, `commands/_switch-view-logging.cs`, `commands/_reopen-documents.cs`, `commands/aliases.lsp`, `installer/installer.csproj`.
+AutoCAD Ballet provides a Roslyn compiler-as-a-service that allows AI agents (like Claude Code) to execute C# code within the AutoCAD session context.
 
-## Build, Test, and Development Commands
-- Build plugin (default 2026): `dotnet build commands/autocad-ballet.csproj`
-- Build for a specific AutoCAD version: `dotnet build commands/autocad-ballet.csproj -p:AutoCADYear=2024`
-  - Output: `commands/bin/{AutoCADYear}/autocad-ballet.dll`
-- Build installer (Windows only): `dotnet build installer/installer.csproj`
-  - Output: `installer/bin/Release/installer.exe` (or `Debug/installer.exe` for debug builds)
-- Manual smoke test in AutoCAD: copy `.lsp` to `%APPDATA%/autocad-ballet/`, NETLOAD the DLL, run aliases from `aliases.lsp`.
+## Purpose
 
-## Coding Style & Naming Conventions
-- C#: 4-space indent; PascalCase for types/methods; camelCase for locals/fields.
-- Commands: one command per file (kebab-case naming); create under `commands/` with `[CommandMethod]` attribute.
-- **CRITICAL**: Every command class MUST have `[assembly: CommandClass(typeof(YourClassName))]` at the top of the file (after `using` statements, before `namespace`).
-  - Without this assembly-level attribute, AutoCAD will not register the command and it will be invisible.
-  - Example: `[assembly: CommandClass(typeof(AutoCADBallet.TagSelectedNamedInView))]`
-- Shared utilities: files prefixed with underscore (e.g., `_selection.cs`, `_edit-dialog.cs`) may contain multiple related classes.
-- AutoLISP: filenames kebab-case (e.g., `select-current-layer.lsp`); define commands as `c:command-name`; maintain shortcuts in `aliases.lsp`.
-- Keep logic small and composable; avoid UI in core command classes.
-- Scope-based commands: Main implementation file with `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()` static methods; separate stub files for each scope (`{command}-in-view.cs`, etc.) delegate to main implementation.
+- Query and analyze current AutoCAD session programmatically
+- Perform validation tasks (layer naming, entity placement checks)
+- Inspect document state and entity properties dynamically
+- Support automated drawing quality checks and audits
 
-## DataGrid UI Component
-**CRITICAL**: When asked to "use datagrid" or "show a datagrid", ALWAYS use the built-in `CustomGUIs.DataGrid()` method from `commands/datagrid/` — **DO NOT** create custom Windows Forms with DataGridView manually.
+## Quick Start
 
-**Usage Pattern:**
-```csharp
-// 1. Build data as List<Dictionary<string, object>>
-var data = new List<Dictionary<string, object>>();
-data.Add(new Dictionary<string, object>
-{
-    ["PropertyName"] = value,
-    ["AnotherProperty"] = anotherValue
-});
-
-// 2. Define columns to display
-var columns = new List<string> { "PropertyName", "AnotherProperty" };
-
-// 3. Show DataGrid and get user selection
-var selected = CustomGUIs.DataGrid(data, columns, spanAllScreens: false);
-
-// 4. Process selected items
-if (selected != null && selected.Count > 0)
-{
-    foreach (var item in selected)
-    {
-        var value = item["PropertyName"];
-        // ... process selection
-    }
-}
-```
-
-**Key Features:**
-- Multi-select with Ctrl/Shift+Click, search/filter, column sorting, F2 edit mode
-- Automatic column header formatting (PascalCase → "lowercase with spaces")
-- Supports `allowCreateFromSearch: true` for creating new items from search box
-- Virtual scrolling for large datasets, multi-monitor spanning
-
-**Example Commands:**
-- `switch-view.cs` — Layout switching with DataGrid
-- `filter-selection.cs` — Entity filtering
-- `tag-selected-in-view.cs` — Tag management with create-from-search
-
-See `CLAUDE.md` DataGrid System section for full API documentation.
-
-## CommandFlags.Session and LISP Integration
-- **Use `CommandFlags.Session`** for commands that open/close/switch documents or modify DocumentCollection.
-- **CRITICAL**: LISP wrappers for Session commands MUST end with `(princ)` to prevent command context leaks.
-  - Pattern: `(defun c:alias () (command "command-name") (princ))`
-  - Without `(princ)`, commands remain stuck on documents causing "Drawing is busy" errors.
-- Examples: `open-documents-recent-read-write`, `open-documents-recent-read-only`, `close-all-without-saving`, `switch-view`, `switch-view-last`, `switch-view-recent`.
-
-## Testing Guidelines
-- No formal test suite yet. Validate by:
-  - Running commands on sample drawings and checking behavior.
-  - **Debugging workflow**: Since this codebase is at `%APPDATA%/autocad-ballet/`, examine `runtime/` logs directly:
-    - `runtime/switch-view-logs/` — Layout switching history (use `ls -lt runtime/switch-view-logs/ | head` for recent activity)
-    - `runtime/selection/` — Per-document selection persistence
-    - `runtime/selection-logs/` — Selection change history
-    - `runtime/invoke-addin-command-last` — Last invoked addin command
-  - NETLOAD checks across targeted AutoCAD years (2017-2026).
-- For bug fixes, include repro steps and expected vs. actual results in the PR.
-
-## Commit & Pull Request Guidelines
-- Commits: imperative, concise, lowercase (e.g., `fix startup loader path match`).
-- PRs: clear description, scope, targeted AutoCAD years, manual test notes, and screenshots for UI/installer changes.
-- Link issues and note when porting from revit-ballet.
-
-## Security & Configuration Tips
-- Never hardcode user paths; use `%APPDATA%/autocad-ballet/…` for data and runtime files.
-- Do not commit runtime artifacts; the `runtime/` directory in the repository is gitignored and contains only local development/test data.
-
-## Persistent Storage Best Practices
-
-**CRITICAL**: Do not store persistent data in static fields or class-level variables in plugin code - these values will be lost when the DLL is reloaded via `invoke-addin-command` or hot-reload mechanisms.
-
-**Problem**:
-- Static fields are reset when AutoCAD reloads the plugin DLL
-- Transient graphics and other runtime state persists in AutoCAD's memory but tracking data in static variables is lost
-- This causes commands to fail after reload (e.g., clear commands can't find what to clear)
-
-**Solution**:
-- Store all persistent data in `%APPDATA%/autocad-ballet/runtime/` subdirectories
-- Use file-based storage for tracking information that must survive DLL reloads
-- Examples of proper storage locations:
-  - `runtime/transient-graphics-tracker/` - Transient graphics marker tracking
-  - `runtime/selection/` - Cross-document selection persistence
-  - `runtime/switch-view-logs/` - Layout switching history
-  - `runtime/selection-logs/` - Selection change history
-
-**Example Pattern**:
-```csharp
-// BAD - Data lost on DLL reload
-private static List<int> _markers = new List<int>();
-
-// GOOD - Data persists across reloads
-public static void SaveMarkers(string documentId, List<int> markers)
-{
-    var filePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "autocad-ballet", "runtime", "transient-graphics-tracker", documentId);
-    File.WriteAllLines(filePath, markers.Select(m => m.ToString()));
-}
-```
-
-**When to Use Runtime Storage**:
-- Transient graphics tracking (markers must persist to clear them later)
-- Cross-session data (selection sets, command history)
-- Document-specific state that survives plugin reloads
-- Any data that needs to outlive the current plugin load session
-
-**See Also**:
-- `commands/transient-graphics-storage.cs` - Reference implementation
-- `commands/_selection.cs` - Selection persistence example
-
-## Entity Attributes and Tagging System
-AutoCAD Ballet provides a type-safe, extensible attribute storage system for entities (`commands/_entity-attributes.cs`).
-
-### Overview
-Tags are a specialized form of entity attributes stored in extension dictionaries. They provide a flexible way to organize, categorize, and select entities across views, documents, and sessions.
-
-### Architecture
-- **Storage**: Tags stored in entity extension dictionaries under key "AUTOCAD_BALLET_ATTRIBUTES"
-- **Format**: Comma-separated strings in the "Tags" attribute key
-- **Case sensitivity**: All tag operations are case-insensitive
-- **Persistence**: Tags persist in the drawing file and survive save/load cycles
-
-### Core API (Extension Methods on ObjectId)
-```csharp
-// Getting tags
-List<string> tags = entityId.GetTags(db);
-bool hasTags = entityId.HasAnyTags(db);
-bool hasSpecific = entityId.HasTag(db, "floor1");
-
-// Setting tags
-entityId.AddTags(db, "floor1", "electrical");      // Merges with existing
-entityId.SetTags(db, "floor1", "electrical");      // Replaces all tags
-entityId.RemoveTags(db, "electrical");             // Removes specific tags
-entityId.ClearTags(db);                            // Removes all tags
-```
-
-### Tag Discovery (Static Methods on TagHelpers)
-```csharp
-// Get all tags in different scopes (returns List<TagInfo>)
-var tags = TagHelpers.GetAllTagsInCurrentSpace(db);           // Current Model/Paper space
-var tags = TagHelpers.GetAllTagsInLayouts(db);                // All layouts in document
-var tags = TagHelpers.GetAllTagsInDatabase(db);               // Entire database + blocks
-var tags = TagHelpers.GetAllTagsInLayoutsAcrossDocuments(dbs);// Multiple documents
-
-// Find entities with specific tags
-List<ObjectId> entities = TagHelpers.FindEntitiesWithTag(db, "floor1");
-
-// TagInfo structure
-public class TagInfo {
-    public long Id { get; set; }
-    public string Name { get; set; }
-    public int UsageCount { get; set; }  // Number of entities with this tag
-}
-```
-
-### Tag Commands
-All tag commands follow the scope-based pattern with `-in-{view,document,session}` variants:
-
-**`tag-selected-in-{view,document,session}`**
-- Interactive tagging with DataGrid UI
-- Shows existing tags with usage counts
-- Allows creating new tags via search box (allowCreateFromSearch: true)
-- Merges selected/new tags with existing entity tags
-
-**`select-by-sibling-tags-of-selected-in-{view,document,session}`**
-- Finds entities with **exactly** the same tag combination (siblings)
-- Use case: Find entities that were tagged together as a group
-- Example: Entity with "floor1, electrical" → finds all entities with exactly those two tags
-
-**`select-by-parent-tags-of-selected-in-{view,document,session}`**
-- Shows DataGrid to select which tags to use for selection
-- Finds entities with **at least one** of the selected tags (parents)
-- Use case: Find broader categories or related entities
-- Example: Selecting tags "floor1, floor2" → finds all entities with either tag
-
-### Implementation Patterns
-
-**When creating new tag-based commands:**
-1. Use extension methods from TagHelpers for tag operations
-2. Follow scope-based pattern: `ExecuteViewScope()`, `ExecuteDocumentScope()`, `ExecuteApplicationScope()`
-3. For UI, use `CustomGUIs.DataGrid()` with tag entries
-4. Tag discovery methods return `List<TagInfo>` sorted by UsageCount (descending) then Name
-
-**Example tag usage in a command:**
-```csharp
-// Get tags from selected entities
-var tagCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-foreach (var objId in selectedIds)
-{
-    var tags = objId.GetTags(db);
-    foreach (var tag in tags)
-    {
-        if (tagCounts.ContainsKey(tag))
-            tagCounts[tag]++;
-        else
-            tagCounts[tag] = 1;
-    }
-}
-
-// Show in DataGrid
-var entries = tagCounts
-    .OrderByDescending(kvp => kvp.Value)
-    .Select(kvp => new Dictionary<string, object>
-    {
-        { "TagName", kvp.Key },
-        { "UsageCount", kvp.Value }
-    })
-    .ToList();
-
-var selectedTags = CustomGUIs.DataGrid(entries, new List<string> { "TagName", "UsageCount" });
-```
-
-### Use Cases
-- **Organization**: Tag by category, phase, discipline, responsibility
-- **Selection workflows**: Build complex selections based on tag criteria
-- **Cross-document coordination**: Tags work across documents in session
-- **Filtering**: Combine with other selection commands for powerful filtering
-- **Documentation**: Track metadata without modifying drawing properties
-
-### Performance Considerations
-- Tag discovery includes diagnostic timing (logged to command line)
-- `GetAllTagsInDatabase()` scans all block definitions (slower)
-- `GetAllTagsInLayouts()` scans only layouts (faster, recommended)
-- `GetAllTagsInCurrentSpace()` is fastest (current space only)
-- Tag operations on individual entities are fast (extension dictionary lookups)
-
-### Best Practices
-- Use descriptive, hierarchical tag names (e.g., "floor1-electrical", "phase2-demo")
-- Leverage usage counts in DataGrid to show popularity
-- For cross-document operations, use session scope commands
-- Tags are case-insensitive but preserve original casing on first use
-- Empty/whitespace tags are automatically filtered out
-
-## Roslyn Server for AI Agent Integration
-
-AutoCAD Ballet provides a Roslyn compiler-as-a-service that enables AI agents (like Claude Code) to execute C# code within the AutoCAD session context. This allows for dynamic inspection, validation, and automation of AutoCAD workflows.
-
-### Quick Start
-
-#### 1. Start the Server
-
-AutoCAD Ballet provides two Roslyn server variants:
+### 1. Start the Server
 
 **Modal Server (blocks AutoCAD UI):**
 ```
 start-roslyn-server
 ```
 - Opens modal dialog showing server activity
-- AutoCAD UI is **unavailable** while server runs
+- AutoCAD UI unavailable while server runs
 - No authentication required
-- Press ESC to stop server
+- Press ESC to stop
 - Best for: Quick interactive sessions
 
 **Background Server (non-blocking):**
@@ -287,17 +28,17 @@ start-roslyn-server
 start-roslyn-server-in-background
 ```
 - Opens non-blocking dialog (can be closed)
-- AutoCAD **remains fully functional** while server runs
+- AutoCAD remains fully functional
 - Requires authentication token (generated on startup)
 - Server persists across document switches
-- Use `stop-roslyn-server` command or dialog button to stop
-- Best for: Long-running automation, CI/CD integration, multi-document workflows
+- Use `stop-roslyn-server` command to stop
+- Best for: Long-running automation, CI/CD integration
 
 Both servers listen on `http://127.0.0.1:34157/`
 
-#### 2. Get Authentication Token (Background Server Only)
+### 2. Get Authentication Token (Background Server Only)
 
-When starting the background server, AutoCAD will display:
+When starting the background server, AutoCAD displays:
 ```
 Roslyn server started in background on http://127.0.0.1:34157/
 Authentication token: K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=
@@ -305,7 +46,7 @@ Authentication token: K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=
 
 Copy this token for use in your requests. The token is also displayed in the server dialog.
 
-#### 3. Send Queries
+### 3. Send Queries
 
 **To Modal Server (no authentication):**
 ```bash
@@ -325,24 +66,7 @@ curl -X POST http://127.0.0.1:34157/ \
   -d 'Console.WriteLine("Hello from AutoCAD!");'
 ```
 
-**Multi-line code example:**
-```bash
-curl -X POST http://127.0.0.1:34157/ \
-  -H "X-Auth-Token: YOUR_TOKEN_HERE" \
-  -d 'using (var tr = Db.TransactionManager.StartTransaction())
-{
-    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
-    Console.WriteLine($"Total layers: {layerTable.Cast<ObjectId>().Count()}");
-    tr.Commit();
-}'
-
-# From a file
-curl -X POST http://127.0.0.1:34157/ \
-  -H "X-Auth-Token: YOUR_TOKEN_HERE" \
-  -d @script.cs
-```
-
-#### 3. Parse Response
+### 4. Parse Response
 
 The server returns JSON with this structure:
 
@@ -355,7 +79,7 @@ The server returns JSON with this structure:
 }
 ```
 
-### Available Context
+## Available Context
 
 Scripts have access to these global variables:
 
@@ -370,9 +94,9 @@ Pre-imported namespaces:
 - `Autodesk.AutoCAD.EditorInput`
 - `Autodesk.AutoCAD.Geometry`
 
-### Common Query Patterns
+## Common Query Patterns
 
-#### Listing Information
+### Listing Information
 
 **Get All Layer Names:**
 ```bash
@@ -413,7 +137,7 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 }'
 ```
 
-#### Validation Queries
+### Validation Queries
 
 **Check Layer Naming Compliance:**
 ```bash
@@ -421,18 +145,14 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     var nonCompliant = new List<string>();
-
-    // Check for AIA CAD Layer Guidelines (layers should start with discipline code)
     var validPrefixes = new[] { "A-", "S-", "E-", "M-", "P-", "FP-", "C-", "L-", "I-" };
 
     foreach (ObjectId layerId in layerTable)
     {
         var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
-        var layerName = layer.Name;
-
-        if (!validPrefixes.Any(prefix => layerName.StartsWith(prefix)))
+        if (!validPrefixes.Any(prefix => layer.Name.StartsWith(prefix)))
         {
-            nonCompliant.Add(layerName);
+            nonCompliant.Add(layer.Name);
         }
     }
 
@@ -452,36 +172,6 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 }'
 ```
 
-**Find Window Blocks on Wrong Layers:**
-```bash
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
-{
-    var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
-    var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
-    var violations = 0;
-
-    foreach (ObjectId entId in modelSpace)
-    {
-        var entity = tr.GetObject(entId, OpenMode.ForRead) as Entity;
-        if (entity is BlockReference blockRef)
-        {
-            var blockName = blockRef.Name.ToLower();
-            var layerName = entity.Layer.ToLower();
-
-            if ((blockName.Contains("window") || blockName.Contains("wndw")) &&
-                !layerName.Contains("window") && !layerName.Contains("wndw") && !layerName.StartsWith("a-glaz"))
-            {
-                Console.WriteLine($"Window block \"{blockRef.Name}\" on layer \"{entity.Layer}\"");
-                violations++;
-            }
-        }
-    }
-
-    Console.WriteLine($"\nTotal violations: {violations}");
-    tr.Commit();
-}'
-```
-
 **Check for Entities on Layer 0:**
 ```bash
 curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
@@ -495,25 +185,17 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
         var entity = tr.GetObject(entId, OpenMode.ForRead) as Entity;
         if (entity.Layer == "0")
         {
-            var extents = entity.GeometricExtents;
-            Console.WriteLine($"{entity.GetType().Name} at ({extents.MinPoint.X:F2}, {extents.MinPoint.Y:F2})");
+            Console.WriteLine($"{entity.GetType().Name} at ({entity.GeometricExtents.MinPoint.X:F2}, {entity.GeometricExtents.MinPoint.Y:F2})");
             count++;
         }
     }
 
-    if (count > 0)
-    {
-        Console.WriteLine($"\nWarning: {count} entities found on Layer 0");
-    }
-    else
-    {
-        Console.WriteLine("No entities on Layer 0");
-    }
+    Console.WriteLine(count > 0 ? $"\nWarning: {count} entities on Layer 0" : "No entities on Layer 0");
     tr.Commit();
 }'
 ```
 
-#### Statistical Queries
+### Statistical Queries
 
 **Get Drawing Statistics:**
 ```bash
@@ -536,11 +218,11 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 }'
 ```
 
-### Error Handling
+## Error Handling
 
-#### Compilation Errors
+### Compilation Errors
 
-If your code has syntax errors, the server returns them:
+If code has syntax errors, the server returns them:
 
 ```json
 {
@@ -555,7 +237,7 @@ If your code has syntax errors, the server returns them:
 
 The server **continues listening** after errors, so you can send corrected code.
 
-#### Runtime Errors
+### Runtime Errors
 
 If code compiles but fails during execution:
 
@@ -568,7 +250,7 @@ If code compiles but fails during execution:
 }
 ```
 
-### Best Practices for Roslyn Server
+## Best Practices
 
 1. **Always Use Transactions**: AutoCAD database access requires transactions
    ```csharp
@@ -593,7 +275,7 @@ If code compiles but fails during execution:
    return layerTable.Cast<ObjectId>().Count();
    ```
 
-### Integration with Claude Code
+## Integration with Claude Code
 
 When Claude Code needs to query the AutoCAD session:
 
@@ -621,7 +303,7 @@ if [ "$SUCCESS" == "true" ]; then
 fi
 ```
 
-### Security Considerations
+## Security Considerations
 
 - Server only listens on **localhost (127.0.0.1)** - not accessible from network
 - **Modal server**: No authentication (relies on localhost-only binding and blocking dialog)
@@ -631,7 +313,7 @@ fi
 - Do not expose this service to untrusted networks
 - Token is visible in AutoCAD command line and server dialog - keep AutoCAD session secure
 
-### Type Identity Issue in .NET 8 (AutoCAD 2025-2026)
+## Type Identity Issue in .NET 8 (AutoCAD 2025-2026)
 
 The background server (`start-roslyn-server-in-background`) addresses a critical .NET 8 type identity issue that occurs when assemblies are loaded with rewritten identities for hot-reloading support.
 
@@ -654,57 +336,16 @@ The background server uses a unified type approach:
 4. Use the cached type via reflection (`Activator.CreateInstance`) to create globals instance
 5. This ensures type identity consistency across compilation and execution
 
-See `CLAUDE.md` for detailed implementation notes and code patterns.
+See `start-roslyn-server-in-background.cs` for detailed implementation.
 
-### Future: Central Server Hub Architecture
+## Implementation Details
 
-Current implementation provides one server per AutoCAD session. Future enhancements:
+- Uses `CommandFlags.Session` to work at application level
+- Runs TCP server on background thread with cancellation token
+- Marshals AutoCAD API access appropriately (executes on UI thread via `Application.Idle` event)
+- Captures `Console.WriteLine()` output using `StringWriter`
+- Returns both compilation diagnostics and runtime errors
+- Keeps listening even after compilation errors (allows correction)
+- Background server uses document locking for thread-safe database operations
 
-**Central Hub Server:**
-- Single server process managing multiple AutoCAD sessions
-- Sessions register with hub on startup, deregister on close
-- Clients route requests via session ID (e.g., process ID, document name, or custom identifier)
-
-**Multi-Session Capabilities:**
-- Execute scripts across multiple AutoCAD instances
-- Aggregate queries (e.g., "find all layers named X across all open drawings")
-- Cross-session validation (ensure consistency across project drawing sets)
-- Session discovery API (enumerate available AutoCAD instances)
-
-**Protocol Extensions:**
-```bash
-# Target specific session
-curl -X POST http://127.0.0.1:34157/ \
-  -H "X-Auth-Token: TOKEN" \
-  -H "X-Session-ID: 12345" \
-  -d 'Console.WriteLine(Doc.Name);'
-
-# Query all sessions
-curl -X POST http://127.0.0.1:34157/query-all \
-  -H "X-Auth-Token: TOKEN" \
-  -d 'Console.WriteLine(Doc.Name);'
-
-# List available sessions
-curl -X GET http://127.0.0.1:34157/sessions \
-  -H "X-Auth-Token: TOKEN"
-```
-
-**Implementation Considerations:**
-- Type version compatibility: Ensure `ScriptGlobals` types match across sessions
-- Session lifecycle management: Handle AutoCAD crashes, disconnections
-- Thread marshalling: Route execution to correct AutoCAD UI thread
-- Document locking: Coordinate access across concurrent requests
-
-This architecture enables powerful distributed validation and automation scenarios for large multi-drawing projects.
-
-### Future Capabilities
-
-Additional planned enhancements:
-- **Vision Integration**: Send screenshots for visual validation
-- **Persistent Scripts**: Save commonly-used validation scripts in library
-- **Batch Execution**: Run multiple queries in one request with transaction guarantees
-- **CI/CD Integration**: Automated drawing validation in build pipelines
-- **WebSocket Support**: Real-time streaming of drawing changes for live monitoring
-- **Script Templates**: Pre-built validation patterns for common standards (AIA, ISO, etc.)
-
-For more implementation details, see the "Roslyn Server for AI Agents" section in `CLAUDE.md`.
+For general AutoCAD Ballet documentation, see `CLAUDE.md`.
