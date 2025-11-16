@@ -704,6 +704,22 @@ namespace AutoCADBallet
                         LogToAutoCAD($"[{DateTime.Now:HH:mm:ss}] Routing to /select-by-categories endpoint");
                         await HandleSelectByCategoriesRequest(stream, code);
                     }
+                    else if (path.StartsWith("/screenshot", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogToAutoCAD($"[{DateTime.Now:HH:mm:ss}] Routing to /screenshot endpoint");
+                        await HandleScreenshotRequest(stream);
+                    }
+                    else if (path.StartsWith("/invoke-addin-command", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogToAutoCAD($"[{DateTime.Now:HH:mm:ss}] Routing to /invoke-addin-command endpoint");
+                        // Extract command name from path: /invoke-addin-command/COMMAND-NAME
+                        string commandName = null;
+                        if (path.Length > "/invoke-addin-command/".Length)
+                        {
+                            commandName = path.Substring("/invoke-addin-command/".Length);
+                        }
+                        await HandleInvokeAddinCommandRequest(stream, commandName);
+                    }
                     else
                     {
                         LogToAutoCAD($"[{DateTime.Now:HH:mm:ss}] Unknown endpoint: {path}");
@@ -762,6 +778,301 @@ namespace AutoCADBallet
             {
                 await SendHttpResponse(stream, new ScriptResponse { Success = false, Error = ex.Message });
             }
+        }
+
+        private async Task HandleScreenshotRequest(Stream stream)
+        {
+            try
+            {
+                var screenshotPath = await CaptureScreenshot();
+                var response = new ScriptResponse
+                {
+                    Success = true,
+                    Output = screenshotPath
+                };
+                await SendHttpResponse(stream, response);
+            }
+            catch (System.Exception ex)
+            {
+                await SendHttpResponse(stream, new ScriptResponse { Success = false, Error = ex.Message });
+            }
+        }
+
+        private async Task HandleInvokeAddinCommandRequest(Stream stream, string commandName)
+        {
+            try
+            {
+                var result = await InvokeAddinCommand(commandName);
+                var response = new ScriptResponse
+                {
+                    Success = true,
+                    Output = result
+                };
+                await SendHttpResponse(stream, response);
+            }
+            catch (System.Exception ex)
+            {
+                await SendHttpResponse(stream, new ScriptResponse { Success = false, Error = ex.Message });
+            }
+        }
+
+        private Task<string> InvokeAddinCommand(string commandName)
+        {
+            var tcs = new TaskCompletionSource<string>();
+
+            EventHandler idleHandler = null;
+            idleHandler = async (sender, e) =>
+            {
+                AcadApp.Idle -= idleHandler;
+
+                try
+                {
+                    var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                    if (doc == null)
+                    {
+                        tcs.SetException(new System.Exception("No active document"));
+                        return;
+                    }
+
+                    var ed = doc.Editor;
+
+                    // If no command name provided, try to load last command
+                    if (string.IsNullOrWhiteSpace(commandName))
+                    {
+                        string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                        string lastCommandPath = Path.Combine(appDataPath, "autocad-ballet", "runtime", "invoke-addin-command-last");
+
+                        if (File.Exists(lastCommandPath))
+                        {
+                            commandName = File.ReadAllText(lastCommandPath).Trim();
+                        }
+                        else
+                        {
+                            tcs.SetException(new System.Exception("No command name provided and no last command found"));
+                            return;
+                        }
+                    }
+
+                    // Use reflection to access the InvokeAddinCommand class's static methods
+                    var invokeAddinType = typeof(AutocadBallet.InvokeAddinCommand);
+                    var loadedCommandCacheField = invokeAddinType.GetField("loadedCommandCache",
+                        BindingFlags.NonPublic | BindingFlags.Static);
+
+                    if (loadedCommandCacheField == null)
+                    {
+                        tcs.SetException(new System.Exception("Could not access command cache"));
+                        return;
+                    }
+
+                    var cache = loadedCommandCacheField.GetValue(null) as Dictionary<string, AutocadBallet.CachedCommandInfo>;
+
+                    // Get the DLL path
+                    string dllPath;
+#if ACAD2026
+                    dllPath = Environment.ExpandEnvironmentVariables(@"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll");
+#elif ACAD2025
+                    dllPath = Environment.ExpandEnvironmentVariables(@"%appdata%\autocad-ballet\commands\bin\2025\autocad-ballet.dll");
+#elif ACAD2024
+                    dllPath = Environment.ExpandEnvironmentVariables(@"%appdata%\autocad-ballet\commands\bin\2024\autocad-ballet.dll");
+#else
+                    dllPath = Environment.ExpandEnvironmentVariables(@"%appdata%\autocad-ballet\commands\bin\2026\autocad-ballet.dll");
+#endif
+
+                    if (!File.Exists(dllPath))
+                    {
+                        tcs.SetException(new System.Exception($"DLL not found: {dllPath}"));
+                        return;
+                    }
+
+                    // Check cache
+                    var fileInfo = new FileInfo(dllPath);
+                    string baseCacheKey = $"{dllPath}|{fileInfo.LastWriteTimeUtc.Ticks}|{fileInfo.Length}";
+                    string commandCacheKey = $"{baseCacheKey}|{commandName}";
+
+                    AutocadBallet.CachedCommandInfo cachedCommand = null;
+
+                    if (cache != null && cache.ContainsKey(commandCacheKey))
+                    {
+                        cachedCommand = cache[commandCacheKey];
+                    }
+                    else
+                    {
+                        // Command not cached - need to load it
+                        // Use reflection to call RewriteAndLoadSingleCommand (public static method)
+                        var rewriteMethod = invokeAddinType.GetMethod("RewriteAndLoadSingleCommand",
+                            BindingFlags.Public | BindingFlags.Static);
+
+                        if (rewriteMethod == null)
+                        {
+                            // Debug: List all methods to see what's available
+                            var allMethods = invokeAddinType.GetMethods(BindingFlags.Public | BindingFlags.Static);
+                            var methodNames = string.Join(", ", allMethods.Select(m => m.Name));
+                            tcs.SetException(new System.Exception($"Could not find RewriteAndLoadSingleCommand method. Available static methods: {methodNames}"));
+                            return;
+                        }
+
+                        var sessionAssemblies = new Dictionary<string, Assembly>();
+
+                        cachedCommand = rewriteMethod.Invoke(null, new object[]
+                        {
+                            dllPath,
+                            commandName,
+                            ed,
+                            sessionAssemblies,
+                            false  // loadFromFile
+                        }) as AutocadBallet.CachedCommandInfo;
+
+                        if (cachedCommand != null && cache != null)
+                        {
+                            cache[commandCacheKey] = cachedCommand;
+                        }
+                    }
+
+                    if (cachedCommand == null)
+                    {
+                        tcs.SetException(new System.Exception($"Failed to load command: {commandName}"));
+                        return;
+                    }
+
+                    // Invoke the command using the static method
+                    var invokeMethod = invokeAddinType.GetMethod("InvokeCommandMethod",
+                        BindingFlags.Public | BindingFlags.Static);
+
+                    if (invokeMethod == null)
+                    {
+                        tcs.SetException(new System.Exception("Could not find InvokeCommandMethod"));
+                        return;
+                    }
+
+                    invokeMethod.Invoke(null, new object[] { cachedCommand, ed, null });
+
+                    tcs.SetResult($"Invoked command: {commandName} (as {cachedCommand.ModifiedName})");
+                }
+                catch (System.Exception ex)
+                {
+                    tcs.SetException(ex);
+                }
+            };
+
+            AcadApp.Idle += idleHandler;
+            return tcs.Task;
+        }
+
+        private Task<string> CaptureScreenshot()
+        {
+            var tcs = new TaskCompletionSource<string>();
+
+            EventHandler idleHandler = null;
+            idleHandler = (sender, e) =>
+            {
+                AcadApp.Idle -= idleHandler;
+
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        var doc = AcadApp.DocumentManager.MdiActiveDocument;
+                        if (doc == null)
+                        {
+                            tcs.SetException(new System.Exception("No active document"));
+                            return;
+                        }
+
+                        // Get AutoCAD main application window handle (not just drawing window)
+                        // This captures the entire AutoCAD window including command line and palettes
+                        IntPtr windowHandle = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+
+                        // Create screenshots directory
+                        string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                        string screenshotDir = Path.Combine(appDataPath, "autocad-ballet", "runtime", "screenshots");
+                        Directory.CreateDirectory(screenshotDir);
+
+                        // Clean up old screenshots (keep last 20)
+                        CleanupOldScreenshots(screenshotDir, 20);
+
+                        // Generate filename: datetime-uuid.png
+                        string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
+                        string filename = $"{timestamp}-{sessionId}.png";
+                        string filepath = Path.Combine(screenshotDir, filename);
+
+                        // Capture screenshot using Windows API
+                        CaptureWindowToFile(windowHandle, filepath);
+
+                        tcs.SetResult(filepath);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        tcs.SetException(ex);
+                    }
+                });
+            };
+
+            AcadApp.Idle += idleHandler;
+            return tcs.Task;
+        }
+
+        private void CaptureWindowToFile(IntPtr windowHandle, string filepath)
+        {
+            // Get window rectangle
+            RECT rect;
+            GetWindowRect(windowHandle, out rect);
+            int width = rect.Right - rect.Left;
+            int height = rect.Bottom - rect.Top;
+
+            // Create bitmap
+            using (var bitmap = new System.Drawing.Bitmap(width, height))
+            {
+                using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+                {
+                    // Use CopyFromScreen to capture everything visible on screen
+                    // This captures the actual rendered pixels including command line
+                    graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, new System.Drawing.Size(width, height));
+                }
+
+                // Save to file
+                bitmap.Save(filepath, System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
+        private void CleanupOldScreenshots(string directory, int keepCount)
+        {
+            try
+            {
+                var files = new DirectoryInfo(directory)
+                    .GetFiles("*.png")
+                    .OrderByDescending(f => f.CreationTime)
+                    .Skip(keepCount)
+                    .ToList();
+
+                foreach (var file in files)
+                {
+                    try
+                    {
+                        file.Delete();
+                    }
+                    catch
+                    {
+                        // Ignore deletion failures
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore cleanup failures
+            }
+        }
+
+        // Windows API declarations for screenshot capture
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
         }
 
         private async Task<List<Dictionary<string, object>>> GetCategoriesForCurrentSession()

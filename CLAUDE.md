@@ -116,11 +116,14 @@ AutoCAD Ballet provides a Roslyn compiler-as-a-service with peer-to-peer network
 *Endpoints:*
 - **`/roslyn`** - Execute C# scripts in AutoCAD context
 - **`/select-by-categories`** - Query entity categories (for network queries)
+- **`/screenshot`** - Capture screenshot of AutoCAD window, saved to `runtime/screenshots/`
+- **`/invoke-addin-command`** - Hot-reload and invoke modified commands (body: command name, or empty for last command)
 
 *Execution Context:*
 - **Globals**: `Doc`, `Db`, `Ed` available to scripts
 - **Pre-imported namespaces**: System, LINQ, AutoCAD API
 - **Output**: JSON with `success`, `output`, `error`, `diagnostics` fields
+- **IMPORTANT**: Perform all operations within Roslyn scripts. Do NOT use `Doc.SendStringToExecute()` as console output blocks the command queue - instead execute operations directly via the AutoCAD API
 
 *Usage Example:*
 ```bash

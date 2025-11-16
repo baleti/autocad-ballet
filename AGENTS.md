@@ -77,9 +77,11 @@ K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=
 
 ### 3. Send Queries
 
-The server provides two main endpoints:
+The server provides four main endpoints:
 - **`/roslyn`** - Execute C# scripts in AutoCAD context
 - **`/select-by-categories`** - Query entity categories (used by `select-by-categories-in-network`)
+- **`/screenshot`** - Capture screenshot of AutoCAD window
+- **`/invoke-addin-command`** - Hot-reload and test modified commands without restarting AutoCAD
 
 **Execute Roslyn Script:**
 ```bash
@@ -259,6 +261,78 @@ curl -k -X POST https://127.0.0.1:34157/roslyn \
     tr.Commit();
 }'
 ```
+
+### Screenshot Capture
+
+**Capture AutoCAD Window Screenshot:**
+```bash
+TOKEN=$(cat runtime/network/token)
+curl -k -X POST https://127.0.0.1:34157/screenshot \
+  -H "X-Auth-Token: $TOKEN"
+```
+
+**Response:**
+```json
+{
+  "Success": true,
+  "Output": "C:\\Users\\YourName\\AppData\\Roaming\\autocad-ballet\\runtime\\screenshots\\session-id_20231116_143022_456.png",
+  "Error": null,
+  "Diagnostics": []
+}
+```
+
+**Features:**
+- Captures entire AutoCAD window including toolbars, command line, and drawing area
+- Screenshots saved to `%appdata%/autocad-ballet/runtime/screenshots/`
+- Filename format: `{sessionId}_{timestamp}.png`
+- Auto-cleanup: Keeps last 20 screenshots, older ones deleted automatically
+- Returns absolute file path for immediate use
+
+**Use Cases:**
+- Visual debugging of command execution
+- Verify layout/space switching
+- Inspect entity visibility and zoom levels
+- Capture error dialogs or UI state
+- Document drawing state for analysis
+
+### Hot-Reload Command Testing
+
+**Invoke Modified Command (Hot-Reload):**
+```bash
+TOKEN=$(cat runtime/network/token)
+
+# Invoke specific command (hot-reloads from DLL if modified)
+curl -k -X POST https://127.0.0.1:34157/invoke-addin-command \
+  -H "X-Auth-Token: $TOKEN" \
+  -d 'my-command-name'
+
+# Invoke last command (uses runtime/invoke-addin-command-last)
+curl -k -X POST https://127.0.0.1:34157/invoke-addin-command \
+  -H "X-Auth-Token: $TOKEN" \
+  -d ''
+```
+
+**Response:**
+```json
+{
+  "Success": true,
+  "Output": "Invoked command: my-command-name (as my-command-name-20231116143022)",
+  "Error": null,
+  "Diagnostics": []
+}
+```
+
+**How It Works:**
+- Loads command from latest `autocad-ballet.dll` with unique suffix
+- Caches loaded commands (same timestamp/size = same cache)
+- Executes via AutoCAD's command pipeline
+- No AutoCAD restart needed - rebuild DLL and invoke immediately
+
+**Use Cases:**
+- Test command changes without restarting AutoCAD
+- Automated testing of modified commands
+- Rapid iteration during development
+- Verify fixes applied correctly
 
 ## Error Handling
 
