@@ -53,28 +53,47 @@ The project supports AutoCAD versions 2017-2026 through conditional compilation:
 
 *Use Cases:* Organization, selection workflows, cross-document coordination, filtering, metadata tracking
 
-**Roslyn Server for AI Agents** (`start-roslyn-server.cs`):
-AutoCAD Ballet provides a Roslyn compiler-as-a-service that allows external tools (like Claude Code) to execute C# code within the AutoCAD session context.
+**Roslyn Server for AI Agents** (`commands/_server.cs`):
+AutoCAD Ballet provides a Roslyn compiler-as-a-service with peer-to-peer network architecture for cross-session queries.
 
 *Purpose:*
-- Query and analyze current AutoCAD session programmatically
+- Query and analyze AutoCAD sessions programmatically
 - Perform validation tasks (layer naming, entity placement checks)
 - Inspect document state and entity properties dynamically
-- Support automated drawing quality checks and audits
+- Support cross-session network queries for multi-AutoCAD workflows
 
 *Architecture:*
-- **HTTP REST API**: Listens on `http://127.0.0.1:34157/`
-- **Execution Context**: `Doc`, `Db`, `Ed` globals; pre-imported AutoCAD namespaces
-- **Output Capture**: Returns JSON with `success`, `output`, `error`, `diagnostics` fields
+- **Peer-to-peer network**: Each AutoCAD instance runs its own HTTPS server
+- **Auto-start**: Servers start automatically when AutoCAD loads (no manual command)
+- **Port allocation**: 34157-34257 range, automatic first-available selection
+- **Shared token**: Single authentication token shared across all sessions
+- **Service discovery**: File-based registry at `%appdata%/autocad-ballet/runtime/network/`
 
-*Commands:*
-- `start-roslyn-server` - Modal dialog, blocks AutoCAD UI, no authentication, ESC to stop
-- `start-roslyn-server-in-background` - Non-blocking, requires auth token, use `stop-roslyn-server` to stop
+*Network Registry Structure:*
+```
+%appdata%/autocad-ballet/runtime/network/
+  ├── sessions      # CSV: SessionId,Port,Hostname,ProcessId,RegisteredAt,LastHeartbeat,Documents
+  └── token         # Shared 256-bit authentication token
+```
+
+*Endpoints:*
+- **`/roslyn`** - Execute C# scripts in AutoCAD context
+- **`/select-by-categories`** - Query entity categories (for network queries)
+
+*Execution Context:*
+- **Globals**: `Doc`, `Db`, `Ed` available to scripts
+- **Pre-imported namespaces**: System, LINQ, AutoCAD API
+- **Output**: JSON with `success`, `output`, `error`, `diagnostics` fields
 
 *Usage Example:*
 ```bash
-# Get all layer names
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+# Read shared token
+TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+
+# Execute Roslyn script
+curl -k -X POST https://127.0.0.1:34157/roslyn \
+  -H "X-Auth-Token: $TOKEN" \
+  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     foreach (ObjectId layerId in layerTable)
@@ -84,23 +103,27 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
     }
     tr.Commit();
 }'
-
-# With authentication (background server)
-curl -X POST http://127.0.0.1:34157/ \
-  -H "X-Auth-Token: YOUR_TOKEN_HERE" \
-  -d 'Console.WriteLine($"Document: {Doc.Name}");'
 ```
 
+*Network Commands:*
+- `select-by-categories-in-network` - Query all sessions, combine results in DataGrid with session column
+
+*Security:*
+- HTTPS with TLS 1.2/1.3 (self-signed certificates)
+- Localhost-only binding (127.0.0.1)
+- Shared token stored in plain text at `%appdata%/autocad-ballet/runtime/network/token`
+- Full AutoCAD API access - intended for local development only
+
 *Type Identity Issue (.NET 8 / AutoCAD 2025-2026):*
-In .NET 8, assemblies loaded with rewritten identities lack `Location` property. Solution: Cache assembly with valid Location at startup, use cached type for all Roslyn operations via reflection. See `start-roslyn-server-in-background.cs` for implementation.
+In .NET 8, assemblies loaded with rewritten identities lack `Location` property. Solution: Cache assembly with valid Location at startup, use cached type for all Roslyn operations via reflection. See `commands/_server.cs` for implementation.
 
 *Implementation Details:*
-- Uses `CommandFlags.Session` for application-level access
+- Auto-initialized by `AutoCADBalletStartup` extension application in `commands/_startup.cs`
 - Background thread with UI marshalling via `Application.Idle` event
 - Document locking for thread-safe database operations
-- Continues listening after compilation errors
+- Network registry heartbeat every 30 seconds, 2-minute timeout for dead sessions
 
-For detailed usage examples, see `AGENTS.md`.
+For detailed usage examples and API documentation, see `AGENTS.md`.
 
 **Command Structure**:
 - C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "delete-selected")
@@ -149,10 +172,13 @@ dotnet build installer/installer.csproj
 ## Key Files
 
 - `commands/autocad-ballet.csproj` - Main plugin project
+- `commands/_startup.cs` - Extension application entry point (initializes server and logging)
+- `commands/_server.cs` - Auto-started Roslyn server for AI agents and network queries
+- `commands/_switch-view-logging.cs` - View/layout switch logging system
 - `commands/_selection.cs` - Selection storage system
 - `commands/_entity-attributes.cs` - Entity attributes and tag system
-- `commands/start-roslyn-server.cs` - Roslyn server for AI agents
 - `commands/datagrid/` - DataGrid UI component
+- `commands/select-by-categories-in-network.cs` - Cross-session category selection
 
 ## File Naming Conventions
 

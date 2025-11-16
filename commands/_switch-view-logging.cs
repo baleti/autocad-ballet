@@ -9,8 +9,6 @@ using System.Linq;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 using LayoutEventArgs = Autodesk.AutoCAD.DatabaseServices.LayoutEventArgs;
 
-[assembly: ExtensionApplication(typeof(AutoCADBallet.SwitchViewLogging))]
-
 namespace AutoCADBallet
 {
     // Helper class to represent a document section in the log file
@@ -32,7 +30,7 @@ namespace AutoCADBallet
         }
     }
 
-    public class SwitchViewLogging : IExtensionApplication
+    public static class SwitchViewLogging
     {
         private static string _sessionId;
         // Track last layout per document (key: document path, value: layout name)
@@ -43,7 +41,11 @@ namespace AutoCADBallet
             new Dictionary<Document, System.EventHandler>();
         private static HashSet<Document> _newlyCreatedDocuments = new HashSet<Document>(); // Track newly opened documents
 
-        public void Initialize()
+        /// <summary>
+        /// Initialize view/layout switch logging.
+        /// Called by AutoCADBalletStartup.Initialize()
+        /// </summary>
+        public static void InitializeLogging()
         {
             // Generate unique session identifier combining process ID and session ID
             int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
@@ -74,7 +76,11 @@ namespace AutoCADBallet
             }
         }
 
-        public void Terminate()
+        /// <summary>
+        /// Terminate view/layout switch logging.
+        /// Called by AutoCADBalletStartup.Terminate()
+        /// </summary>
+        public static void TerminateLogging()
         {
             try
             {

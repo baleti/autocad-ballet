@@ -8,63 +8,91 @@ AutoCAD Ballet provides a Roslyn compiler-as-a-service that allows AI agents (li
 - Perform validation tasks (layer naming, entity placement checks)
 - Inspect document state and entity properties dynamically
 - Support automated drawing quality checks and audits
+- Enable cross-session network queries for multi-AutoCAD workflows
+
+## Architecture
+
+AutoCAD Ballet uses a **peer-to-peer network architecture**:
+
+- Each AutoCAD instance runs its own HTTPS server
+- Servers auto-start when AutoCAD loads (no manual command needed)
+- Port allocation: 34157-34257 (automatic first-available selection)
+- Shared token authentication across all sessions
+- File-based service discovery via `%appdata%/autocad-ballet/runtime/network/`
+
+### Network Registry Structure
+
+```
+%appdata%/autocad-ballet/runtime/network/
+  ├── sessions      # CSV file with session info (SessionId, Port, Hostname, ProcessId, etc.)
+  └── token         # Shared authentication token used by all sessions
+```
+
+**Design Decision: Shared Token**
+- All AutoCAD sessions in the network share a single authentication token
+- First session to start generates the token and stores it in `network/token`
+- Subsequent sessions read and reuse this token
+- Token regenerates when all sessions close and a new one starts
+- Simplifies authentication: only one token to manage
+- Enables seamless cross-session communication
 
 ## Quick Start
 
-### 1. Start the Server
+### 1. Server Auto-Start
 
-**Modal Server (blocks AutoCAD UI):**
-```
-start-roslyn-server
-```
-- Opens modal dialog showing server activity
-- AutoCAD UI unavailable while server runs
-- No authentication required
-- Press ESC to stop
-- Best for: Quick interactive sessions
+The server **automatically starts** when AutoCAD loads:
+- No manual command needed
+- Finds first available port in range 34157-34257
+- Registers in network registry (`%appdata%/autocad-ballet/runtime/network/sessions`)
+- Generates or reads shared authentication token
 
-**Background Server (non-blocking):**
+Check server status in AutoCAD command line:
 ```
-start-roslyn-server-in-background
-```
-- Opens non-blocking dialog (can be closed)
-- AutoCAD remains fully functional
-- Requires authentication token (generated on startup)
-- Server persists across document switches
-- Use `stop-roslyn-server` command to stop
-- Best for: Long-running automation, CI/CD integration
-
-Both servers listen on `http://127.0.0.1:34157/`
-
-### 2. Get Authentication Token (Background Server Only)
-
-When starting the background server, AutoCAD displays:
-```
-Roslyn server started in background on http://127.0.0.1:34157/
-Authentication token: K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=
+[AutoCAD Ballet] Server started on port 34157 (Session: 12ab34cd)
 ```
 
-Copy this token for use in your requests. The token is also displayed in the server dialog.
+### 2. Get Authentication Token
+
+The shared authentication token is stored at:
+```
+%appdata%/autocad-ballet/runtime/network/token
+```
+
+Read it with:
+```bash
+cat %appdata%/autocad-ballet/runtime/network/token
+```
+
+Or on Linux/WSL:
+```bash
+cat $HOME/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token
+```
+
+Example token:
+```
+K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=
+```
 
 ### 3. Send Queries
 
-**To Modal Server (no authentication):**
-```bash
-curl -X POST http://127.0.0.1:34157/ -d 'Console.WriteLine("Hello from AutoCAD!");'
-```
+The server provides two main endpoints:
+- **`/roslyn`** - Execute C# scripts in AutoCAD context
+- **`/select-by-categories`** - Query entity categories (used by `select-by-categories-in-network`)
 
-**To Background Server (with authentication):**
+**Execute Roslyn Script:**
 ```bash
 # Using X-Auth-Token header
-curl -X POST http://127.0.0.1:34157/ \
+curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "X-Auth-Token: K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=" \
   -d 'Console.WriteLine("Hello from AutoCAD!");'
 
 # Or using Authorization Bearer header
-curl -X POST http://127.0.0.1:34157/ \
+curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "Authorization: Bearer K1FcjG0+tWv+eydypV8j4ZPupcOoOfDm34i9aPsE7vU=" \
   -d 'Console.WriteLine("Hello from AutoCAD!");'
 ```
+
+**Note:** Use `-k` flag with curl to accept self-signed SSL certificates (localhost only).
 
 ### 4. Parse Response
 
@@ -100,7 +128,10 @@ Pre-imported namespaces:
 
 **Get All Layer Names:**
 ```bash
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+curl -k -X POST https://127.0.0.1:34157/roslyn \
+  -H "X-Auth-Token: $TOKEN" \
+  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     foreach (ObjectId layerId in layerTable)
@@ -114,7 +145,10 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 
 **Count Entities by Type:**
 ```bash
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+curl -k -X POST https://127.0.0.1:34157/roslyn \
+  -H "X-Auth-Token: $TOKEN" \
+  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -141,7 +175,9 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 
 **Check Layer Naming Compliance:**
 ```bash
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+curl -k -X POST https://127.0.0.1:34157/roslyn \
+  -H "X-Auth-Token: $TOKEN"  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
     var nonCompliant = new List<string>();
@@ -174,7 +210,9 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 
 **Check for Entities on Layer 0:**
 ```bash
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+curl -k -X POST https://127.0.0.1:34157/roslyn \
+  -H "X-Auth-Token: $TOKEN"  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -199,7 +237,9 @@ curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.S
 
 **Get Drawing Statistics:**
 ```bash
-curl -X POST http://127.0.0.1:34157/ -d 'using (var tr = Db.TransactionManager.StartTransaction())
+TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+curl -k -X POST https://127.0.0.1:34157/roslyn \
+  -H "X-Auth-Token: $TOKEN"  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
     var blockTable = (BlockTable)tr.GetObject(Db.BlockTableId, OpenMode.ForRead);
     var modelSpace = (BlockTableRecord)tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -279,22 +319,37 @@ If code compiles but fails during execution:
 
 When Claude Code needs to query the AutoCAD session:
 
-1. **Verify server is running**: Check if port 34157 is listening
-2. **Construct query**: Build appropriate C# code based on task
-3. **Send request**: Use curl or equivalent HTTP client
-4. **Parse JSON response**: Extract `success`, `output`, `error`, and `diagnostics`
-5. **Iterate if needed**: If compilation fails, fix errors and retry
+1. **Read shared token**: Load token from `%appdata%/autocad-ballet/runtime/network/token`
+2. **Discover active sessions**: Read network registry from `%appdata%/autocad-ballet/runtime/network/sessions`
+3. **Construct query**: Build appropriate C# code based on task
+4. **Send request**: POST to `/roslyn` endpoint with authentication
+5. **Parse JSON response**: Extract `success`, `output`, `error`, and `diagnostics`
+6. **Iterate if needed**: If compilation fails, fix errors and retry
 
 Example workflow:
 ```bash
-# Check if server is running
-if ! curl -s --connect-timeout 1 http://127.0.0.1:34157 > /dev/null 2>&1; then
-    echo "Roslyn server not running. Run 'start-roslyn-server' in AutoCAD."
+# Read authentication token
+TOKEN_FILE="$HOME/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token"
+if [ ! -f "$TOKEN_FILE" ]; then
+    echo "No authentication token found. AutoCAD Ballet server may not be running."
+    exit 1
+fi
+TOKEN=$(cat "$TOKEN_FILE")
+
+# Find first available session port from registry
+SESSIONS_FILE="$HOME/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/sessions"
+if [ ! -f "$SESSIONS_FILE" ]; then
+    echo "No active sessions found."
     exit 1
 fi
 
+# Extract first port from CSV (skip comment lines)
+PORT=$(grep -v '^#' "$SESSIONS_FILE" | head -1 | cut -d',' -f2)
+
 # Send query and parse response (requires jq for JSON parsing)
-RESPONSE=$(curl -s -X POST http://127.0.0.1:34157/ -d 'Console.WriteLine("Test");')
+RESPONSE=$(curl -k -s -X POST https://127.0.0.1:$PORT/roslyn \
+  -H "X-Auth-Token: $TOKEN" \
+  -d 'Console.WriteLine("Test");')
 SUCCESS=$(echo $RESPONSE | jq -r '.success')
 OUTPUT=$(echo $RESPONSE | jq -r '.output')
 
@@ -303,19 +358,40 @@ if [ "$SUCCESS" == "true" ]; then
 fi
 ```
 
+## Network Queries
+
+The `select-by-categories-in-network` command demonstrates cross-session queries:
+
+1. Reads network registry to find all active sessions
+2. Queries each peer's `/select-by-categories` endpoint
+3. Combines results in DataGrid with session column
+4. Saves combined selection for cross-document workflows
+
+**Example usage in AutoCAD:**
+```
+select-by-categories-in-network
+```
+
+This enables powerful multi-session workflows where selections span multiple AutoCAD instances and documents.
+
 ## Security Considerations
 
-- Server only listens on **localhost (127.0.0.1)** - not accessible from network
-- **Modal server**: No authentication (relies on localhost-only binding and blocking dialog)
-- **Background server**: Requires authentication token (256-bit random, generated per session)
-- Code executes with **full AutoCAD API access** - can read, modify, and delete drawing data
-- Intended for **local development and automation only**
-- Do not expose this service to untrusted networks
-- Token is visible in AutoCAD command line and server dialog - keep AutoCAD session secure
+- **HTTPS with TLS 1.2/1.3**: All communication is encrypted using self-signed certificates
+- **Localhost-only binding**: Servers only listen on 127.0.0.1 - not accessible from network
+- **Shared token authentication**: 256-bit random token shared across all sessions
+- **Token storage**: `%appdata%/autocad-ballet/runtime/network/token` (plain text file)
+- **Code execution**: Scripts have **full AutoCAD API access** - can read, modify, and delete drawing data
+- **Intended use**: Local development and automation only
+- **Do not**:
+  - Expose this service to untrusted networks
+  - Share the authentication token with untrusted parties
+  - Run AutoCAD with elevated privileges when using the server
+- **Token visibility**: First session to start displays token in command line
+- **Token lifecycle**: Regenerates when all sessions close and a new session starts
 
 ## Type Identity Issue in .NET 8 (AutoCAD 2025-2026)
 
-The background server (`start-roslyn-server-in-background`) addresses a critical .NET 8 type identity issue that occurs when assemblies are loaded with rewritten identities for hot-reloading support.
+The auto-started server addresses a critical .NET 8 type identity issue that occurs when assemblies are loaded with rewritten identities for hot-reloading support.
 
 **Problem:**
 - Assemblies loaded from modified bytes (via Mono.Cecil) don't have a file `Location` property
@@ -329,23 +405,25 @@ Type A cannot be cast to Type B (both are ScriptGlobals)
 ```
 
 **Solution:**
-The background server uses a unified type approach:
+The server uses a unified type approach:
 1. At startup, search `AppDomain` for ANY loaded `autocad-ballet.dll` with a valid `Location`
 2. Cache both the assembly AND the `ScriptGlobals` type from that instance
 3. Use the cached assembly for Roslyn compilation references
 4. Use the cached type via reflection (`Activator.CreateInstance`) to create globals instance
 5. This ensures type identity consistency across compilation and execution
 
-See `start-roslyn-server-in-background.cs` for detailed implementation.
+See `commands/_server.cs` for detailed implementation.
 
 ## Implementation Details
 
-- Uses `CommandFlags.Session` to work at application level
-- Runs TCP server on background thread with cancellation token
-- Marshals AutoCAD API access appropriately (executes on UI thread via `Application.Idle` event)
-- Captures `Console.WriteLine()` output using `StringWriter`
-- Returns both compilation diagnostics and runtime errors
-- Keeps listening even after compilation errors (allows correction)
-- Background server uses document locking for thread-safe database operations
+- **Auto-start mechanism**: Initialized by `AutoCADBalletStartup` extension application in `commands/_startup.cs`
+- **TCP/TLS server**: Runs on background thread with cancellation token
+- **Thread safety**: Marshals AutoCAD API access to UI thread via `Application.Idle` event
+- **Output capture**: Uses `StringWriter` to capture `Console.WriteLine()` output
+- **Error handling**: Returns both compilation diagnostics and runtime errors
+- **Continuous operation**: Keeps listening even after compilation errors (allows correction)
+- **Document locking**: Uses `doc.LockDocument()` for thread-safe database operations
+- **Network registry**: Heartbeat every 30 seconds, 2-minute timeout for dead session cleanup
+- **Port allocation**: Searches range 34157-34257 for first available port
 
 For general AutoCAD Ballet documentation, see `CLAUDE.md`.
