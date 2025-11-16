@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> **Documentation Size Limit**: This file must stay under 20KB. Keep changes concise and avoid approaching this limit to allow for future additions.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
@@ -16,6 +18,41 @@ AutoCAD Ballet is a collection of custom commands for AutoCAD that provides enha
 - You can examine runtime logs and data to verify code behavior and debug issues
 - **ALL runtime data MUST be stored in `runtime/` subdirectory** - includes logs, selection storage, filters, document timestamps
 - Use `ls -lt runtime/switch-view-logs/ | head` to find recently modified log files for active documents
+
+### Querying and Testing AutoCAD Sessions
+
+**When you need to query AutoCAD state, test commands, or inspect drawings:**
+
+1. **Use the Roslyn Server** - Every AutoCAD session runs an HTTPS server that executes C# scripts
+2. **Location**: Token at `runtime/network/token`, sessions at `runtime/network/sessions`
+3. **Find active port**: `grep -v '^#' runtime/network/sessions | head -1 | cut -d',' -f2`
+
+**Quick example - List layers:**
+```bash
+TOKEN=$(cat runtime/network/token)
+PORT=$(grep -v '^#' runtime/network/sessions | head -1 | cut -d',' -f2)
+
+curl -k -s -X POST https://127.0.0.1:$PORT/roslyn \
+  -H "X-Auth-Token: $TOKEN" \
+  -d 'using (var tr = Db.TransactionManager.StartTransaction())
+{
+    var layerTable = (LayerTable)tr.GetObject(Db.LayerTableId, OpenMode.ForRead);
+    foreach (ObjectId layerId in layerTable)
+    {
+        var layer = (LayerTableRecord)tr.GetObject(layerId, OpenMode.ForRead);
+        Console.WriteLine(layer.Name);
+    }
+    tr.Commit();
+}'
+```
+
+**Available in scripts:**
+- `Doc` - Current document
+- `Db` - Database
+- `Ed` - Editor
+- Pre-imported: System, LINQ, AutoCAD.DatabaseServices, AutoCAD.EditorInput, etc.
+
+See **AGENTS.md** for comprehensive examples and query patterns.
 
 ## Architecture
 
@@ -88,7 +125,7 @@ AutoCAD Ballet provides a Roslyn compiler-as-a-service with peer-to-peer network
 *Usage Example:*
 ```bash
 # Read shared token
-TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+TOKEN=$(cat runtime/network/token)
 
 # Execute Roslyn script
 curl -k -X POST https://127.0.0.1:34157/roslyn \
@@ -123,7 +160,13 @@ In .NET 8, assemblies loaded with rewritten identities lack `Location` property.
 - Document locking for thread-safe database operations
 - Network registry heartbeat every 30 seconds, 2-minute timeout for dead sessions
 
-For detailed usage examples and API documentation, see `AGENTS.md`.
+*Testing:*
+- **Verify server status**: Check `runtime/network/sessions` for active sessions
+- **Test connectivity**: Use curl with token from `runtime/network/token`
+- **AI agent integration**: Use Roslyn endpoint to validate commands and inspect drawings
+- **See `AGENTS.md`** for comprehensive testing guide, query patterns, and troubleshooting
+
+For detailed usage examples, testing procedures, and API documentation, see `AGENTS.md`.
 
 **Command Structure**:
 - C# commands use `[CommandMethod]` attributes with kebab-case names (e.g., "delete-selected")

@@ -1068,15 +1068,14 @@ namespace AutoCADBallet
             var tcs = new TaskCompletionSource<ScriptResponse>();
 
             EventHandler idleHandler = null;
-            idleHandler = (sender, e) =>
+            idleHandler = async (sender, e) =>
             {
                 AcadApp.Idle -= idleHandler;
 
-                Task.Run(async () =>
-                {
-                    var response = await ExecuteCompiledScript(script);
-                    tcs.SetResult(response);
-                });
+                // Execute directly on UI thread (Idle event already runs on UI thread)
+                // No Task.Run needed - this prevents document lock race conditions
+                var response = await ExecuteCompiledScript(script);
+                tcs.SetResult(response);
             };
 
             AcadApp.Idle += idleHandler;

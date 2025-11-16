@@ -190,17 +190,20 @@
           ;; release FSO
           (vlax-release-object fso)
 
-          ;; load dll files
+          ;; load dll files (skip Roslyn assemblies - they auto-load as dependencies)
           (setq dll-count 0)
           (setq dll-loaded 0)
           (foreach dll (vl-directory-files temp-folder "*.dll" 1)
             (progn
-              (setq dll-count (1+ dll-count))
-              (setq dll-path (strcat temp-folder dll))
-              (princ (strcat "\nAutoCAD Ballet: Loading " dll))
-              (if (not (vl-catch-all-error-p
-                         (vl-catch-all-apply 'vl-cmdf (list "netload" dll-path))))
-                (setq dll-loaded (1+ dll-loaded)))))
+              ;; skip Microsoft.CodeAnalysis.* dlls - they load automatically as dependencies
+              (if (not (vl-string-search "Microsoft.CodeAnalysis" dll))
+                (progn
+                  (setq dll-count (1+ dll-count))
+                  (setq dll-path (strcat temp-folder dll))
+                  (princ (strcat "\nAutoCAD Ballet: Loading " dll))
+                  (if (not (vl-catch-all-error-p
+                             (vl-catch-all-apply 'vl-cmdf (list "netload" dll-path))))
+                    (setq dll-loaded (1+ dll-loaded)))))))
 
           (if (> dll-count 0)
             (princ (strcat "\nAutoCAD Ballet: Loaded " (itoa dll-loaded) " of " (itoa dll-count) " DLL(s)"))

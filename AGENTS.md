@@ -1,5 +1,7 @@
 # Roslyn Server for AI Agent Integration
 
+> **Documentation Size Limit**: This file must stay under 20KB. Keep changes concise and avoid approaching this limit to allow for future additions.
+
 AutoCAD Ballet provides a Roslyn compiler-as-a-service that allows AI agents (like Claude Code) to execute C# code within the AutoCAD session context.
 
 ## Purpose
@@ -63,9 +65,9 @@ Read it with:
 cat %appdata%/autocad-ballet/runtime/network/token
 ```
 
-Or on Linux/WSL:
+Or in the repository:
 ```bash
-cat $HOME/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token
+cat runtime/network/token
 ```
 
 Example token:
@@ -128,7 +130,7 @@ Pre-imported namespaces:
 
 **Get All Layer Names:**
 ```bash
-TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+TOKEN=$(cat runtime/network/token)
 curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "X-Auth-Token: $TOKEN" \
   -d 'using (var tr = Db.TransactionManager.StartTransaction())
@@ -145,7 +147,7 @@ curl -k -X POST https://127.0.0.1:34157/roslyn \
 
 **Count Entities by Type:**
 ```bash
-TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+TOKEN=$(cat runtime/network/token)
 curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "X-Auth-Token: $TOKEN" \
   -d 'using (var tr = Db.TransactionManager.StartTransaction())
@@ -175,7 +177,7 @@ curl -k -X POST https://127.0.0.1:34157/roslyn \
 
 **Check Layer Naming Compliance:**
 ```bash
-TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+TOKEN=$(cat runtime/network/token)
 curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "X-Auth-Token: $TOKEN"  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
@@ -210,7 +212,7 @@ curl -k -X POST https://127.0.0.1:34157/roslyn \
 
 **Check for Entities on Layer 0:**
 ```bash
-TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+TOKEN=$(cat runtime/network/token)
 curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "X-Auth-Token: $TOKEN"  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
@@ -237,7 +239,7 @@ curl -k -X POST https://127.0.0.1:34157/roslyn \
 
 **Get Drawing Statistics:**
 ```bash
-TOKEN=$(cat ~/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token)
+TOKEN=$(cat runtime/network/token)
 curl -k -X POST https://127.0.0.1:34157/roslyn \
   -H "X-Auth-Token: $TOKEN"  -d 'using (var tr = Db.TransactionManager.StartTransaction())
 {
@@ -329,7 +331,7 @@ When Claude Code needs to query the AutoCAD session:
 Example workflow:
 ```bash
 # Read authentication token
-TOKEN_FILE="$HOME/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/token"
+TOKEN_FILE="runtime/network/token"
 if [ ! -f "$TOKEN_FILE" ]; then
     echo "No authentication token found. AutoCAD Ballet server may not be running."
     exit 1
@@ -337,7 +339,7 @@ fi
 TOKEN=$(cat "$TOKEN_FILE")
 
 # Find first available session port from registry
-SESSIONS_FILE="$HOME/.wine/drive_c/users/$USER/AppData/Roaming/autocad-ballet/runtime/network/sessions"
+SESSIONS_FILE="runtime/network/sessions"
 if [ ! -f "$SESSIONS_FILE" ]; then
     echo "No active sessions found."
     exit 1
