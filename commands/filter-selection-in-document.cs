@@ -173,5 +173,31 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
                 ed.WriteMessage($"\nError setting selection: {acEx.ErrorStatus} - {acEx.Message}\n");
             }
         }
+
+        // Save the filtered selection back to document storage
+        if (selectedIds.Count > 0)
+        {
+            var selectionItems = new List<SelectionItem>();
+            foreach (var id in selectedIds)
+            {
+                selectionItems.Add(new SelectionItem
+                {
+                    DocumentPath = doc.Name,
+                    Handle = id.Handle.ToString(),
+                    SessionId = null
+                });
+            }
+
+            var docName = Path.GetFileName(doc.Name);
+            SelectionStorage.SaveSelection(selectionItems, docName);
+            ed.WriteMessage("Filtered selection saved to document storage.\n");
+        }
+        else
+        {
+            // Clear selection if no entities were selected
+            var docName = Path.GetFileName(doc.Name);
+            SelectionStorage.SaveSelection(new List<SelectionItem>(), docName);
+            ed.WriteMessage("Document selection cleared (no items selected in filter).\n");
+        }
     }
 }

@@ -674,6 +674,17 @@ public partial class CustomGUIs
                             ed.WriteMessage($"\n  >> Invalid transparency value: {newValue}");
                         }
                     }
+                    else if (dbObject is Entity entityForTransparencyExt)
+                    {
+                        if (TryParseTransparency(newValue, out Autodesk.AutoCAD.Colors.Transparency entityTransparencyExt))
+                        {
+                            entityForTransparencyExt.Transparency = entityTransparencyExt;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid transparency value: {newValue}");
+                        }
+                    }
                     break;
                 case "description":
                     if (dbObject is LayerTableRecord layerForDescriptionExt)
@@ -919,6 +930,17 @@ public partial class CustomGUIs
                         if (TryParseTransparency(newValue, out Autodesk.AutoCAD.Colors.Transparency transparency))
                         {
                             layerForTransparency.Transparency = transparency;
+                        }
+                        else
+                        {
+                            ed.WriteMessage($"\n  >> Invalid transparency value: {newValue}");
+                        }
+                    }
+                    else if (dbObject is Entity entityForTransparency)
+                    {
+                        if (TryParseTransparency(newValue, out Autodesk.AutoCAD.Colors.Transparency entityTransparency))
+                        {
+                            entityForTransparency.Transparency = entityTransparency;
                         }
                         else
                         {

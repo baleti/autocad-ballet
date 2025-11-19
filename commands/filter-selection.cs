@@ -951,6 +951,7 @@ public static class FilterEntityDataHelper
         string layer = "";
         string color = "";
         string lineType = "";
+        string transparency = "";
         string layoutName = "";
 
         if (entity is Entity ent)
@@ -958,6 +959,31 @@ public static class FilterEntityDataHelper
             layer = ent.Layer;
             color = ent.Color.ToString();
             lineType = ent.Linetype;
+
+            // Get transparency (0-100% where 0% is opaque, 100% is fully transparent)
+            try
+            {
+                if (ent.Transparency.IsByAlpha)
+                {
+                    byte alpha = ent.Transparency.Alpha;
+                    // Convert alpha (0-255) to percentage (0-100%)
+                    // Alpha 255 = 0% transparent (opaque), Alpha 0 = 100% transparent
+                    int percent = (int)Math.Round((255 - alpha) * 100.0 / 255.0);
+                    transparency = $"{percent}%";
+                }
+                else if (ent.Transparency.IsByLayer)
+                {
+                    transparency = "ByLayer";
+                }
+                else if (ent.Transparency.IsByBlock)
+                {
+                    transparency = "ByBlock";
+                }
+            }
+            catch
+            {
+                transparency = ""; // Fallback if transparency can't be read
+            }
 
             _diagGetLayoutNameTimer.Start();
             layoutName = GetEntityLayoutName(ent);
@@ -1012,6 +1038,23 @@ public static class FilterEntityDataHelper
             layer = layerRecord.Name;
             color = layerRecord.Color.ToString();
             lineType = GetLayerLinetype(layerRecord);
+
+            // Get transparency for layer
+            try
+            {
+                if (layerRecord.Transparency.IsByAlpha)
+                {
+                    byte alpha = layerRecord.Transparency.Alpha;
+                    // Convert alpha (0-255) to percentage (0-100%)
+                    // Alpha 255 = 0% transparent (opaque), Alpha 0 = 100% transparent
+                    int percent = (int)Math.Round((255 - alpha) * 100.0 / 255.0);
+                    transparency = $"{percent}%";
+                }
+            }
+            catch
+            {
+                transparency = ""; // Fallback if transparency can't be read
+            }
         }
 
         _diagGetCategoryTimer.Start();
@@ -1025,6 +1068,7 @@ public static class FilterEntityDataHelper
             ["Layer"] = layer,
             ["Color"] = color,
             ["LineType"] = lineType,
+            ["Transparency"] = transparency,
             ["Layout"] = layoutName,
             ["Contents"] = GetEntityContents(entity),
             ["DocumentPath"] = documentPath,
