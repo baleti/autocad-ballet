@@ -54,12 +54,42 @@ public class CopySelectionToViewsInSession
 
             selectedObjects.AddRange(selResult.Value.GetObjectIds());
 
+            // Check if selection contains viewports
+            bool containsViewports = false;
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (ObjectId objId in selectedObjects)
+                {
+                    Entity ent = tr.GetObject(objId, OpenMode.ForRead) as Entity;
+                    if (ent is Viewport vp && vp.Number != 1)
+                    {
+                        containsViewports = true;
+                        break;
+                    }
+                }
+                tr.Commit();
+            }
+
             // Get available layouts
             var allViews = GetAvailableLayouts(docs);
             if (allViews.Count == 0)
             {
                 ed.WriteMessage("\nNo layouts found.\n");
                 return;
+            }
+
+            // If viewports are selected, filter out layouts from other documents
+            if (containsViewports)
+            {
+                int originalCount = allViews.Count;
+                allViews = allViews.Where(v => (v["DocumentObject"] as Document) == activeDoc).ToList();
+
+                if (allViews.Count < originalCount)
+                {
+                    ed.WriteMessage("\n*** WARNING: Viewports detected in selection ***\n");
+                    ed.WriteMessage("Copying viewports across documents causes performance issues and corruption.\n");
+                    ed.WriteMessage("Only showing layouts from the current document.\n\n");
+                }
             }
 
             // Show layout selection dialog
