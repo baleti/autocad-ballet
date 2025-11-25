@@ -47,4 +47,16 @@
     <!-- Add Microsoft.CSharp for dynamic support in .NET Framework -->
     <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
+
+  <!-- Post-build: Remove unnecessary .NET Framework facade DLLs -->
+  <Target Name="CleanupUnnecessaryDlls" AfterTargets="Build">
+    <ItemGroup>
+      <!-- Keep only the essential DLLs for the AutoCAD addin -->
+      <UnnecessaryDlls Include="$(OutputPath)System.*.dll" />
+      <UnnecessaryDlls Include="$(OutputPath)Microsoft.Win32.*.dll" />
+      <UnnecessaryDlls Include="$(OutputPath)netstandard.dll" />
+    </ItemGroup>
+    <Delete Files="@(UnnecessaryDlls)" />
+    <Message Text="Removed $(UnnecessaryDlls->Count()) unnecessary .NET facade DLLs from output" Importance="high" />
+  </Target>
 </Project>

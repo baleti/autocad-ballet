@@ -12,8 +12,15 @@
   <ItemGroup>
     <EmbeddedResource Include="autocad-ballet-logo.png"/>
     <EmbeddedResource Include="startup-loader.lsp"/>
-    <EmbeddedResource Include="../commands/bin/*/autocad-ballet.dll"/>
-    <EmbeddedResource Include="../commands/bin/*/Mono.Cecil*.dll"/>
     <EmbeddedResource Include="../commands/*.lsp"/>
+
+    <!-- Embed all deduplicated resources from resources directory -->
+    <EmbeddedResource Include="resources\*" Condition="Exists('resources')"/>
   </ItemGroup>
+
+  <!-- Run Python script to prepare resources before build -->
+  <Target Name="PrepareDeduplicatedResources" BeforeTargets="BeforeCompile;AssignTargetPaths">
+    <Message Text="Preparing deduplicated resources..." Importance="high" />
+    <Exec Command="python3 build.py" WorkingDirectory="$(MSBuildProjectDirectory)" />
+  </Target>
 </Project>

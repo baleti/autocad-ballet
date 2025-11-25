@@ -52,6 +52,14 @@ namespace AutoCADBalletInstaller
 ";
 
         private readonly List<AutoCADInstallation> installations = new List<AutoCADInstallation>();
+        private Dictionary<string, FileMapping> fileMappings;
+
+        private class FileMapping
+        {
+            public string ResourceName { get; set; }
+            public string TargetFileName { get; set; }
+            public List<string> Years { get; set; }
+        }
 
         public void Run()
         {
@@ -74,6 +82,9 @@ namespace AutoCADBalletInstaller
                         "AutoCAD Ballet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
+
+                // Load file mappings from embedded resources
+                LoadFileMappings();
 
                 string targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "autocad-ballet");
                 Directory.CreateDirectory(targetDir);
@@ -332,6 +343,56 @@ namespace AutoCADBalletInstaller
             return "unknown";
         }
 
+        private void LoadFileMappings()
+        {
+            fileMappings = new Dictionary<string, FileMapping>();
+
+            var assembly = Assembly.GetExecutingAssembly();
+            var mappingResource = assembly.GetManifestResourceNames()
+                .FirstOrDefault(r => r.EndsWith("file-mapping.txt"));
+
+            if (mappingResource == null)
+            {
+                // No mapping file found - this is fine, will use fallback method
+                return;
+            }
+
+            using (Stream stream = assembly.GetManifestResourceStream(mappingResource))
+            {
+                if (stream == null)
+                    return;
+
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        // Skip comments and empty lines
+                        if (line.Trim().StartsWith("#") || string.IsNullOrWhiteSpace(line))
+                            continue;
+
+                        // Format: ResourceName|TargetFileName|Years (comma-separated)
+                        var parts = line.Split('|');
+                        if (parts.Length != 3)
+                            continue;
+
+                        string resourceName = parts[0].Trim();
+                        string targetFileName = parts[1].Trim();
+                        string yearsStr = parts[2].Trim();
+
+                        var years = yearsStr.Split(',').Select(y => y.Trim()).ToList();
+
+                        fileMappings[resourceName] = new FileMapping
+                        {
+                            ResourceName = resourceName,
+                            TargetFileName = targetFileName,
+                            Years = years
+                        };
+                    }
+                }
+            }
+        }
+
         private void ExtractVersionSpecificDlls(string targetDir)
         {
             var assembly = Assembly.GetExecutingAssembly();
@@ -350,26 +411,46 @@ namespace AutoCADBalletInstaller
                 string yearDir = Path.Combine(targetDir, "commands", "bin", year);
                 Directory.CreateDirectory(yearDir);
 
-                // Look for all DLL resources for this year (autocad-ballet.dll and Mono.Cecil*.dll)
-                var yearDllResources = resourceNames.Where(r =>
-                    r.Contains($"_{year}.") && r.EndsWith(".dll")).ToList();
-
-                foreach (var dllResource in yearDllResources)
+                if (fileMappings != null && fileMappings.Count > 0)
                 {
-                    // Extract filename from resource name
-                    // Resource names are like: installer._2026.autocad-ballet.dll or installer._2026.Mono.Cecil.dll
-                    string fileName = dllResource.Substring(dllResource.LastIndexOf('.', dllResource.Length - 5) + 1);
-
-                    // Handle pattern like: installer._2026.Mono.Cecil.dll
-                    // We want to extract just "Mono.Cecil.dll" or "autocad-ballet.dll"
-                    int yearDotIndex = dllResource.IndexOf($"_{year}.");
-                    if (yearDotIndex >= 0)
+                    // Use file mapping to extract deduplicated dependencies
+                    foreach (var mapping in fileMappings.Values)
                     {
-                        fileName = dllResource.Substring(yearDotIndex + year.Length + 2); // +2 for "_{year}."
-                    }
+                        // Skip if this file doesn't apply to this year
+                        if (!mapping.Years.Contains(year))
+                            continue;
 
-                    string dllPath = Path.Combine(yearDir, fileName);
-                    ExtractResource(dllResource, dllPath);
+                        // Find the resource with this name
+                        var resourceName = resourceNames
+                            .FirstOrDefault(r => r.EndsWith(mapping.ResourceName));
+
+                        if (resourceName == null)
+                            continue;
+
+                        string targetPath = Path.Combine(yearDir, mapping.TargetFileName);
+                        ExtractResource(resourceName, targetPath);
+                    }
+                }
+                else
+                {
+                    // Fallback to old method if no mapping file
+                    var yearDllResources = resourceNames.Where(r =>
+                        r.Contains($"_{year}.") && r.EndsWith(".dll")).ToList();
+
+                    foreach (var dllResource in yearDllResources)
+                    {
+                        // Extract filename from resource name
+                        string fileName = dllResource.Substring(dllResource.LastIndexOf('.', dllResource.Length - 5) + 1);
+
+                        int yearDotIndex = dllResource.IndexOf($"_{year}.");
+                        if (yearDotIndex >= 0)
+                        {
+                            fileName = dllResource.Substring(yearDotIndex + year.Length + 2);
+                        }
+
+                        string dllPath = Path.Combine(yearDir, fileName);
+                        ExtractResource(dllResource, dllPath);
+                    }
                 }
             }
         }
