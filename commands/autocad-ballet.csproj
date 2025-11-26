@@ -42,6 +42,8 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="2.10.0" Condition="'$(TargetFramework)' == 'net46'" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="3.11.0" Condition="'$(TargetFramework)' == 'net47'" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.11.0" Condition="'$(TargetFramework)' == 'net48' OR '$(TargetFramework)' == 'net8.0-windows'" />
+    <!-- Newtonsoft.Json for .NET Framework versions (System.Text.Json not available) -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" Condition="'$(TargetFramework)' == 'net46' OR '$(TargetFramework)' == 'net47' OR '$(TargetFramework)' == 'net48'" />
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net46' OR '$(TargetFramework)' == 'net47' OR '$(TargetFramework)' == 'net48'">
     <!-- Add Microsoft.CSharp for dynamic support in .NET Framework -->

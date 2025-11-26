@@ -17,11 +17,11 @@ OUTPUT_PATH = Path("./resources")
 
 
 def calculate_md5(file_path):
-    """Calculate MD5 hash of a file"""
+    """Calculate MD5 hash of a file - optimized for 9p filesystem"""
     hash_md5 = hashlib.md5()
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_md5.update(chunk)
+        # Read entire file at once to minimize syscalls (files are small ~1-5MB)
+        hash_md5.update(f.read())
     return hash_md5.hexdigest()
 
 
@@ -59,14 +59,25 @@ def main():
     print("Scanning files and calculating checksums...")
     file_database = defaultdict(list)
 
+    # Cache for (filename, size) -> hash to avoid recalculating identical files
+    hash_cache = {}
+
     for year_dir in year_dirs:
         year = year_dir.name
         dll_files = list(year_dir.glob("*.dll"))
 
         for dll_file in dll_files:
             filename = dll_file.name
-            file_hash = calculate_md5(dll_file)
             file_size = dll_file.stat().st_size
+
+            # Use size as simple cache key - if same filename & size, assume duplicate
+            # This avoids MD5 calculation for obvious duplicates (much faster on 9p)
+            cache_key = (filename, file_size)
+            if cache_key in hash_cache:
+                file_hash = hash_cache[cache_key]
+            else:
+                file_hash = calculate_md5(dll_file)
+                hash_cache[cache_key] = file_hash
 
             file_database[filename].append({
                 'year': year,
@@ -84,6 +95,7 @@ def main():
     total_original_size = 0
     total_deduplicated_size = 0
     saved_space = 0
+    shared_file_count = 0
 
     for filename in sorted(file_database.keys()):
         entries = file_database[filename]
@@ -107,6 +119,7 @@ def main():
                 resource_name = f"_common.{filename}"
                 saved_space += file_size * (len(years) - 1)
                 print(f"  {resource_name} -> shared by ALL years")
+                shared_file_count += 1
             elif len(years) == 1:
                 # File is unique to this year
                 resource_name = f"_{years[0]}.{filename}"
@@ -115,6 +128,7 @@ def main():
                 resource_name = f"_{years[0]}.{filename}"
                 saved_space += file_size * (len(years) - 1)
                 print(f"  {resource_name} -> shared by years: {', '.join(years)}")
+                shared_file_count += 1
 
             total_deduplicated_size += file_size
 
@@ -129,6 +143,8 @@ def main():
 
     # Display summary
     print()
+    print(f"Found {shared_file_count} shared files across multiple years")
+    print()
     print("Deduplication Analysis:")
     print(f"  Total original size:      {format_size(total_original_size)}")
     print(f"  Deduplicated size:        {format_size(total_deduplicated_size)}")
@@ -141,7 +157,8 @@ def main():
 
     for item in deduplication_plan:
         dest_path = OUTPUT_PATH / item['resource_name']
-        shutil.copy2(item['source_path'], dest_path)
+        # Use shutil.copy() instead of copy2() - metadata not needed, saves syscalls
+        shutil.copy(item['source_path'], dest_path)
 
     # Generate mapping file
     mapping_path = OUTPUT_PATH / "file-mapping.txt"

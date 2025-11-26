@@ -67,10 +67,10 @@ public class FilterSelectionDocumentImpl : FilterElementsBase
 
                         if (objectId != ObjectId.Null)
                         {
-                            var entity = tr.GetObject(objectId, OpenMode.ForRead) as Entity;
-                            if (entity != null)
+                            var dbObject = tr.GetObject(objectId, OpenMode.ForRead);
+                            if (dbObject != null)
                             {
-                                var data = FilterEntityDataHelper.GetEntityDataDictionary(entity, item.DocumentPath, null, IncludeProperties, tr, blockHierarchyCache);
+                                var data = FilterEntityDataHelper.GetEntityDataDictionary(dbObject, item.DocumentPath, null, IncludeProperties, tr, blockHierarchyCache);
                                 data["ObjectId"] = objectId;
                                 entityData.Add(data);
                             }

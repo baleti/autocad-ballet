@@ -11,6 +11,9 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
+#if NET48 || NET47 || NET46
+using Newtonsoft.Json;
+#endif
 
 [assembly: CommandClass(typeof(AutoCADBallet.SelectByCategoriesInNetwork))]
 
@@ -105,8 +108,10 @@ namespace AutoCADBallet
 
             try
             {
-                // Build HTTPS request to peer's /select-by-categories endpoint
                 var url = $"https://127.0.0.1:{session.Port}/select-by-categories";
+
+#if NET48 || NET47 || NET46
+                // Use WebRequest for .NET Framework
                 var request = (HttpWebRequest)WebRequest.Create(url);
                 request.Method = "POST";
                 request.Headers.Add("X-Auth-Token", authToken);
@@ -131,16 +136,39 @@ namespace AutoCADBallet
                 using (var reader = new StreamReader(responseStream))
                 {
                     var responseText = reader.ReadToEnd();
-
-                    // Parse JSON response
-                    var scriptResponse = System.Text.Json.JsonSerializer.Deserialize<ScriptResponse>(responseText);
+                    var scriptResponse = JsonConvert.DeserializeObject<ScriptResponse>(responseText);
 
                     if (scriptResponse != null && scriptResponse.Success && !string.IsNullOrEmpty(scriptResponse.Output))
                     {
-                        // Deserialize the category references from the output
-                        references = System.Text.Json.JsonSerializer.Deserialize<List<CategoryEntityReference>>(scriptResponse.Output);
+                        references = JsonConvert.DeserializeObject<List<CategoryEntityReference>>(scriptResponse.Output);
                     }
                 }
+#else
+                // Use HttpClient for .NET 8
+                using (var handler = new System.Net.Http.HttpClientHandler())
+                {
+                    handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true;
+
+                    using (var client = new System.Net.Http.HttpClient(handler))
+                    {
+                        client.DefaultRequestHeaders.Add("X-Auth-Token", authToken);
+
+                        var content = new System.Net.Http.StringContent("{}", Encoding.UTF8, "application/json");
+                        var response = client.PostAsync(url, content).Result;
+
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var responseText = response.Content.ReadAsStringAsync().Result;
+                            var scriptResponse = System.Text.Json.JsonSerializer.Deserialize<ScriptResponse>(responseText);
+
+                            if (scriptResponse != null && scriptResponse.Success && !string.IsNullOrEmpty(scriptResponse.Output))
+                            {
+                                references = System.Text.Json.JsonSerializer.Deserialize<List<CategoryEntityReference>>(scriptResponse.Output);
+                            }
+                        }
+                    }
+                }
+#endif
             }
             catch
             {

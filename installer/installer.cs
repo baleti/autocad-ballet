@@ -45,14 +45,21 @@ namespace AutoCADBalletInstaller
 (setq ballet-installer-path (strcat (getenv ""APPDATA"") ""\\autocad-ballet\\installer""))
 (setq tp (getvar ""TRUSTEDPATHS""))
 ;; Check for exact path by adding semicolons to both strings
-(if (not (vl-string-search (strcat "";"" ballet-installer-path "";"") 
+(if (not (vl-string-search (strcat "";"" ballet-installer-path "";"")
                            (strcat "";"" tp "";"")))
   (setvar ""TRUSTEDPATHS"" (strcat tp "";"" ballet-installer-path)))
 (load (strcat ballet-installer-path ""\\startup-loader.lsp""))
 ";
 
         private readonly List<AutoCADInstallation> installations = new List<AutoCADInstallation>();
+        private readonly List<InstallationResult> installationResults = new List<InstallationResult>();
         private Dictionary<string, FileMapping> fileMappings;
+
+        private enum InstallState
+        {
+            FreshInstall,
+            Updated
+        }
 
         private class FileMapping
         {
@@ -65,14 +72,7 @@ namespace AutoCADBalletInstaller
         {
             try
             {
-                if (IsInstalled())
-                {
-                    if (MessageBox.Show("AutoCAD Ballet is already installed. Reinstall?",
-                        "AutoCAD Ballet", MessageBoxButtons.YesNo) != DialogResult.Yes)
-                    {
-                        return;
-                    }
-                }
+                bool alreadyInstalled = IsInstalled();
 
                 DetectAutoCADInstallations();
 
@@ -104,19 +104,34 @@ namespace AutoCADBalletInstaller
 
                 CopyInstallerForUninstall(targetDir);
 
-                var modifiedInstallations = new List<AutoCADInstallation>();
+                // Track installation states for each AutoCAD version
                 foreach (var installation in installations)
                 {
                     bool modified = ModifyAcadLsp(installation);
                     if (modified)
                     {
-                        modifiedInstallations.Add(installation);
+                        installationResults.Add(new InstallationResult
+                        {
+                            Year = installation.Year,
+                            Name = installation.Name,
+                            State = InstallState.FreshInstall
+                        });
+                    }
+                    else if (alreadyInstalled)
+                    {
+                        // acad.lsp already has loader, this is an update
+                        installationResults.Add(new InstallationResult
+                        {
+                            Year = installation.Year,
+                            Name = installation.Name,
+                            State = InstallState.Updated
+                        });
                     }
                 }
 
                 RegisterUninstaller(targetDir);
 
-                ShowSuccessDialog(modifiedInstallations);
+                ShowSuccessDialog();
             }
             catch (Exception ex)
             {
@@ -125,7 +140,7 @@ namespace AutoCADBalletInstaller
             }
         }
 
-        private void ShowSuccessDialog(List<AutoCADInstallation> modifiedInstallations)
+        private void ShowSuccessDialog()
         {
             var form = new Form
             {
@@ -187,18 +202,35 @@ namespace AutoCADBalletInstaller
                 currentY += 60;
             }
 
-            string messageText = "AutoCAD Ballet has been successfully added to:\n\n";
+            // Group results by state
+            var freshInstalls = installationResults.Where(r => r.State == InstallState.FreshInstall).ToList();
+            var updated = installationResults.Where(r => r.State == InstallState.Updated).ToList();
 
-            if (modifiedInstallations.Count > 0)
+            string messageText = "";
+
+            if (freshInstalls.Count > 0)
             {
-                foreach (var installation in modifiedInstallations)
+                messageText += "Successfully installed to:\n";
+                foreach (var result in freshInstalls)
                 {
-                    messageText += $"• {installation.Name} ({installation.Year})\n";
+                    messageText += $"  • {result.Name} ({result.Year})\n";
                 }
+                messageText += "\n";
             }
-            else
+
+            if (updated.Count > 0)
             {
-                messageText += "The plugin files have been installed but no AutoCAD installations were modified.\n";
+                messageText += "Successfully updated:\n";
+                foreach (var result in updated)
+                {
+                    messageText += $"  • {result.Name} ({result.Year})\n";
+                }
+                messageText += "\n";
+            }
+
+            if (installationResults.Count == 0)
+            {
+                messageText = "The plugin files have been installed but no AutoCAD installations were modified.\n";
                 messageText += "AutoCAD LT versions prior to 2024 are not supported for automatic loading.";
             }
 
@@ -643,6 +675,13 @@ namespace AutoCADBalletInstaller
             public string ReleaseKey { get; set; }
             public bool IsLT { get; set; }
             public string SupportPath { get; set; }
+        }
+
+        private class InstallationResult
+        {
+            public string Year { get; set; }
+            public string Name { get; set; }
+            public InstallState State { get; set; }
         }
     }
 

@@ -19,6 +19,9 @@ using Autodesk.AutoCAD.Runtime;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Core.Application;
+#if NET48 || NET47 || NET46
+using Newtonsoft.Json;
+#endif
 
 namespace AutoCADBallet
 {
@@ -770,7 +773,11 @@ namespace AutoCADBallet
                 var response = new ScriptResponse
                 {
                     Success = true,
+#if NET48 || NET47 || NET46
+                    Output = JsonConvert.SerializeObject(categories)
+#else
                     Output = System.Text.Json.JsonSerializer.Serialize(categories)
+#endif
                 };
                 await SendHttpResponse(stream, response);
             }
@@ -821,7 +828,7 @@ namespace AutoCADBallet
             var tcs = new TaskCompletionSource<string>();
 
             EventHandler idleHandler = null;
-            idleHandler = async (sender, e) =>
+            idleHandler = (sender, e) =>
             {
                 AcadApp.Idle -= idleHandler;
 
@@ -1523,7 +1530,11 @@ namespace AutoCADBallet
 
         public string ToJson()
         {
+#if NET48 || NET47 || NET46
+            return JsonConvert.SerializeObject(this);
+#else
             return System.Text.Json.JsonSerializer.Serialize(this);
+#endif
         }
     }
 
