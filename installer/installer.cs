@@ -158,7 +158,7 @@ namespace AutoCADBalletInstaller
             {
                 var assembly = Assembly.GetExecutingAssembly();
                 var logoResourceName = assembly.GetManifestResourceNames()
-                    .FirstOrDefault(n => n.EndsWith(".png"));
+                    .FirstOrDefault(n => n.EndsWith(".ico"));
 
                 if (logoResourceName != null)
                 {
@@ -166,7 +166,10 @@ namespace AutoCADBalletInstaller
                     {
                         if (stream != null)
                         {
-                            logo = Image.FromStream(stream);
+                            using (var icon = new Icon(stream))
+                            {
+                                logo = icon.ToBitmap();
+                            }
                         }
                     }
                 }
