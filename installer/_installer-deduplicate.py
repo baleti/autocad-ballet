@@ -9,11 +9,18 @@ and creates a deduplicated resource directory for the installer
 import hashlib
 import os
 import shutil
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 SOURCE_PATH = Path("../commands/bin")
 OUTPUT_PATH = Path("./resources")
+
+
+def print_error(*args, **kwargs):
+    """Print to both stdout and stderr to ensure visibility in MSBuild"""
+    print(*args, **kwargs)
+    print(*args, **kwargs, file=sys.stderr)
 
 
 def calculate_md5(file_path):
@@ -39,28 +46,141 @@ def main():
     print("=" * 68)
     print()
 
+    # Validate that the source path exists
+    if not SOURCE_PATH.exists():
+        print_error()
+        print_error("=" * 68)
+        print_error("ERROR: Commands build directory does not exist!")
+        print_error("=" * 68)
+        print_error()
+        print_error(f"Expected location: {SOURCE_PATH.absolute()}")
+        print_error()
+        print_error("You need to build the commands project first.")
+        print_error("Run these commands from the repository root:")
+        print_error()
+        print_error("  # Build all AutoCAD versions:")
+        print_error("  for year in 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026; do")
+        print_error("    dotnet build commands/autocad-ballet.csproj -p:AutoCADYear=$year")
+        print_error("  done")
+        print_error()
+        print_error("After building commands, run the installer build again.")
+        print_error("=" * 68)
+        return 1
+
     # Clean output directory
     if OUTPUT_PATH.exists():
         shutil.rmtree(OUTPUT_PATH)
     OUTPUT_PATH.mkdir(parents=True)
+
+    # Define expected years for AutoCAD Ballet installer
+    EXPECTED_YEARS = ['2017', '2018', '2019', '2020', '2021', '2022', '2023', '2024', '2025', '2026']
 
     # Get all year directories (exclude temp)
     year_dirs = sorted([d for d in SOURCE_PATH.iterdir()
                        if d.is_dir() and d.name.isdigit() and len(d.name) == 4])
 
     if not year_dirs:
-        print(f"ERROR: No year directories found in {SOURCE_PATH}")
+        print_error()
+        print_error("=" * 68)
+        print_error("ERROR: No year directories found in commands build output!")
+        print_error("=" * 68)
+        print_error()
+        print_error(f"Searched in: {SOURCE_PATH.absolute()}")
+        print_error()
+        print_error("You need to build the commands project first.")
+        print_error("Run these commands from the repository root:")
+        print_error()
+        print_error("  # Build all AutoCAD versions:")
+        print_error("  for year in 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026; do")
+        print_error("    dotnet build commands/autocad-ballet.csproj -p:AutoCADYear=$year")
+        print_error("  done")
+        print_error()
+        print_error("After building commands, run the installer build again.")
+        print_error("=" * 68)
         return 1
 
+    found_years = set(d.name for d in year_dirs)
     print(f"Found {len(year_dirs)} year directories: {', '.join(d.name for d in year_dirs)}")
+    print()
+
+    # Check for missing year directories
+    missing_year_dirs = sorted(set(EXPECTED_YEARS) - found_years)
+    if missing_year_dirs:
+        print_error()
+        print_error("=" * 68)
+        print_error("ERROR: Missing build directories for some AutoCAD years!")
+        print_error("=" * 68)
+        print_error()
+        print_error(f"Expected years: {', '.join(EXPECTED_YEARS)}")
+        print_error(f"Found years:    {', '.join(sorted(found_years))}")
+        print_error(f"Missing years:  {', '.join(missing_year_dirs)}")
+        print_error()
+        print_error("You need to build the commands project for all AutoCAD versions.")
+        print_error("Run these commands from the repository root:")
+        print_error()
+        for year in missing_year_dirs:
+            print_error(f"  dotnet build commands/autocad-ballet.csproj -p:AutoCADYear={year}")
+        print_error()
+        print_error("Or build all years at once:")
+        print_error("  for year in 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026; do")
+        print_error("    dotnet build commands/autocad-ballet.csproj -p:AutoCADYear=$year")
+        print_error("  done")
+        print_error()
+        print_error("After rebuilding, run this script again.")
+        print_error("=" * 68)
+        return 1
+
+    # Validate that all year directories have the required autocad-ballet.dll
+    print("Validating year directories...")
+    missing_years = []
+    incomplete_years = []
+
+    for year_dir in year_dirs:
+        year = year_dir.name
+        dll_files = list(year_dir.glob("*.dll"))
+
+        if not dll_files:
+            missing_years.append(year)
+        elif not any(f.name == "autocad-ballet.dll" for f in dll_files):
+            incomplete_years.append(year)
+
+    if missing_years or incomplete_years:
+        print_error()
+        print_error("=" * 68)
+        print_error("ERROR: Command DLLs are missing or incomplete!")
+        print_error("=" * 68)
+
+        if missing_years:
+            print_error(f"\nYears with NO DLL files: {', '.join(missing_years)}")
+
+        if incomplete_years:
+            print_error(f"\nYears missing autocad-ballet.dll: {', '.join(incomplete_years)}")
+
+        print_error("\nYou need to build the commands project for all AutoCAD versions first.")
+        print_error("Run these commands from the repository root:")
+        print_error()
+
+        if missing_years or incomplete_years:
+            all_problem_years = sorted(set(missing_years + incomplete_years))
+            for year in all_problem_years:
+                print_error(f"  dotnet build commands/autocad-ballet.csproj -p:AutoCADYear={year}")
+
+        print_error()
+        print_error("Or build all years at once:")
+        print_error("  for year in 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026; do")
+        print_error("    dotnet build commands/autocad-ballet.csproj -p:AutoCADYear=$year")
+        print_error("  done")
+        print_error()
+        print_error("After rebuilding, run this script again.")
+        print_error("=" * 68)
+        return 1
+
+    print("All year directories validated successfully.")
     print()
 
     # Build database: filename -> [(year, path, hash, size)]
     print("Scanning files and calculating checksums...")
     file_database = defaultdict(list)
-
-    # Cache for (filename, size) -> hash to avoid recalculating identical files
-    hash_cache = {}
 
     for year_dir in year_dirs:
         year = year_dir.name
@@ -70,14 +190,9 @@ def main():
             filename = dll_file.name
             file_size = dll_file.stat().st_size
 
-            # Use size as simple cache key - if same filename & size, assume duplicate
-            # This avoids MD5 calculation for obvious duplicates (much faster on 9p)
-            cache_key = (filename, file_size)
-            if cache_key in hash_cache:
-                file_hash = hash_cache[cache_key]
-            else:
-                file_hash = calculate_md5(dll_file)
-                hash_cache[cache_key] = file_hash
+            # Always calculate MD5 to ensure correctness
+            # Files with same name and size but different contents must be detected
+            file_hash = calculate_md5(dll_file)
 
             file_database[filename].append({
                 'year': year,

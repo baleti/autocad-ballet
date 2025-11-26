@@ -20,10 +20,11 @@
 
   <!-- Run Python script to prepare resources before build -->
   <Target Name="PrepareDeduplicatedResources"
-          BeforeTargets="BeforeCompile;AssignTargetPaths"
-          Inputs="../commands/bin/**/*.dll"
-          Outputs="resources/file-mapping.txt">
+          BeforeTargets="BeforeCompile;AssignTargetPaths">
     <Message Text="Preparing deduplicated resources..." Importance="high" />
-    <Exec Command="python3 _installer-deduplicate.py" WorkingDirectory="$(MSBuildProjectDirectory)" />
+    <Exec Command="python3 _installer-deduplicate.py"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          ConsoleToMSBuild="true"
+          IgnoreStandardErrorWarningFormat="true" />
   </Target>
 </Project>
