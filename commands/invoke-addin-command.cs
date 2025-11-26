@@ -238,6 +238,27 @@ namespace AutocadBallet
                 using (var ms = new MemoryStream(File.ReadAllBytes(assemblyPath)))
                 {
                     var readerParams = new ReaderParameters { ReadSymbols = false };
+
+                    // CRITICAL: Provide custom assembly resolver to locate dependencies
+                    // Without this, Mono.Cecil fails to resolve AutoCAD API assemblies
+                    var resolver = new DefaultAssemblyResolver();
+
+                    // Add the assembly's directory to search paths
+                    string directory = Path.GetDirectoryName(assemblyPath);
+                    resolver.AddSearchDirectory(directory);
+
+                    // Add AutoCAD installation directory (where accoremgd.dll etc. are located)
+                    // Get this from currently loaded assemblies
+                    var autocadCoreAsm = AppDomain.CurrentDomain.GetAssemblies()
+                        .FirstOrDefault(a => a.GetName().Name.Equals("accoremgd", StringComparison.OrdinalIgnoreCase));
+                    if (autocadCoreAsm != null && !string.IsNullOrEmpty(autocadCoreAsm.Location))
+                    {
+                        string autocadDir = Path.GetDirectoryName(autocadCoreAsm.Location);
+                        resolver.AddSearchDirectory(autocadDir);
+                    }
+
+                    readerParams.AssemblyResolver = resolver;
+
                     var assemblyDef = AssemblyDefinition.ReadAssembly(ms, readerParams);
 
                     // Iterate through all types and methods to find CommandMethod attributes
@@ -262,6 +283,9 @@ namespace AutocadBallet
                             }
                         }
                     }
+
+                    // Dispose resolver
+                    resolver.Dispose();
                 }
             }
             catch (System.Exception ex)
@@ -293,6 +317,27 @@ namespace AutocadBallet
             using (var ms = new MemoryStream(File.ReadAllBytes(assemblyPath)))
             {
                 var readerParams = new ReaderParameters { ReadSymbols = false };
+
+                // CRITICAL: Provide custom assembly resolver to locate dependencies
+                // Without this, Mono.Cecil fails to resolve AutoCAD API assemblies
+                var resolver = new DefaultAssemblyResolver();
+
+                // Add the assembly's directory to search paths
+                string assemblyDirectory = Path.GetDirectoryName(assemblyPath);
+                resolver.AddSearchDirectory(assemblyDirectory);
+
+                // Add AutoCAD installation directory (where accoremgd.dll etc. are located)
+                // Get this from currently loaded assemblies
+                var autocadCoreAsm = AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => a.GetName().Name.Equals("accoremgd", StringComparison.OrdinalIgnoreCase));
+                if (autocadCoreAsm != null && !string.IsNullOrEmpty(autocadCoreAsm.Location))
+                {
+                    string autocadDir = Path.GetDirectoryName(autocadCoreAsm.Location);
+                    resolver.AddSearchDirectory(autocadDir);
+                }
+
+                readerParams.AssemblyResolver = resolver;
+
                 var assemblyDef = AssemblyDefinition.ReadAssembly(ms, readerParams);
 
                 // CRITICAL: When loadFromFile is true, modify assembly identity to allow loading
@@ -371,6 +416,9 @@ namespace AutocadBallet
                     assemblyDef.Write(outputMs);
                     modifiedAssemblyBytes = outputMs.ToArray();
                 }
+
+                // Dispose resolver
+                resolver.Dispose();
             }
 
             // Load dependencies first
