@@ -14,7 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 
 SOURCE_PATH = Path("../commands/bin")
-OUTPUT_PATH = Path("./resources")
+OUTPUT_PATH = Path("./bin/resources")
 
 
 def print_error(*args, **kwargs):
