@@ -555,7 +555,25 @@ namespace AutoCADBallet
                 }
                 else if (entity is Dimension dimension)
                 {
-                    return dimension.DimensionText;
+                    // Get the dimension text as it appears in the drawing
+                    // When DimensionText is empty, the dimension shows the formatted measurement
+                    // When DimensionText has a value, it's an override and that's what's shown
+
+                    string displayedText = null;
+
+                    if (!string.IsNullOrEmpty(dimension.DimensionText))
+                    {
+                        // User has overridden the dimension text - this is what's displayed
+                        displayedText = dimension.DimensionText;
+                    }
+                    else
+                    {
+                        // No override - get the formatted measurement as displayed
+                        // This uses the dimension style's precision, unit format, etc.
+                        displayedText = dimension.FormatMeasurement(dimension.Measurement, "");
+                    }
+
+                    return displayedText;
                 }
                 else if (entity is MLeader mLeader)
                 {

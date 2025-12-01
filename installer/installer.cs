@@ -22,14 +22,18 @@ namespace AutoCADBalletInstaller
             // Determine if running as uninstaller based on executable name
             string exeName = Path.GetFileName(Assembly.GetExecutingAssembly().Location).ToLower();
             bool isUninstaller = exeName.Contains("uninstall") || (args.Length > 0 && args[0] == "/uninstall");
+            bool quietMode = args.Any(arg => arg.Equals("/q", StringComparison.OrdinalIgnoreCase) ||
+                                             arg.Equals("/quiet", StringComparison.OrdinalIgnoreCase) ||
+                                             arg.Equals("-q", StringComparison.OrdinalIgnoreCase) ||
+                                             arg.Equals("--quiet", StringComparison.OrdinalIgnoreCase));
 
             if (isUninstaller)
             {
-                new BalletUninstaller().Run();
+                new BalletUninstaller().Run(quietMode);
             }
             else
             {
-                new BalletInstaller().Run();
+                new BalletInstaller().Run(quietMode);
             }
         }
     }
@@ -68,7 +72,7 @@ namespace AutoCADBalletInstaller
             public List<string> Years { get; set; }
         }
 
-        public void Run()
+        public void Run(bool quietMode = false)
         {
             try
             {
@@ -78,8 +82,11 @@ namespace AutoCADBalletInstaller
 
                 if (installations.Count == 0)
                 {
-                    MessageBox.Show("No AutoCAD installations found.",
-                        "AutoCAD Ballet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    if (!quietMode)
+                    {
+                        MessageBox.Show("No AutoCAD installations found.",
+                            "AutoCAD Ballet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
                     return;
                 }
 
@@ -131,12 +138,22 @@ namespace AutoCADBalletInstaller
 
                 RegisterUninstaller(targetDir);
 
-                ShowSuccessDialog();
+                if (!quietMode)
+                {
+                    ShowSuccessDialog();
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Installation error: {ex.Message}",
-                    "AutoCAD Ballet Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!quietMode)
+                {
+                    MessageBox.Show($"Installation error: {ex.Message}",
+                        "AutoCAD Ballet Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                else
+                {
+                    Environment.Exit(1);
+                }
             }
         }
 
@@ -690,7 +707,7 @@ namespace AutoCADBalletInstaller
 
     public class BalletUninstaller
     {
-        public void Run()
+        public void Run(bool quietMode = false)
         {
             try
             {
@@ -712,10 +729,11 @@ rd /s /q ""{appDataPath}""
 del ""%~f0""";
                     File.WriteAllText(batchFile, batchContent);
 
+                    string quietArg = quietMode ? " /q" : "";
                     var startInfo = new ProcessStartInfo
                     {
                         FileName = tempExe,
-                        Arguments = $"/actualuninstall \"{batchFile}\"",
+                        Arguments = $"/actualuninstall \"{batchFile}\"{quietArg}",
                         UseShellExecute = false
                     };
                     Process.Start(startInfo);
@@ -731,9 +749,12 @@ del ""%~f0""";
                     batchCleanup = args[2];
                 }
 
-                if (MessageBox.Show("Uninstall AutoCAD Ballet?", "AutoCAD Ballet",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-                    return;
+                if (!quietMode)
+                {
+                    if (MessageBox.Show("Uninstall AutoCAD Ballet?", "AutoCAD Ballet",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                        return;
+                }
 
                 RemoveFromAcadLsp();
 
@@ -778,13 +799,23 @@ del ""%~f0""";
 
                 RemoveFromRegistry();
 
-                MessageBox.Show("AutoCAD Ballet uninstalled successfully.", "Uninstaller",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (!quietMode)
+                {
+                    MessageBox.Show("AutoCAD Ballet uninstalled successfully.", "Uninstaller",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Uninstallation failed: {ex.Message}", "Uninstaller",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (!quietMode)
+                {
+                    MessageBox.Show($"Uninstallation failed: {ex.Message}", "Uninstaller",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                else
+                {
+                    Environment.Exit(1);
+                }
             }
         }
 
